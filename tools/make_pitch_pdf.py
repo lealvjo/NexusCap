@@ -166,7 +166,7 @@ def page_cover(c):
         a, b = label.split("\n")
         draw_text(c, a, cx, cy + 12, 12, True, CYAN, "center")
         draw_text(c, b, cx, cy - 8, 11, False, WHITE, "center")
-    draw_text(c, "Pitch comercial  ·  Versão 1.0  ·  Privado", W / 2, 36, 10, False, MUTED, "center")
+    draw_text(c, "Pitch comercial  ·  Versao 1.1.4  ·  Setup na Release GitHub", W / 2, 36, 10, False, MUTED, "center")
     c.showPage()
 
 
@@ -507,6 +507,69 @@ def page_cpp(c):
     c.showPage()
 
 
+def page_install(c):
+    """Community install — requirements + step-by-step."""
+    fill_bg(c)
+    draw_text(c, "Instalacao — passo a passo", 40, H - 42, 22, True)
+    wrap_draw(
+        c,
+        "Mande so o instalador NexusCap-Setup. Nao precisa pasta manual nem o codigo. Download na Release do GitHub.",
+        40,
+        H - 72,
+        W - 80,
+        11,
+        WHITE,
+    )
+
+    # Requirements strip
+    c.setFillColorRGB(*(x / 255 for x in CARD))
+    c.roundRect(40, H - 200, W - 80, 95, 12, fill=1, stroke=0)
+    draw_text(c, "Requisitos", 56, H - 125, 12, True, CYAN)
+    reqs = [
+        "Placa de captura HDMI (DirectShow)",
+        "GPU NVIDIA (RenoDX / Neural Rendering)",
+        "Windows 64-bit",
+        "Frame Gen opcional: Lossless Scaling (Steam)",
+    ]
+    x0 = 56
+    for i, t in enumerate(reqs):
+        draw_text(c, "•  " + t, x0 + (i % 2) * ((W - 120) / 2), H - 150 - (i // 2) * 22, 10, False, WHITE)
+
+    steps = [
+        ("1", "Baixe NexusCap-Setup-*.exe na Release v1.1.4 do GitHub"),
+        ("2", "Execute o setup — instala em %LOCALAPPDATA%\\NexusCap (nao Program Files)"),
+        ("3", "Abra Nexus Cap, escolha a placa e ajuste no lobby (preview ao vivo)"),
+        ("4", "Marque RenoDX se quiser NR — na captura, Delete liga/desliga"),
+        ("5", "Frame Gen (opcional): instale Lossless Scaling na Steam; Page Down liga/desliga"),
+        ("6", "Iniciar — Esc volta ao lobby"),
+    ]
+    y = H - 230
+    for num, text in steps:
+        c.setFillColorRGB(*(v / 255 for v in CARD))
+        c.roundRect(40, y - 14, W - 80, 36, 8, fill=1, stroke=0)
+        c.setFillColorRGB(*(v / 255 for v in CYAN))
+        c.circle(62, y + 4, 11, fill=1, stroke=0)
+        draw_text(c, num, 62, y - 1, 11, True, BG, "center")
+        draw_text(c, text, 88, y - 1, 11, False, WHITE)
+        y -= 44
+
+    c.setFillColorRGB(*(v / 255 for v in CARD))
+    c.roundRect(40, 28, W - 80, 42, 10, fill=1, stroke=0)
+    c.setStrokeColorRGB(*(v / 255 for v in ACCENT))
+    c.setLineWidth(1.2)
+    c.roundRect(40, 28, W - 80, 42, 10, fill=0, stroke=1)
+    draw_text(
+        c,
+        "github.com/lealvjo/NexusCap/releases  ·  Setup ~142 MB  ·  Lossless Scaling NAO incluso",
+        56,
+        42,
+        10,
+        False,
+        WHITE,
+    )
+    c.showPage()
+
+
 def page_close(c):
     fill_bg(c)
     if LOGO.exists():
@@ -514,7 +577,7 @@ def page_close(c):
     draw_text(c, "NexusCap", W / 2, H - 190, 28, True, WHITE, "center")
     draw_text(
         c,
-        "HDMI nativo. Preview ao vivo. Frame Gen opcional (Lossless Scaling não incluso).",
+        "HDMI nativo. Preview ao vivo. Frame Gen opcional (Lossless Scaling nao incluso).",
         W / 2,
         H - 220,
         12,
@@ -523,11 +586,12 @@ def page_close(c):
         "center",
     )
     c.setFillColorRGB(*(v / 255 for v in CARD))
-    c.roundRect(W / 2 - 230, H / 2 - 70, 460, 120, 14, fill=1, stroke=0)
-    draw_text(c, "Próximo passo", W / 2, H / 2 + 25, 12, True, CYAN, "center")
-    draw_text(c, "Demo ao vivo · build Release · repo privado v1.0", W / 2, H / 2 - 5, 12, False, WHITE, "center")
-    draw_text(c, "github.com/lealvjo/NexusCap", W / 2, H / 2 - 35, 11, False, MUTED, "center")
-    draw_text(c, "Feito em C++  ·  Windows 64-bit  ·  captura + saída nativas", W / 2, 40, 9, False, MUTED, "center")
+    c.roundRect(W / 2 - 250, H / 2 - 80, 500, 140, 14, fill=1, stroke=0)
+    draw_text(c, "Download para a comunidade", W / 2, H / 2 + 35, 12, True, CYAN, "center")
+    draw_text(c, "NexusCap-Setup-1.1.4.exe  (Release GitHub)", W / 2, H / 2 + 5, 12, False, WHITE, "center")
+    draw_text(c, "github.com/lealvjo/NexusCap/releases/tag/v1.1.4", W / 2, H / 2 - 25, 11, False, MUTED, "center")
+    draw_text(c, "Instala em %LOCALAPPDATA%\\NexusCap", W / 2, H / 2 - 50, 10, False, MUTED, "center")
+    draw_text(c, "Feito em C++  ·  Windows 64-bit  ·  placa de captura + GPU NVIDIA", W / 2, 40, 9, False, MUTED, "center")
     c.showPage()
 
 
@@ -541,6 +605,7 @@ def main() -> None:
     page_preview(c)
     page_cfg_live(c)
     page_lossless_req(c)
+    page_install(c)
     page_arch(c, arch)
     page_session(c)
     page_hud(c)

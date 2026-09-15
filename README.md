@@ -8,11 +8,41 @@
 
 | | |
 |---|---|
-| **Versão** | `1.1.4` (`main`) · instalador Inno em Releases |
+| **Versão** | `1.1.4` (`main`) · instalador Inno em [Releases](https://github.com/lealvjo/NexusCap/releases/tag/v1.1.4) |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
-| **Settings** | `%LOCALAPPDATA%\NexusCap\settings.ini` |
+| **Settings / install** | `%LOCALAPPDATA%\NexusCap` (não use Program Files) |
+
+---
+
+## Para a comunidade (download)
+
+Distribua só o instalador — **não** precisa mandar pasta `manual` nem o código:
+
+**[NexusCap-Setup-1.1.4.exe](https://github.com/lealvjo/NexusCap/releases/tag/v1.1.4)** (~142 MB)
+
+O `.exe` do setup **não fica no git** (é grande demais); fica na **Release** do GitHub. O pitch PDF (`assets/pitch/NexusCap_Pitch.pdf`) fica no repo e aponta para o mesmo download.
+
+### Requisitos do usuário final
+
+| Precisa | Detalhe |
+|---------|---------|
+| **Placa de captura** | HDMI via DirectShow (ex.: VEDO / Elgato / similar) |
+| **GPU NVIDIA** | Para RenoDX / Neural Rendering (ReShade + DLSS NR) |
+| **Windows 64-bit** | Build nativo |
+| **Frame Gen (opcional)** | Instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam — **não** vem no instalador |
+
+### Passo a passo de instalação
+
+1. Baixe `NexusCap-Setup-1.1.4.exe` na [Release v1.1.4](https://github.com/lealvjo/NexusCap/releases/tag/v1.1.4).
+2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
+3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo).
+4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura).
+5. **Frame Gen (opcional):** instale Lossless Scaling na Steam; no CFG, Page Down liga/desliga. Se o exe não for achado, use **Pasta** e aponte `LosslessScaling.exe`.
+6. **Iniciar** — Esc volta ao lobby.
+
+**Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
 
 ---
 

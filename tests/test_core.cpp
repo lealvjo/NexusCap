@@ -1467,10 +1467,29 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(1, 1, 0));
-  CHECK(std::string(kAppVersion) == "1.1.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v1.1.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.0");
+  CHECK(app_version_is(1, 1, 1));
+  CHECK(std::string(kAppVersion) == "1.1.1");
+  CHECK(std::strstr(kAppNameWithVersion, "v1.1.1") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.1");
+}
+
+TEST_CASE("renodx runtime dirs prefer writable AppData cache") {
+  const std::string data = app_data_dir();
+  CHECK_FALSE(data.empty());
+  CHECK(data.find("NexusCap") != std::string::npos);
+  CHECK(directory_is_writable(data));
+  const std::string cache = app_reshade_cache_dir();
+  CHECK(cache.find("reshade-cache") != std::string::npos);
+  CHECK(directory_is_writable(cache));
+  const std::string logs = app_logs_dir();
+  CHECK(logs.find("logs") != std::string::npos);
+  CHECK(std::strstr(renodx_write_denied_notice(), "Program Files") != nullptr);
+
+  // IntermediateCachePath rewrite helper keeps absolute AppData path.
+  std::string ini = "[GENERAL]\nIntermediateCachePath=.\\reshade-cache\n";
+  ini = apply_keyed_value(std::move(ini), "IntermediateCachePath=", cache);
+  CHECK(ini.find(cache) != std::string::npos);
+  CHECK(ini.find(".\\reshade-cache") == std::string::npos);
 }
 
 TEST_CASE("lobby RenoDX preview: toggle and presets apply on Present") {

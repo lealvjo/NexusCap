@@ -196,7 +196,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   g_session_signal_w = cap_w;
   g_session_signal_h = cap_h;
   g_session_fullscreen = cfg.exclusive_fullscreen && !cfg.smoke;
-  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, L"Nexus Cap v1.1.0");
+  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, L"Nexus Cap v1.1.1");
   if (!hwnd) {
     std::fprintf(stderr, "create window failed\n");
     return 1;
@@ -916,7 +916,12 @@ int main(int argc, char** argv) {
   wchar_t exe_path[MAX_PATH];
   GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
   fs::path base = fs::path(exe_path).parent_path();
-  if (!fs::path(cfg.log_dir).is_absolute()) cfg.log_dir = (base / cfg.log_dir).string();
+  // Logs always in AppData — Program Files is not writable after install.
+  cfg.log_dir = nexuscap::app_logs_dir();
+  (void)nexuscap::prepare_renodx_runtime_dirs(base.string());
+  if (!fs::path(cfg.log_dir).is_absolute() && cfg.log_dir == "logs") {
+    cfg.log_dir = (base / cfg.log_dir).string();
+  }
 
   nexuscap::PersistedSettings settings = nexuscap::default_settings();
   {

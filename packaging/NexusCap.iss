@@ -2,9 +2,10 @@
 ; Compilar via tools\make_installer.ps1 (define MyAppVersion / StageDir).
 ;
 ; NÃO embute Lossless Scaling — Frame Gen é opcional (Steam do usuário).
+; Instala em %LOCALAPPDATA%\NexusCap (gravável) — RenoDX precisa escrever ini/cfg/cache.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.0"
+  #define MyAppVersion "1.1.1"
 #endif
 #ifndef StageDir
   #define StageDir "..\dist\stage"
@@ -23,7 +24,8 @@ AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
-DefaultDirName={autopf}\{#MyAppName}
+; Pasta do usuario: ReShade/RenoDX gravam ini, cfg e cache ao lado do exe.
+DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 LicenseFile=
@@ -37,11 +39,13 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 DisableProgramGroupPage=no
 CloseApplications=yes
 RestartApplications=no
 MinVersion=10.0
+UsePreviousAppDir=no
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -49,6 +53,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Dirs]
+; Se o usuario escolher Program Files (via dialogo elevacao), libera escrita.
+Name: "{app}"; Permissions: users-modify
+Name: "{app}\reshade-cache"; Permissions: users-modify
 
 [Files]
 ; Staging limpo gerado por make_installer.ps1 (sem logs / dumps / LS).
@@ -63,7 +72,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Cache ReShade gerado em runtime
 Type: filesandordirs; Name: "{app}\reshade-cache"
 Type: files; Name: "{app}\*.log"
 Type: files; Name: "{app}\*.dmp"

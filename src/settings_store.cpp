@@ -28,18 +28,90 @@ HotkeyConfig default_hotkeys() { return HotkeyConfig{}; }
 
 PersistedSettings default_settings() { return PersistedSettings{}; }
 
-std::string settings_default_path() {
+namespace {
+
+std::string wide_to_utf8(const std::wstring& w) {
+  if (w.empty()) return {};
+  const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (n <= 1) return {};
+  std::string out(static_cast<size_t>(n - 1), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, out.data(), n, nullptr, nullptr);
+  return out;
+}
+
+std::wstring utf8_to_wide(const std::string& s) {
+  if (s.empty()) return {};
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+  if (n <= 1) return {};
+  std::wstring out(static_cast<size_t>(n - 1), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), n);
+  return out;
+}
+
+}  // namespace
+
+std::string app_data_dir() {
   wchar_t* buf = nullptr;
   size_t len = 0;
-  if (_wdupenv_s(&buf, &len, L"LOCALAPPDATA") != 0 || !buf) return "settings.ini";
+  if (_wdupenv_s(&buf, &len, L"LOCALAPPDATA") != 0 || !buf) return {};
   std::wstring dir(buf);
   free(buf);
   dir += L"\\NexusCap";
   CreateDirectoryW(dir.c_str(), nullptr);
-  dir += L"\\settings.ini";
-  char narrow[MAX_PATH];
-  WideCharToMultiByte(CP_UTF8, 0, dir.c_str(), -1, narrow, MAX_PATH, nullptr, nullptr);
-  return narrow;
+  return wide_to_utf8(dir);
+}
+
+std::string settings_default_path() {
+  const std::string base = app_data_dir();
+  if (base.empty()) return "settings.ini";
+  return base + "\\settings.ini";
+}
+
+std::string app_logs_dir() {
+  const std::string base = app_data_dir();
+  if (base.empty()) return "logs";
+  const std::wstring w = utf8_to_wide(base + "\\logs");
+  CreateDirectoryW(w.c_str(), nullptr);
+  return base + "\\logs";
+}
+
+std::string app_reshade_cache_dir() {
+  const std::string base = app_data_dir();
+  if (base.empty()) return "reshade-cache";
+  const std::wstring w = utf8_to_wide(base + "\\reshade-cache");
+  CreateDirectoryW(w.c_str(), nullptr);
+  return base + "\\reshade-cache";
+}
+
+bool directory_is_writable(const std::string& dir) {
+  if (dir.empty()) return false;
+  const std::wstring wdir = utf8_to_wide(dir);
+  CreateDirectoryW(wdir.c_str(), nullptr);
+  const std::wstring probe = wdir + L"\\.nexuscap_write_probe";
+  HANDLE h = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  CloseHandle(h);
+  DeleteFileW(probe.c_str());
+  return true;
+}
+
+bool prepare_renodx_runtime_dirs(const std::string& exe_dir) {
+  if (exe_dir.empty()) return false;
+  const std::string cache = app_reshade_cache_dir();
+  const bool writable = directory_is_writable(exe_dir);
+  // Always try to point cache at AppData so ReShade does not write under Program Files.
+  const std::string reshade_path = exe_dir + "\\ReShade.ini";
+  std::ifstream in(reshade_path);
+  if (in) {
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    text = apply_keyed_value(std::move(text), "IntermediateCachePath=", cache);
+    std::ofstream out(reshade_path, std::ios::trunc);
+    if (out) out << text;
+  }
+  // Local reshade-cache folder next to exe (harmless if writable; ignored if we rewrote path).
+  CreateDirectoryW(utf8_to_wide(exe_dir + "\\reshade-cache").c_str(), nullptr);
+  return writable;
 }
 
 std::string serialize_settings_ini(const PersistedSettings& s) {

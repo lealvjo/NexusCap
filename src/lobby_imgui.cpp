@@ -661,10 +661,12 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   // RenoDX NR runtime boots OFF every lobby device create — pulse Bridge when checkbox wants ON.
   bool nr_runtime_on = false;
   int nr_boot_retries = 0;
+  bool renodx_dir_ok = true;
   {
     wchar_t exe_path[MAX_PATH]{};
     GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
     const auto exe_dir = std::filesystem::path(exe_path).parent_path();
+    renodx_dir_ok = prepare_renodx_runtime_dirs(exe_dir.string());
     const auto feed_cfg = exe_dir / "dlss5-feed.cfg";
     if (std::filesystem::exists(feed_cfg)) {
       sync_feed_work_resolution_file(feed_cfg.string(), feed_work_resolution_for_lobby());
@@ -682,7 +684,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
     return false;
   }
-  g_hwnd = CreateWindowW(wc.lpszClassName, L"Nexus Cap v1.1.0 — Console de captura", WS_OVERLAPPEDWINDOW, 0, 0, 1280, 720,
+  g_hwnd = CreateWindowW(wc.lpszClassName, L"Nexus Cap v1.1.1 — Console de captura", WS_OVERLAPPEDWINDOW, 0, 0, 1280, 720,
                          nullptr, nullptr, wc.hInstance, nullptr);
   if (!g_hwnd || !create_device(g_hwnd)) {
     cleanup_device();
@@ -786,6 +788,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     lobby_toast = std::move(msg);
     lobby_toast_until = ImGui::GetTime() + (kSessionNoticeTtlMs / 1000.0);
   };
+  if (!renodx_dir_ok) {
+    push_lobby_toast(renodx_write_denied_notice());
+  }
 
   while (g_lobby_running) {
     MSG msg;
@@ -1271,12 +1276,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           // Immediate look on the preview band + sync RenoDX files / Bridge for Present.
           preview.set_visual_preview(settings.renodx_preset, want);
-          apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on);
-          if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
-            nr_boot_retries = 120;
+          const bool writable = prepare_renodx_runtime_dirs(exe_dir);
+          if (!writable) {
+            push_lobby_toast(renodx_write_denied_notice());
+          } else {
+            apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on);
+            push_lobby_toast(std::string("Preset: ") + renodx_visual_preset_name(settings.renodx_preset) +
+                             " — olhe o preview");
+            if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
+              nr_boot_retries = 120;
+            }
           }
-          push_lobby_toast(std::string("Preset: ") + renodx_visual_preset_name(settings.renodx_preset) +
-                           " — olhe o preview");
         }
         ImGui::TextDisabled("NR=%d  model=%d  ·  olhe a imagem (nao so o texto)",
                             renodx_nr_preset_index(settings.renodx_preset),

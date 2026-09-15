@@ -201,6 +201,20 @@ inline std::string apply_keyed_int(std::string text, const std::string& key, int
   return text;
 }
 
+inline std::string apply_keyed_value(std::string text, const std::string& key, const std::string& value) {
+  const std::string line = key + value;
+  const auto pos = text.find(key);
+  if (pos != std::string::npos) {
+    const auto end = text.find_first_of("\r\n", pos);
+    text.replace(pos, (end == std::string::npos ? text.size() : end) - pos, line);
+  } else {
+    if (!text.empty() && text.back() != '\n') text.push_back('\n');
+    text += line;
+    text.push_back('\n');
+  }
+  return text;
+}
+
 inline int parse_keyed_int(const std::string& text, const std::string& key, int fallback) {
   const auto pos = text.find(key);
   if (pos == std::string::npos) return fallback;
@@ -341,7 +355,19 @@ inline bool feed_leaks_session_scale_into_lobby(const std::string& feed_text, in
 HotkeyConfig default_hotkeys();
 PersistedSettings default_settings();
 
-std::string settings_default_path();  // %LOCALAPPDATA%\NexusCap\settings.ini
+// %LOCALAPPDATA%\NexusCap (created if missing). Empty if LOCALAPPDATA unavailable.
+std::string app_data_dir();
+std::string settings_default_path();  // app_data_dir()\settings.ini
+std::string app_logs_dir();          // app_data_dir()\logs
+std::string app_reshade_cache_dir(); // app_data_dir()\reshade-cache
+
+// True when we can create/overwrite a probe file in dir (Program Files fails without admin).
+bool directory_is_writable(const std::string& dir);
+
+// Point ReShade IntermediateCachePath at a writable AppData cache; ensure folder exists.
+// Returns false if exe_dir itself is not writable (presets/NR cannot be saved).
+bool prepare_renodx_runtime_dirs(const std::string& exe_dir);
+
 bool save_settings(const PersistedSettings& s, const std::string& path, std::string& err);
 bool load_settings(PersistedSettings& s, const std::string& path, std::string& err);
 
@@ -359,5 +385,12 @@ std::string serialize_settings_ini(const PersistedSettings& s);
 bool parse_settings_ini(const std::string& text, PersistedSettings& s);
 
 const char* vk_display_name(int vk);
+
+// Toast when Program Files (or other) blocks RenoDX config writes.
+inline const char* renodx_write_denied_notice() {
+  return "Nao foi possivel gravar RenoDX nesta pasta.\n"
+         "Reinstale o NexusCap na pasta do usuario (padrao do instalador) — "
+         "Program Files bloqueia presets e pode fechar no Iniciar.";
+}
 
 }  // namespace nexuscap

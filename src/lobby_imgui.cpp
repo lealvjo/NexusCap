@@ -1247,29 +1247,27 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                             pct_pix, kMinScalePercent);
 
         ImGui::Separator();
-        bool nr_check = lobby_nr_checkbox_checked(settings.enhance_renodx, settings.neural_rendering);
-        if (ImGui::Checkbox("RenoDX / Neural Rendering (preview ao vivo)", &nr_check)) {
-          settings.enhance_renodx = nr_check;
-          settings.neural_rendering = nr_check;
+        if (ImGui::Checkbox("RenoDX / Neural Rendering (preview ao vivo)", &settings.enhance_renodx)) {
+          // Stack on → arm NR for preview; stack off → clear NR.
+          settings.neural_rendering = settings.enhance_renodx;
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-          // Disk alone does not flip RenoDX runtime — Bridge pulse required.
-          // When Renodx unchecked, also kill feed (feed_on=false).
           if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
                                             feed_pipeline_on_for_renodx(settings.enhance_renodx)) &&
               want && !dlss5_bridge_ready_for_nr()) {
-            nr_boot_retries = 120;  // retry after Present warms Bridge
+            nr_boot_retries = 120;
           }
           push_lobby_toast(want ? session_notice_nr_on() : session_notice_nr_off());
         }
         ImGui::TextDisabled(settings.enhance_renodx
-                                ? "  → NR no Present do lobby (olhe o preview; Delete liga/desliga)"
-                                : "  → preview limpo — sem Neural Rendering");
+                                ? (settings.neural_rendering ? "  → NR ON (Delete liga/desliga na captura)"
+                                                             : "  → RenoDX armado · NR off (Delete na captura)")
+                                : "  → preview limpo — sem RenoDX (Delete nao funciona ate marcar)");
         if (settings.enhance_renodx) {
           ImGui::TextDisabled(nr_runtime_on ? "  runtime NR: ON (filtros no preview)"
-                                            : "  runtime NR: OFF (aguardando Bridge…)");
+                                            : "  runtime NR: OFF (aguardando Bridge / Delete)");
         }
         ImGui::BeginDisabled(!settings.enhance_renodx);
         ImGui::TextUnformatted("Preset visual (ao vivo no preview)");

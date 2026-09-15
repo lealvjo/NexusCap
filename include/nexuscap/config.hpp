@@ -301,20 +301,20 @@ inline void apply_session_fg_to_config(bool fg_active, int fg_mult, AppConfig& c
   if (fg_mult >= 2) cfg.fg_multiplier = clamp_fg_multiplier(fg_mult);
 }
 
-// Esc → lobby: mirror Delete NR flag. If this session had RenoDX loaded, keep
-// enhance_renodx so the next Iniciar still loads the stack and Delete can turn NR back on.
-// (Old bug: clearing enhance_renodx left next session without Renodx → Delete dead.)
+// Esc → lobby: mirror Delete into neural_rendering. Always keep enhance_renodx if the
+// session had RenoDX loaded — otherwise next Iniciar has no stack and Delete is dead
+// (log: "nr toggle blocked: RenoDX not loaded this session").
 inline void apply_session_nr_to_persisted(bool nr_on, bool session_had_renodx, PersistedSettings& s) {
   s.neural_rendering = nr_on;
   if (session_had_renodx) {
     s.enhance_renodx = true;
-  } else {
-    s.enhance_renodx = nr_on;
+  } else if (nr_on) {
+    s.enhance_renodx = true;
   }
+  // else: leave enhance_renodx as the user left it in the lobby (do not force clear).
 }
 
-// Mid-session Delete: only the NR flag. Never clear EnhanceBackend::Renodx or Delete
-// cannot turn NR back on (regression: apply_session_nr_to_config used to set Off).
+// Mid-session Delete: only the NR flag. Never clear EnhanceBackend::Renodx.
 inline void apply_session_nr_runtime_to_config(bool nr_on, AppConfig& cfg) {
   cfg.neural_rendering = nr_on;
 }
@@ -323,10 +323,8 @@ inline bool session_nr_hotkey_allowed(EnhanceBackend enhance) {
   return enhance == EnhanceBackend::Renodx;
 }
 
-// Lobby checkbox display: ON only when NR is wanted (enhance + neural).
-inline bool lobby_nr_checkbox_checked(bool enhance_renodx, bool neural_rendering) {
-  return enhance_renodx && neural_rendering;
-}
+// Lobby checkbox = RenoDX stack (not NR runtime). NR on/off is Delete / status line.
+inline bool lobby_renodx_checkbox_checked(bool enhance_renodx) { return enhance_renodx; }
 
 struct SessionNotice {
   std::string text;

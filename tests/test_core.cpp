@@ -1552,16 +1552,16 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(1, 1, 3));
-  CHECK(std::string(kAppVersion) == "1.1.3");
-  CHECK(std::strstr(kAppNameWithVersion, "v1.1.3") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.3");
+  CHECK(app_version_is(1, 1, 4));
+  CHECK(std::string(kAppVersion) == "1.1.4");
+  CHECK(std::strstr(kAppNameWithVersion, "v1.1.4") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.4");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("1.1.3") != std::string::npos);
+  CHECK(lobby_t.find("1.1.4") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("1.1.3") != std::string::npos);
+  CHECK(sess_t.find("1.1.4") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -1588,28 +1588,27 @@ TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
   CHECK_FALSE(cfg.fg_auto_start);
 }
 
-TEST_CASE("Esc back to lobby reflects session Delete NR in RenoDX checkbox") {
+TEST_CASE("Esc back to lobby keeps RenoDX stack so Delete works next session") {
   PersistedSettings s = default_settings();
   s.enhance_renodx = true;
   s.neural_rendering = true;
 
-  // Delete off mid-session with Renodx loaded → NR flag off, but keep enhance for next Iniciar.
+  // Delete off mid-session → NR flag off, but enhance stays (log regression: blocked Delete).
   apply_session_nr_to_persisted(false, true, s);
   CHECK(s.enhance_renodx);
   CHECK_FALSE(s.neural_rendering);
-  CHECK_FALSE(lobby_nr_checkbox_checked(s.enhance_renodx, s.neural_rendering));
+  CHECK(lobby_renodx_checkbox_checked(s.enhance_renodx));
 
   AppConfig cfg;
   apply_persisted_to_config(s, cfg);
-  CHECK(cfg.enhance == EnhanceBackend::Renodx);  // stack still loads
+  CHECK(cfg.enhance == EnhanceBackend::Renodx);
   CHECK_FALSE(cfg.neural_rendering);
-  CHECK(session_nr_hotkey_allowed(cfg.enhance));  // Delete can turn NR back on
+  CHECK(session_nr_hotkey_allowed(cfg.enhance));
 
-  // Delete on again → checkbox back on.
   apply_session_nr_to_persisted(true, true, s);
   CHECK(s.enhance_renodx);
   CHECK(s.neural_rendering);
-  CHECK(lobby_nr_checkbox_checked(s.enhance_renodx, s.neural_rendering));
+  CHECK(lobby_renodx_checkbox_checked(s.enhance_renodx));
 
   apply_persisted_to_config(s, cfg);
   CHECK(cfg.enhance == EnhanceBackend::Renodx);
@@ -1674,11 +1673,14 @@ TEST_CASE("Esc after Delete-off does not unload Renodx for next session") {
   CHECK_FALSE(cfg.neural_rendering);
   CHECK(session_nr_hotkey_allowed(cfg.enhance));
 
-  // Explicit lobby uncheck (no Renodx session) still clears stack.
+  // Esc sync without Renodx session must NOT force-clear enhance (lobby checkbox owns that).
+  s.enhance_renodx = true;
+  s.neural_rendering = false;
   apply_session_nr_to_persisted(false, /*session_had_renodx=*/false, s);
+  CHECK(s.enhance_renodx);
   apply_persisted_to_config(s, cfg);
-  CHECK(cfg.enhance == EnhanceBackend::Off);
-  CHECK_FALSE(session_nr_hotkey_allowed(cfg.enhance));
+  CHECK(cfg.enhance == EnhanceBackend::Renodx);
+  CHECK(session_nr_hotkey_allowed(cfg.enhance));
 }
 
 TEST_CASE("Esc lobby sync keeps FG and NR independent") {
@@ -1692,7 +1694,7 @@ TEST_CASE("Esc lobby sync keeps FG and NR independent") {
   CHECK(s.fg_enabled);
   CHECK(s.enhance_renodx);
   CHECK_FALSE(s.neural_rendering);
-  CHECK_FALSE(lobby_nr_checkbox_checked(s.enhance_renodx, s.neural_rendering));
+  CHECK(lobby_renodx_checkbox_checked(s.enhance_renodx));
 
   apply_session_fg_to_persisted(false, 2, s);
   apply_session_nr_to_persisted(true, true, s);

@@ -234,9 +234,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 1.1.2
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 1.1.3
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.2
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.3
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

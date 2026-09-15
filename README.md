@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `1.1.2` (`main`) · instalador Inno em Releases |
+| **Versão** | `1.1.3` (`main`) · instalador Inno em Releases |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |

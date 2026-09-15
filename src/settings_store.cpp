@@ -324,7 +324,7 @@ bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_pres
   return any;
 }
 
-bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool enabled) {
+bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on, bool feed_on) {
   bool any = false;
   const std::string feed_path = exe_dir + "\\dlss5-feed.cfg";
   {
@@ -332,7 +332,7 @@ bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool enable
     if (in) {
       std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
       in.close();
-      text = apply_feed_enabled(std::move(text), enabled);
+      text = apply_feed_enabled(std::move(text), feed_on);
       std::ofstream out(feed_path, std::ios::trunc);
       if (out) {
         out << text;
@@ -346,7 +346,7 @@ bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool enable
     if (in) {
       std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
       in.close();
-      text = apply_reshade_neural_uplift(std::move(text), enabled);
+      text = apply_reshade_neural_uplift(std::move(text), nr_on);
       text = apply_reshade_nr_toggle_key(std::move(text), kRenodxNrInjectVk);
       std::ofstream out(reshade_path, std::ios::trunc);
       if (out) {

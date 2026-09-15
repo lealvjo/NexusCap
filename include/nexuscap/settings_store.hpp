@@ -294,7 +294,7 @@ inline bool parse_reshade_neural_uplift(const std::string& text, bool fallback =
   return parse_keyed_int(text, "NeuralUplift=", fallback ? 1 : 0) != 0;
 }
 
-// Addon NR toggle key (ReShade keycode). Delete=46 so user can leave FG on and kill NR.
+// Addon NR toggle key (ReShade keycode). Bridge injects F13; Delete calls Bridge.
 inline std::string apply_reshade_nr_toggle_key(std::string text, int vk) {
   return apply_keyed_int(std::move(text), "NRToggleKey=", vk);
 }
@@ -303,7 +303,8 @@ inline int parse_reshade_nr_toggle_key(const std::string& text, int fallback = 0
   return parse_keyed_int(text, "NRToggleKey=", fallback);
 }
 
-// dlss5-feed.cfg enabled= — feeder/NR pipeline; FG (Lossless) does not use this.
+// dlss5-feed.cfg enabled= — feeder pipeline. Must stay ON for the whole Renodx session:
+// feed does not hot-reload enabled=0→1 (Delete would only flip HUD / RenoDX flag).
 inline std::string apply_feed_enabled(std::string text, bool enabled) {
   return apply_keyed_int(std::move(text), "enabled=", enabled ? 1 : 0);
 }
@@ -311,6 +312,9 @@ inline std::string apply_feed_enabled(std::string text, bool enabled) {
 inline bool parse_feed_enabled(const std::string& text, bool fallback = true) {
   return parse_keyed_int(text, "enabled=", fallback ? 1 : 0) != 0;
 }
+
+// Pure: when Renodx stack is loaded, feed stays on even if NR is off.
+inline bool feed_pipeline_on_for_renodx(bool renodx_loaded) { return renodx_loaded; }
 
 // Lobby live preview: old max_w=640 looked soft; 2560 forced full 1440p CPU
 // NV12→RGBA every frame and pinned the lobby ~30 fps (Present vsync + decode).
@@ -378,7 +382,7 @@ bool sync_feed_work_resolution_file(const std::string& path, int scale_percent);
 bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset);
 
 // Persist Neural Rendering on/off (independent of Frame Gen). Updates feed+ReShade.
-bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool enabled);
+bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on, bool feed_on);
 
 // Pure helpers for unit tests (serialize to string).
 std::string serialize_settings_ini(const PersistedSettings& s);

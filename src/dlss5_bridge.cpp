@@ -72,13 +72,13 @@ bool dlss5_bridge_pulse_nr() {
   return api().submit(&cmd) != 0;
 }
 
-bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on) {
+bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on, bool feed_on) {
   if (!runtime_on) return false;
   const NeuralRuntimePlan plan = plan_neural_runtime(want_on, *runtime_on);
-  const bool files_ok = sync_neural_rendering_enabled_files(exe_dir, plan.sync_files_enabled);
+  // Default feed_on=true: mid-session enabled=0→1 is ignored by dlss5-feed (no visual NR).
+  const bool files_ok = sync_neural_rendering_enabled_files(exe_dir, plan.sync_files_enabled, feed_on);
   if (plan.need_bridge_pulse) {
     if (!dlss5_bridge_available()) {
-      // Files updated; runtime pulse deferred until Bridge loads (caller may retry).
       return files_ok;
     }
     if (!dlss5_bridge_pulse_nr()) return false;

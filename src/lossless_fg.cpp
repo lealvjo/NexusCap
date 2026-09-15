@@ -507,15 +507,22 @@ bool LosslessFgController::toggle(HWND target, std::string& err) {
     err = "not configured";
     return false;
   }
+  // Lobby may leave FG unchecked (multiplier still preferred ≥2). If somehow ≤1, arm x2 for enable.
   if (state_.multiplier <= 1) {
-    state_.status = FgStatus::Off;
-    state_.active = false;
-    err = "fg-x is 1 (off); use PageUp or --fg-x 2+";
-    return false;
+    state_.multiplier = 2;
   }
 
   const bool turning_on = !state_.active;
   if (turning_on) {
+    if (state_.exe_path.empty()) {
+      state_.exe_path = resolve_lossless_exe({});
+    }
+    if (state_.exe_path.empty()) {
+      err = "LosslessScaling.exe missing";
+      state_.status = FgStatus::Missing;
+      state_.last_error = err;
+      return false;
+    }
     if (!ensure_process(err)) return false;
     if (!focus_window(target)) {
       err = "failed to focus NexusCap window";

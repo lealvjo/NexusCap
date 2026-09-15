@@ -672,7 +672,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       sync_feed_work_resolution_file(feed_cfg.string(), feed_work_resolution_for_lobby());
     }
     const bool want_nr = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-    sync_neural_rendering_enabled_files(exe_dir.string(), want_nr);
+    sync_neural_rendering_enabled_files(exe_dir.string(), want_nr,
+                                        feed_pipeline_on_for_renodx(settings.enhance_renodx));
     nr_boot_retries = want_nr ? 180 : 0;
   }
 
@@ -684,8 +685,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
     return false;
   }
-  g_hwnd = CreateWindowW(wc.lpszClassName, L"Nexus Cap v1.1.2 — Console de captura", WS_OVERLAPPEDWINDOW, 0, 0, 1280, 720,
-                         nullptr, nullptr, wc.hInstance, nullptr);
+  const std::wstring lobby_title = utf8_path_to_wide(app_window_title_lobby());
+  g_hwnd = CreateWindowW(wc.lpszClassName, lobby_title.c_str(), WS_OVERLAPPEDWINDOW, 0, 0, 1280, 720, nullptr,
+                         nullptr, wc.hInstance, nullptr);
   if (!g_hwnd || !create_device(g_hwnd)) {
     cleanup_device();
     return false;
@@ -1096,7 +1098,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::SameLine();
     char lat[64];
     std::snprintf(lat, sizeof(lat), "FG %s", settings.fg_enabled ? "ON" : "off");
-    metric_card(lat, settings.fg_enabled ? "Frame Gen pronto" : "Frame Gen");
+    metric_card(lat, settings.fg_enabled ? "Frame Gen ON" : "Frame Gen off");
     ImGui::Spacing();
     ImGui::TextDisabled("Preview centrado (barras pretas L/R); HUD na borda esquerda.");
     ImGui::TextWrapped(
@@ -1197,7 +1199,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::RadioButton("x4", &settings.fg_multiplier, 4);
         ImGui::EndDisabled();
         if (settings.fg_enabled && !fg_was) {
-          push_lobby_toast(session_notice_fg_on());
+          const std::string resolved = resolve_lossless_exe(settings.fg_path);
+          if (resolved.empty()) {
+            settings.fg_enabled = false;
+            push_lobby_toast(session_notice_fg_missing());
+          } else {
+            push_lobby_toast(session_notice_fg_on());
+          }
         } else if (settings.fg_enabled && session_notice_for_fg_cycle(fg_mult_was, settings.fg_multiplier)) {
           push_lobby_toast(session_notice_fg_multiplier_up(settings.fg_multiplier));
         }
@@ -1239,15 +1247,19 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                             pct_pix, kMinScalePercent);
 
         ImGui::Separator();
-        if (ImGui::Checkbox("RenoDX / Neural Rendering (preview ao vivo)", &settings.enhance_renodx)) {
-          settings.neural_rendering = settings.enhance_renodx;
+        bool nr_check = lobby_nr_checkbox_checked(settings.enhance_renodx, settings.neural_rendering);
+        if (ImGui::Checkbox("RenoDX / Neural Rendering (preview ao vivo)", &nr_check)) {
+          settings.enhance_renodx = nr_check;
+          settings.neural_rendering = nr_check;
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           // Disk alone does not flip RenoDX runtime — Bridge pulse required.
-          if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on) && want &&
-              !dlss5_bridge_ready_for_nr()) {
+          // When Renodx unchecked, also kill feed (feed_on=false).
+          if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
+                                            feed_pipeline_on_for_renodx(settings.enhance_renodx)) &&
+              want && !dlss5_bridge_ready_for_nr()) {
             nr_boot_retries = 120;  // retry after Present warms Bridge
           }
           push_lobby_toast(want ? session_notice_nr_on() : session_notice_nr_off());
@@ -1327,7 +1339,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset);
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-          apply_neural_rendering_state(exe_dir, want, &nr_runtime_on);
+          apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
+                                       feed_pipeline_on_for_renodx(settings.enhance_renodx));
         };
         if (ImGui::Button("Salvar", ImVec2(120, 0))) {
           persist_gear();

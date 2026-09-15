@@ -646,13 +646,12 @@ void MetricsHud::paint(HDC hdc) const {
     int n = 0;
     swprintf(lines[n++], 180, L"NexusCap  [%s]", mode);
     swprintf(lines[n++], 180, L"%dx%d @ %.0f", o.capture_w, o.capture_h, o.target_fps);
-    if (o.fg_on && o.fg_multiplier >= 2) {
-      swprintf(lines[n++], 180, L"FPS  %.1f | %.1f  cap|FG x%d", o.fps_smooth, o.fps_fg_est, o.fg_multiplier);
-    } else if (o.fg_multiplier >= 2) {
-      swprintf(lines[n++], 180, L"FPS  %.1f   FG x%d pronto", o.fps_smooth > 0 ? o.fps_smooth : o.fps,
-               o.fg_multiplier);
-    } else {
-      swprintf(lines[n++], 180, L"FPS  %.1f", o.fps_smooth > 0 ? o.fps_smooth : o.fps);
+    {
+      char fps_line[128]{};
+      const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
+      format_session_hud_fps_line(fps_line, sizeof(fps_line), show_fps, o.fps_fg_est, o.fg_on, o.fg_multiplier,
+                                  true);
+      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
     }
     swprintf(lines[n++], 180, L"frametime  %.2f ms   present %.2f", o.frame_ms, o.present_ms);
     swprintf(lines[n++], 180, L"%s  Present(%u)", o.sync_image ? L"SYNC VSYNC" : L"SYNC TEAR",
@@ -705,10 +704,11 @@ void MetricsHud::paint(HDC hdc) const {
              o.capture_h, o.target_fps, o.work_w, o.work_h, o.output_w, o.output_h);
   }
   swprintf(lines[3], 180, L"FPS     %.1f  (smooth %.1f)", o.fps, o.fps_smooth);
-  if (o.fg_on && o.fg_multiplier >= 2) {
-    swprintf(lines[3], 180, L"FPS     %.1f | %.1f   cap|FG x%d", o.fps_smooth, o.fps_fg_est, o.fg_multiplier);
-  } else if (o.fg_multiplier >= 2) {
-    swprintf(lines[3], 180, L"FPS     %.1f   FG x%d pronto (PageDn)", o.fps_smooth, o.fg_multiplier);
+  {
+    char fps_line[128]{};
+    format_session_hud_fps_line(fps_line, sizeof(fps_line), o.fps_smooth, o.fps_fg_est, o.fg_on, o.fg_multiplier,
+                                false);
+    swprintf(lines[3], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
   }
   swprintf(lines[4], 180, L"frametime  %.2f ms   avg %.2f  p95 %.2f  max %.2f  %s", o.frame_ms, o.ft_avg_ms,
            o.ft_p95_ms, o.ft_max_ms, o.ft_stable ? L"STABLE" : L"UNSTABLE");
@@ -723,14 +723,12 @@ void MetricsHud::paint(HDC hdc) const {
              utf8_to_wide_hud(o.dlss_mode).c_str(), o.dlss_ms, utf8_to_wide_hud(o.dlss_backend).c_str(),
              utf8_to_wide_hud(o.dlss_status).c_str());
   }
-  if (o.fg_on && o.fg_multiplier >= 2) {
-    swprintf(lines[7], 180, L"FG      ON   x%d  %s  flow%d  %s  |  %.0f->%.0f", o.fg_multiplier,
-             utf8_to_wide_hud(o.fg_backend).c_str(), o.fg_flow_scale, utf8_to_wide_hud(o.fg_capture_api).c_str(),
-             o.fps_smooth, o.fps_fg_est);
-  } else {
-    swprintf(lines[7], 180, L"FG      %s  x%d  %s  flow%d  %s  [%s]", o.fg_on ? L"ON" : L"off", o.fg_multiplier,
-             utf8_to_wide_hud(o.fg_backend).c_str(), o.fg_flow_scale, utf8_to_wide_hud(o.fg_capture_api).c_str(),
-             utf8_to_wide_hud(o.fg_status).c_str());
+  {
+    char fg_line[160]{};
+    format_session_hud_fg_status_line(fg_line, sizeof(fg_line), o.fg_on, o.fg_multiplier, o.fg_backend.c_str(),
+                                      o.fg_flow_scale, o.fg_capture_api.c_str(), o.fg_status.c_str(), o.fps_smooth,
+                                      o.fps_fg_est);
+    swprintf(lines[7], 180, L"%s", utf8_to_wide_hud(fg_line).c_str());
   }
 
   int idx = 8;

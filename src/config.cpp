@@ -112,11 +112,9 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.hide_panel_on_capture = s.ui.hide_panel_on_capture;
   cfg.sync_image = s.ui.sync_image;
   cfg.hotkeys = s.hotkeys;
-  if (s.fg_enabled) {
-    cfg.fg_multiplier = s.fg_multiplier >= 2 ? s.fg_multiplier : 2;
-  } else {
-    cfg.fg_multiplier = 1;
-  }
+  // Keep preferred x2/x3/x4 armed even when checkbox is off (PageDn can enable).
+  cfg.fg_multiplier = armed_fg_multiplier(s.fg_enabled, s.fg_multiplier);
+  cfg.fg_auto_start = s.fg_enabled;
   cfg.fg_path = s.fg_path;
   if (s.enhance_renodx) {
     cfg.enhance = EnhanceBackend::Renodx;

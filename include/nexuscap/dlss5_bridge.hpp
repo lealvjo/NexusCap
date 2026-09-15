@@ -137,9 +137,10 @@ bool dlss5_bridge_ready_for_nr();
 bool dlss5_bridge_pulse_nr();
 bool dlss5_bridge_query(Dlss5BridgeStatus& out);
 
-// Apply want_on: sync feed/ReShade files + Bridge pulse if runtime differs.
-// Updates *runtime_on in/out. Returns true if files synced and (pulse ok or not needed).
-bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on);
+// Apply want_on: sync NeuralUplift + Bridge pulse if runtime differs.
+// feed_on: keep true for Renodx sessions (Delete); false when unloading Renodx entirely.
+bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on,
+                                  bool feed_on = true);
 
 // Lobby live preview: sync visual preset + apply NR (reload cycle when already ON).
 bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,

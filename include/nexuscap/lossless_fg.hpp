@@ -73,21 +73,82 @@ inline int next_fg_multiplier(int m) {
 
 inline bool fg_wants_process(int multiplier) { return clamp_fg_multiplier(multiplier) >= 2; }
 
-// Lobby HUD must NOT show "60 | 120" as if FG were already running — only "armado".
+// Lobby HUD: checkbox on = "off" until session PageDn (never imply running dual FPS).
 inline void format_lobby_hud_fps_line(char* out, size_t out_n, double fps, bool fg_enabled, int fg_mult) {
   if (!out || out_n == 0) return;
   const int m = clamp_fg_multiplier(fg_mult);
   if (fg_enabled && m >= 2) {
-    std::snprintf(out, out_n, "FPS  %.0f   FG x%d armado", fps, m);
+    std::snprintf(out, out_n, "FPS  %.0f   FG x%d off", fps, m);
   } else {
     std::snprintf(out, out_n, "FPS  %.0f", fps);
   }
 }
 
+// Session stats when FG is ON: real capture FPS | estimated FG output FPS.
+inline void format_session_hud_fps_line(char* out, size_t out_n, double fps_cap, double fps_fg_est, bool fg_on,
+                                       int fg_mult, bool compact) {
+  if (!out || out_n == 0) return;
+  const int m = clamp_fg_multiplier(fg_mult);
+  if (fg_on && m >= 2) {
+    const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap * static_cast<double>(m));
+    if (compact) {
+      std::snprintf(out, out_n, "FPS  %.1f | %.1f  cap|FG x%d ON", fps_cap, fg, m);
+    } else {
+      std::snprintf(out, out_n, "FPS     %.1f | %.1f   cap|FG x%d ON", fps_cap, fg, m);
+    }
+  } else if (m >= 2) {
+    // Prefer "off" over "pronto" — pronto looked like FG was already running.
+    if (compact) {
+      std::snprintf(out, out_n, "FPS  %.1f   FG x%d off", fps_cap, m);
+    } else {
+      std::snprintf(out, out_n, "FPS     %.1f   FG x%d off (PageDn)", fps_cap, m);
+    }
+  } else {
+    if (compact) {
+      std::snprintf(out, out_n, "FPS  %.1f", fps_cap);
+    } else {
+      std::snprintf(out, out_n, "FPS     %.1f", fps_cap);
+    }
+  }
+}
+
+inline void format_session_hud_fg_status_line(char* out, size_t out_n, bool fg_on, int fg_mult,
+                                             const char* backend, int flow_scale, const char* capture_api,
+                                             const char* status, double fps_cap = 0, double fps_fg_est = 0) {
+  if (!out || out_n == 0) return;
+  const int m = clamp_fg_multiplier(fg_mult);
+  const char* be = backend && backend[0] ? backend : "lsfg3";
+  const char* api = capture_api && capture_api[0] ? capture_api : "WGC";
+  const char* st = status && status[0] ? status : (fg_on ? "On" : "Ready");
+  if (fg_on && m >= 2) {
+    const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap > 0 ? fps_cap * static_cast<double>(m) : 0);
+    if (fps_cap > 0 && fg > 0) {
+      std::snprintf(out, out_n, "FG      ON   x%d  %s  flow%d  %s  |  %.0f->%.0f", m, be, flow_scale, api,
+                    fps_cap, fg);
+    } else {
+      std::snprintf(out, out_n, "FG      ON   x%d  %s  flow%d  %s", m, be, flow_scale, api);
+    }
+  } else {
+    std::snprintf(out, out_n, "FG      %s  x%d  %s  flow%d  %s  [%s]", fg_on ? "ON" : "off", m, be,
+                  flow_scale, api, st);
+  }
+}
+
+// True when session FPS line shows real|FG (required while FG runtime is ON).
+inline bool session_hud_fps_shows_cap_fg_split(const char* line) {
+  if (!line) return false;
+  return std::strstr(line, " | ") != nullptr && std::strstr(line, "cap|FG") != nullptr;
+}
+
+// Lobby must not imply active FG with a dual estimate.
 inline bool lobby_fps_line_implies_active_fg(const char* line) {
   if (!line) return false;
-  // Old misleading "60 | 120" estimate, or explicit FG ON runtime.
   return std::strstr(line, " | ") != nullptr;
+}
+
+// Preferred FG multiplier stays armed (≥2) even when lobby checkbox is off so PageDn works.
+inline int armed_fg_multiplier(bool /*fg_enabled*/, int fg_mult) {
+  return clamp_fg_multiplier(fg_mult >= 2 ? fg_mult : 2);
 }
 
 // Pure helpers (unit-tested): mira-lock profile fragments.

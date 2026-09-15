@@ -461,21 +461,79 @@ TEST_CASE("lobby HUD FPS never shows fake dual when FG only armed") {
   CHECK(std::strstr(line, "60") != nullptr);
 
   format_lobby_hud_fps_line(line, sizeof(line), 60.0, true, 2);
-  CHECK_FALSE(lobby_fps_line_implies_active_fg(line));  // armado, not "60 | 120"
-  CHECK(std::strstr(line, "armado") != nullptr);
+  CHECK_FALSE(lobby_fps_line_implies_active_fg(line));  // off, not "60 | 120"
+  CHECK(std::strstr(line, "off") != nullptr);
   CHECK(std::strstr(line, "x2") != nullptr);
   CHECK(std::strstr(line, " | ") == nullptr);
+  CHECK(std::strstr(line, "pronto") == nullptr);
+  CHECK(std::strstr(line, "armado") == nullptr);
 
   format_lobby_hud_fps_line(line, sizeof(line), 60.0, true, 1);
-  CHECK(std::strstr(line, "armado") == nullptr);
+  CHECK(std::strstr(line, "off") == nullptr);
 
   PersistedSettings s = default_settings();
   s.ui.show_fps = true;
   s.fg_enabled = true;
   s.fg_multiplier = 2;
   auto hud = make_lobby_hud_preview_lines(s, 60.0);
-  CHECK(lobby_hud_contains(hud, "armado"));
+  CHECK(lobby_hud_contains(hud, "off"));
   CHECK_FALSE(lobby_hud_contains(hud, " | "));
+}
+
+TEST_CASE("session HUD shows real|FG dual FPS when FG on") {
+  char line[128]{};
+  format_session_hud_fps_line(line, sizeof(line), 60.0, 120.0, true, 2, true);
+  CHECK(session_hud_fps_shows_cap_fg_split(line));
+  CHECK(std::strstr(line, "60.0") != nullptr);
+  CHECK(std::strstr(line, "120.0") != nullptr);
+  CHECK(std::strstr(line, "cap|FG") != nullptr);
+  CHECK(std::strstr(line, "x2") != nullptr);
+  CHECK(std::strstr(line, "ON") != nullptr);
+
+  format_session_hud_fps_line(line, sizeof(line), 60.0, 180.0, true, 3, false);
+  CHECK(session_hud_fps_shows_cap_fg_split(line));
+  CHECK(std::strstr(line, "180.0") != nullptr);
+  CHECK(std::strstr(line, "x3") != nullptr);
+
+  // FG only armed (not active): single FPS + off (not "pronto").
+  format_session_hud_fps_line(line, sizeof(line), 60.0, 0.0, false, 2, true);
+  CHECK_FALSE(session_hud_fps_shows_cap_fg_split(line));
+  CHECK(std::strstr(line, "off") != nullptr);
+  CHECK(std::strstr(line, "pronto") == nullptr);
+  CHECK(std::strstr(line, "ON") == nullptr);
+
+  char fg[160]{};
+  format_session_hud_fg_status_line(fg, sizeof(fg), true, 2, "lsfg3", 100, "WGC", "On", 60.0, 120.0);
+  CHECK(std::strstr(fg, "60") != nullptr);
+  CHECK(std::strstr(fg, "120") != nullptr);
+  CHECK(std::strstr(fg, "->") != nullptr);
+}
+
+TEST_CASE("default FG off but multiplier stays armed for PageDn") {
+  CHECK_FALSE(default_settings().fg_enabled);
+  CHECK(default_settings().fg_multiplier == 2);
+
+  PersistedSettings s = default_settings();
+  s.fg_enabled = false;
+  s.fg_multiplier = 3;
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK_FALSE(cfg.fg_auto_start);
+  CHECK(cfg.fg_multiplier == 3);
+  CHECK(armed_fg_multiplier(false, 1) == 2);
+  CHECK(armed_fg_multiplier(false, 4) == 4);
+
+  s.fg_enabled = true;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.fg_auto_start);
+  CHECK(cfg.fg_multiplier == 3);
+}
+
+TEST_CASE("session_notice_fg_missing warns without Lossless") {
+  const std::string msg = session_notice_fg_missing();
+  CHECK(msg.find("Lossless Scaling") != std::string::npos);
+  CHECK(msg.find("Pasta") != std::string::npos);
+  CHECK(resolve_lossless_exe("C:\\definitely\\missing\\LosslessScaling.exe").empty());
 }
 
 TEST_CASE("mira settings xml never writes Flow 70") {
@@ -913,14 +971,16 @@ TEST_CASE("apply_persisted_to_config maps Sessao + engrenagem") {
   CHECK(cfg.hide_panel_on_capture);
   CHECK(cfg.sync_image);
   CHECK(cfg.fg_multiplier == 4);
+  CHECK(cfg.fg_auto_start);
   CHECK(cfg.enhance == EnhanceBackend::Renodx);
   CHECK_FALSE(cfg.dlss);
   CHECK(cfg.hotkeys.vk_fg_toggle == 0x22);
 
-  // FG off in gear → multiplier 1
+  // FG off in gear → multiplier stays armed for PageDn; auto-start off
   s.fg_enabled = false;
   apply_persisted_to_config(s, cfg);
-  CHECK(cfg.fg_multiplier == 1);
+  CHECK(cfg.fg_multiplier == 4);
+  CHECK_FALSE(cfg.fg_auto_start);
 
   // RenoDX off clears Renodx backend
   s.enhance_renodx = false;
@@ -1266,7 +1326,8 @@ TEST_CASE("full gear contract: CFG fields reach session + preview HUD + RenoDX f
 
   loaded.fg_enabled = false;
   apply_persisted_to_config(loaded, cfg);
-  CHECK(cfg.fg_multiplier == 1);
+  CHECK(cfg.fg_multiplier == 4);
+  CHECK_FALSE(cfg.fg_auto_start);
 
   loaded.enhance_renodx = false;
   apply_persisted_to_config(loaded, cfg);
@@ -1491,10 +1552,153 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(1, 1, 2));
-  CHECK(std::string(kAppVersion) == "1.1.2");
-  CHECK(std::strstr(kAppNameWithVersion, "v1.1.2") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.2");
+  CHECK(app_version_is(1, 1, 3));
+  CHECK(std::string(kAppVersion) == "1.1.3");
+  CHECK(std::strstr(kAppNameWithVersion, "v1.1.3") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.3");
+  const std::string lobby_t = app_window_title_lobby();
+  const std::string sess_t = app_window_title_session();
+  CHECK(lobby_t.find("1.1.3") != std::string::npos);
+  CHECK(lobby_t.find("Console de captura") != std::string::npos);
+  CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
+  CHECK(sess_t.find("1.1.3") != std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
+}
+
+TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
+  PersistedSettings s = default_settings();
+  CHECK_FALSE(s.fg_enabled);
+  s.fg_multiplier = 2;
+
+  // Entered with FG off; PageDn enabled x3 mid-session.
+  apply_session_fg_to_persisted(true, 3, s);
+  CHECK(s.fg_enabled);
+  CHECK(s.fg_multiplier == 3);
+
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.fg_auto_start);
+  CHECK(cfg.fg_multiplier == 3);
+
+  // PageDn off again → checkbox clears.
+  apply_session_fg_to_persisted(false, 3, s);
+  apply_session_fg_to_config(false, 3, cfg);
+  CHECK_FALSE(s.fg_enabled);
+  CHECK(s.fg_multiplier == 3);  // preferred xN kept
+  CHECK_FALSE(cfg.fg_auto_start);
+}
+
+TEST_CASE("Esc back to lobby reflects session Delete NR in RenoDX checkbox") {
+  PersistedSettings s = default_settings();
+  s.enhance_renodx = true;
+  s.neural_rendering = true;
+
+  // Delete off mid-session with Renodx loaded → NR flag off, but keep enhance for next Iniciar.
+  apply_session_nr_to_persisted(false, true, s);
+  CHECK(s.enhance_renodx);
+  CHECK_FALSE(s.neural_rendering);
+  CHECK_FALSE(lobby_nr_checkbox_checked(s.enhance_renodx, s.neural_rendering));
+
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.enhance == EnhanceBackend::Renodx);  // stack still loads
+  CHECK_FALSE(cfg.neural_rendering);
+  CHECK(session_nr_hotkey_allowed(cfg.enhance));  // Delete can turn NR back on
+
+  // Delete on again → checkbox back on.
+  apply_session_nr_to_persisted(true, true, s);
+  CHECK(s.enhance_renodx);
+  CHECK(s.neural_rendering);
+  CHECK(lobby_nr_checkbox_checked(s.enhance_renodx, s.neural_rendering));
+
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.enhance == EnhanceBackend::Renodx);
+  CHECK(cfg.neural_rendering);
+}
+
+TEST_CASE("Delete NR needs feed pipeline ON (else HUD-only, no image change)") {
+  // Log regression: session started with feed enabled=0; Delete pulsed RenoDX (ReShade
+  // "NR toggled ON") but dlss5-feed stayed dead → stats ON/OFF with no visual change.
+  CHECK(feed_pipeline_on_for_renodx(true));
+  CHECK_FALSE(feed_pipeline_on_for_renodx(false));
+
+  std::string feed = "enabled=0\nmode=2\n";
+  std::string reshade = "NeuralUplift=0\nNRToggleKey=46\n";
+  // Renodx loaded, NR off: feed must stay armed.
+  feed = apply_feed_enabled(std::move(feed), feed_pipeline_on_for_renodx(true));
+  reshade = apply_reshade_neural_uplift(std::move(reshade), false);
+  CHECK(parse_feed_enabled(feed, false));
+  CHECK_FALSE(parse_reshade_neural_uplift(reshade, true));
+
+  // Delete ON: NeuralUplift flips; feed stays on.
+  reshade = apply_reshade_neural_uplift(std::move(reshade), true);
+  CHECK(parse_feed_enabled(feed, false));
+  CHECK(parse_reshade_neural_uplift(reshade, false));
+
+  // Unload Renodx: both off.
+  feed = apply_feed_enabled(std::move(feed), feed_pipeline_on_for_renodx(false));
+  reshade = apply_reshade_neural_uplift(std::move(reshade), false);
+  CHECK_FALSE(parse_feed_enabled(feed, true));
+  CHECK_FALSE(parse_reshade_neural_uplift(reshade, true));
+}
+
+TEST_CASE("Delete NR off keeps Renodx backend so Delete can turn back on") {
+  AppConfig cfg;
+  cfg.enhance = EnhanceBackend::Renodx;
+  cfg.neural_rendering = true;
+  CHECK(session_nr_hotkey_allowed(cfg.enhance));
+
+  // Delete → off: flag clears, backend MUST stay Renodx (old bug blocked re-enable).
+  apply_session_nr_runtime_to_config(false, cfg);
+  CHECK_FALSE(cfg.neural_rendering);
+  CHECK(cfg.enhance == EnhanceBackend::Renodx);
+  CHECK(session_nr_hotkey_allowed(cfg.enhance));
+
+  apply_session_nr_runtime_to_config(true, cfg);
+  CHECK(cfg.neural_rendering);
+  CHECK(cfg.enhance == EnhanceBackend::Renodx);
+
+  // Without Renodx backend, hotkey is blocked (lobby checkbox off).
+  cfg.enhance = EnhanceBackend::Off;
+  CHECK_FALSE(session_nr_hotkey_allowed(cfg.enhance));
+}
+
+TEST_CASE("Esc after Delete-off does not unload Renodx for next session") {
+  PersistedSettings s = default_settings();
+  s.enhance_renodx = true;
+  s.neural_rendering = true;
+  apply_session_nr_to_persisted(false, /*session_had_renodx=*/true, s);
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.enhance == EnhanceBackend::Renodx);
+  CHECK_FALSE(cfg.neural_rendering);
+  CHECK(session_nr_hotkey_allowed(cfg.enhance));
+
+  // Explicit lobby uncheck (no Renodx session) still clears stack.
+  apply_session_nr_to_persisted(false, /*session_had_renodx=*/false, s);
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.enhance == EnhanceBackend::Off);
+  CHECK_FALSE(session_nr_hotkey_allowed(cfg.enhance));
+}
+
+TEST_CASE("Esc lobby sync keeps FG and NR independent") {
+  PersistedSettings s = default_settings();
+  s.fg_enabled = false;
+  s.enhance_renodx = true;
+  s.neural_rendering = true;
+
+  apply_session_fg_to_persisted(true, 2, s);           // PageDn on
+  apply_session_nr_to_persisted(false, true, s);        // Delete off (kept enhance)
+  CHECK(s.fg_enabled);
+  CHECK(s.enhance_renodx);
+  CHECK_FALSE(s.neural_rendering);
+  CHECK_FALSE(lobby_nr_checkbox_checked(s.enhance_renodx, s.neural_rendering));
+
+  apply_session_fg_to_persisted(false, 2, s);
+  apply_session_nr_to_persisted(true, true, s);
+  CHECK_FALSE(s.fg_enabled);
+  CHECK(s.enhance_renodx);
+  CHECK(s.neural_rendering);
 }
 
 TEST_CASE("renodx runtime dirs prefer writable AppData cache") {

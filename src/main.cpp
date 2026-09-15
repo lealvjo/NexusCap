@@ -182,12 +182,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
     }
 
-    // Always sync files; Bridge pulse happens after Present when nr_ready (see loop).
-    if (sync_neural_rendering_enabled_files(exe_dir.string(), want_nr)) {
-      append_log(cfg.log_dir, std::string("neural rendering files ") + (want_nr ? "ON" : "OFF") +
-                                  " (runtime pulse pending=" + std::to_string(g_nr_boot_retries > 0) + ")");
-      std::printf("neural rendering files: %s (runtime starts OFF; Bridge will pulse)\n",
-                  want_nr ? "ON" : "OFF");
+    // Renodx session: keep feed pipeline ON even when NR starts off so Delete can show NR.
+    // (dlss5-feed ignores enabled=0→1 mid-session — HUD would flip with no image change.)
+    if (cfg.enhance == EnhanceBackend::Renodx) {
+      if (sync_neural_rendering_enabled_files(exe_dir.string(), want_nr, /*feed_on=*/true)) {
+        append_log(cfg.log_dir, std::string("neural rendering files NR=") + (want_nr ? "ON" : "OFF") +
+                                    " feed=ON (runtime pulse pending=" +
+                                    std::to_string(g_nr_boot_retries > 0) + ")");
+        std::printf("neural rendering: NR=%s feed=ON (runtime starts OFF; Bridge will pulse)\n",
+                    want_nr ? "ON" : "OFF");
+      }
+    } else if (sync_neural_rendering_enabled_files(exe_dir.string(), false, false)) {
+      append_log(cfg.log_dir, "neural rendering files OFF (runtime pulse pending=0)");
+      std::printf("neural rendering files: OFF\n");
     }
   }
 
@@ -196,7 +203,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   g_session_signal_w = cap_w;
   g_session_signal_h = cap_h;
   g_session_fullscreen = cfg.exclusive_fullscreen && !cfg.smoke;
-  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, L"Nexus Cap v1.1.2");
+  const std::wstring session_title = [&]() {
+    const std::string t = nexuscap::app_window_title_session();
+    int n = MultiByteToWideChar(CP_UTF8, 0, t.c_str(), -1, nullptr, 0);
+    if (n <= 0) return std::wstring(L"Nexus Cap");
+    std::wstring w(static_cast<size_t>(n), 0);
+    MultiByteToWideChar(CP_UTF8, 0, t.c_str(), -1, w.data(), n);
+    if (!w.empty() && w.back() == 0) w.pop_back();
+    return w;
+  }();
+  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, session_title.c_str());
   if (!hwnd) {
     std::fprintf(stderr, "create window failed\n");
     return 1;
@@ -413,8 +429,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.hw_info = cfg.hw_info;
   g_overlay = cfg.show_overlay;
   SessionNotice session_notice;
-  // Soft tip on enter when FG is armed in CFG (Page Down still toggles runtime).
-  if (cfg.fg_multiplier >= 2) {
+  // Soft tip on enter only when CFG asked to start with FG on.
+  if (cfg.fg_auto_start && cfg.fg_multiplier >= 2) {
     session_notice.push(session_notice_fg_on(), clock.now_ms());
   } else if ((cfg.enhance == EnhanceBackend::Renodx) && cfg.neural_rendering) {
     session_notice.push(session_notice_nr_on(), clock.now_ms());
@@ -508,14 +524,18 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   double last_dlss_ms = 0;
   bool analyze_was = false;
 
-  // Gear FG on → liga na abertura (não só perfil pronto).
-  if (cfg.fg_multiplier >= 2) {
+  // Gear FG on → liga na abertura (não só perfil pronto). Off = PageDn habilita.
+  if (cfg.fg_auto_start && cfg.fg_multiplier >= 2) {
     std::string ferr;
     if (fg.toggle(hwnd, ferr)) {
       std::printf("fg auto-on x%d\n", fg.state().multiplier);
       append_log(cfg.log_dir, "fg auto-on x" + std::to_string(fg.state().multiplier));
     } else {
       std::fprintf(stderr, "fg auto-on: %s\n", ferr.c_str());
+      append_log(cfg.log_dir, "fg auto-on fail: " + ferr);
+      if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
+        session_notice.push(session_notice_fg_missing(), clock.now_ms());
+      }
     }
     info.fg_enabled = fg.state().active;
     info.fg_multiplier = fg.state().multiplier;
@@ -562,8 +582,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
 
     if (g_toggle_nr.exchange(false)) {
-      if (cfg.enhance != EnhanceBackend::Renodx) {
+      if (!session_nr_hotkey_allowed(cfg.enhance)) {
         std::printf("nr toggle: RenoDX off — marque RenoDX no lobby (FG continua independente)\n");
+        append_log(cfg.log_dir, "nr toggle blocked: RenoDX not loaded this session");
+        session_notice.push(session_notice_nr_off(), clock.now_ms());
       } else {
         wchar_t exe_path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
@@ -572,7 +594,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         // Pulse via Bridge (F13 inject) — do NOT also let RenoDX hear Delete.
         if (apply_neural_rendering_state(exe_dir.string(), plan.resulting_runtime_on, &g_nr_runtime_on)) {
           overlay.renodx_on = g_nr_runtime_on;
-          cfg.neural_rendering = g_nr_runtime_on;
+          apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
           info.dlss_enabled = g_nr_runtime_on;
           append_log(cfg.log_dir, std::string("neural rendering ") + (g_nr_runtime_on ? "ON" : "OFF"));
           std::printf("neural rendering %s (Delete→Bridge) — Frame Gen nao muda\n",
@@ -626,7 +648,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (!fg.toggle(hwnd, ferr)) {
         std::printf("fg toggle: %s\n", ferr.c_str());
         append_log(cfg.log_dir, "fg toggle fail: " + ferr);
+        if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
+          session_notice.push(session_notice_fg_missing(), clock.now_ms());
+        }
       } else {
+        apply_session_fg_to_config(fg.state().active, fg.state().multiplier, cfg);
         std::printf("fg %s x%d\n", fg.state().active ? "ON" : "off", fg.state().multiplier);
         append_log(cfg.log_dir, std::string("fg ") + (fg.state().active ? "ON" : "off") + " x" +
                                     std::to_string(fg.state().multiplier));
@@ -644,7 +670,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (!fg.cycle_multiplier(hwnd, ferr)) {
         std::printf("fg cycle: %s\n", ferr.c_str());
       } else {
-        cfg.fg_multiplier = fg.state().multiplier;
+        apply_session_fg_to_config(fg.state().active, fg.state().multiplier, cfg);
         std::printf("fg multiplier x%d (%s)\n", fg.state().multiplier, fg_status_name(fg.state().status));
         append_log(cfg.log_dir, "fg cycle x" + std::to_string(fg.state().multiplier));
         if (session_notice_for_fg_cycle(prev_mult, fg.state().multiplier)) {
@@ -950,8 +976,13 @@ int main(int argc, char** argv) {
     cfg.hide_panel_on_capture = settings.ui.hide_panel_on_capture;
     cfg.sync_image = settings.ui.sync_image;
     cfg.exclusive_fullscreen = settings.ui.fullscreen;
-    if (settings.fg_enabled) cfg.fg_multiplier = settings.fg_multiplier;
-    else cfg.fg_multiplier = 1;
+    if (settings.fg_enabled) {
+      cfg.fg_multiplier = nexuscap::armed_fg_multiplier(true, settings.fg_multiplier);
+      cfg.fg_auto_start = true;
+    } else {
+      cfg.fg_multiplier = nexuscap::armed_fg_multiplier(false, settings.fg_multiplier);
+      cfg.fg_auto_start = false;
+    }
     if (cfg.fg_path.empty()) cfg.fg_path = settings.fg_path;
     if (settings.enhance_renodx) {
       cfg.enhance = nexuscap::EnhanceBackend::Renodx;
@@ -981,9 +1012,15 @@ int main(int argc, char** argv) {
       nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
     }
     const int rc = run_app(hi, cfg);
-    // Delete mid-session must stick after Esc → lobby → Iniciar.
-    settings.neural_rendering = cfg.neural_rendering;
-    if (!settings.enhance_renodx) settings.neural_rendering = false;
+    // PageDn/PageUp mid-session must stick after Esc → lobby (checkbox + xN).
+    apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, settings);
+    // Delete mid-session must stick after Esc → lobby (NR flag), but keep RenoDX loaded.
+    apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == nexuscap::EnhanceBackend::Renodx,
+                                  settings);
+    {
+      std::string err;
+      nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
+    }
     if (rc != kExitBackToLobby) return rc;
     // Drop leftover Esc from "back to lobby" before the menu sees it.
     {

@@ -163,14 +163,17 @@ Write-Host "Arquivos no stage: $stageCount"
 
 Write-Host "`n-- Compilar Inno Setup --" -ForegroundColor Cyan
 $outBase = "NexusCap-Setup-$Version"
-$iconPath = Join-Path $Root "assets\logo.ico"
-if (-not (Test-Path -LiteralPath $iconPath)) {
+$iconSrc = Join-Path $Root "assets\logo.ico"
+$iconPack = Join-Path $Root "packaging\logo.ico"
+if (-not (Test-Path -LiteralPath $iconSrc)) {
   throw "Falta assets\logo.ico para o icone do instalador."
 }
+Copy-Item -LiteralPath $iconSrc -Destination $iconPack -Force
+# Paths for ISPP: use forward slashes. Absolute Windows paths with \Users break SetupIconFile (\U escape).
+$stageIspp = ($Stage -replace '\\', '/')
 & $Iscc `
   "/DMyAppVersion=$Version" `
-  "/DStageDir=$Stage" `
-  "/DSetupIconFile=$iconPath" `
+  "/DStageDir=$stageIspp" `
   "/O$Dist" `
   "/F$outBase" `
   $Iss

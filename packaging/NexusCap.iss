@@ -10,9 +10,8 @@
 #ifndef StageDir
   #define StageDir "..\dist\stage"
 #endif
-#ifndef SetupIconFile
-  #define SetupIconFile "..\assets\logo.ico"
-#endif
+; Sempre relativo ao .iss — caminhos absolutos com \Users quebram o ISPP (\U = escape).
+#define SetupIconFile "logo.ico"
 
 #define MyAppName "NexusCap"
 #define MyAppPublisher "NexusCap"

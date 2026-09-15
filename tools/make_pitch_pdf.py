@@ -496,7 +496,6 @@ def page_cpp(c):
         ("Preview vivo", "Mesmo sinal da placa no lobby; ajustes não precisam “aplicar e reabrir”."),
         ("Controle da imagem", "Conversão de cor, escala e saída pra tela sob nosso código."),
         ("Qualidade", "Testes automáticos, Analyze com log, painel de engasgos e ritmo de frames."),
-        ("Marca", "Logo no app, no instalável e na experiência do lobby."),
     ]
     y = H - 130
     for title, body in rows:

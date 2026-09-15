@@ -601,7 +601,8 @@ void MetricsHud::reposition() {
   RECT r{};
   GetWindowRect(owner_, &r);
   const int ww = hud_panel_width(state_.advanced_metrics);
-  const int hh = hud_panel_height(state_.advanced_metrics, state_.hw_info);
+  int hh = hud_panel_height(state_.advanced_metrics, state_.hw_info);
+  if (!state_.session_notice.empty()) hh += 32;
   SetWindowPos(hwnd_, HWND_TOPMOST, r.left + 24, r.top + 24, ww, hh,
                SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
@@ -652,6 +653,10 @@ void MetricsHud::paint(HDC hdc) const {
     if (o.hw_info) n = append_hw_metric_lines(lines, n, 15, o);
     const int hotkey_i = n;
     swprintf(lines[n++], 180, L"F3 HUD  PgDn FG  Delete NR  Esc");
+    const int notice_i = (!o.session_notice.empty() && n < 16) ? n : -1;
+    if (notice_i >= 0) {
+      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(o.session_notice).c_str());
+    }
     for (int i = 0; i < n; ++i) {
       COLORREF c = RGB(200, 200, 210);
       if (i == 0) c = RGB(255, 210, 70);
@@ -660,6 +665,7 @@ void MetricsHud::paint(HDC hdc) const {
       else if (i == 4) c = o.sync_image ? RGB(120, 220, 255) : RGB(255, 160, 90);
       else if (o.hw_info && i >= hw_start && i < hotkey_i) c = RGB(140, 255, 180);
       else if (i == hotkey_i) c = RGB(150, 150, 160);
+      else if (i == notice_i) c = RGB(255, 200, 120);
       SetTextColor(hdc, c);
       TextOutW(hdc, 14, 10 + i * 28, lines[i], static_cast<int>(wcslen(lines[i])));
     }
@@ -725,6 +731,10 @@ void MetricsHud::paint(HDC hdc) const {
     swprintf(lines[idx++], 180, L"last600 (aguardando ~10s de frames...)");
   }
   swprintf(lines[idx++], 180, L"F3 HUD  F4 analyze  PgDn FG  Delete NR  Home RenoDX  Esc");
+  const int notice_i = (!o.session_notice.empty() && idx < 20) ? idx : -1;
+  if (notice_i >= 0) {
+    swprintf(lines[idx++], 180, L"%s", utf8_to_wide_hud(o.session_notice).c_str());
+  }
   const int nlines = idx;
 
   auto color_for_adv = [&](int i) -> COLORREF {
@@ -737,8 +747,11 @@ void MetricsHud::paint(HDC hdc) const {
     if (i == 6) return RGB(180, 160, 255);
     if (i == 7) return o.fg_on ? RGB(120, 255, 200) : RGB(160, 170, 180);
     if (o.hw_info && i >= hw_start && i < hw_end) return RGB(140, 255, 180);
-    if (i == nlines - 1) return RGB(150, 150, 160);
-    if (i == nlines - 2) return RGB(255, 140, 140);
+    if (i == notice_i) return RGB(255, 200, 120);
+    if (notice_i >= 0 && i == nlines - 2) return RGB(150, 150, 160);
+    if (i == nlines - 1 && notice_i < 0) return RGB(150, 150, 160);
+    if (i == nlines - 2 && notice_i < 0) return RGB(255, 140, 140);
+    if (i == nlines - 3 && notice_i >= 0) return RGB(255, 140, 140);
     return RGB(255, 180, 120);
   };
 
@@ -1042,6 +1055,8 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
   wc.hInstance = hi;
   wc.lpszClassName = L"NexusCapWnd";
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hIcon = LoadIconW(hi, MAKEINTRESOURCEW(kAppIconResourceId));
+  if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
   RegisterClassW(&wc);
 
   const int sw = GetSystemMetrics(SM_CXSCREEN);
@@ -1069,6 +1084,13 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
   }
   HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title, style | WS_VISIBLE, x, y, ww, hh, nullptr, nullptr, hi,
                               nullptr);
+  if (hwnd) {
+    HICON icon = LoadIconW(hi, MAKEINTRESOURCEW(kAppIconResourceId));
+    if (icon) {
+      SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+      SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+    }
+  }
   if (hwnd && !fullscreen) {
     ShowWindow(hwnd, SW_SHOWMAXIMIZED);  // janela cobrindo tudo (não exclusive fullscreen)
   }

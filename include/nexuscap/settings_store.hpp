@@ -30,7 +30,7 @@ struct SessionUiFlags {
 struct PersistedSettings {
   HotkeyConfig hotkeys{};
   SessionUiFlags ui{};
-  int scale_percent = 100;     // 50–100; 100 = no scale
+  int scale_percent = 100;     // 25–100; 100 = no scale
   bool fg_enabled = false;     // default OFF
   int fg_multiplier = 2;       // used when fg_enabled
   // Optional override of LosslessScaling.exe; empty = auto (Steam path / registry).
@@ -101,9 +101,12 @@ inline bool renodx_visual_presets_differ_on_disk(int a, int b) {
          renodx_feed_model_preset(a) != renodx_feed_model_preset(b);
 }
 
+inline constexpr int kMinScalePercent = 25;
+inline constexpr int kMaxScalePercent = 100;
+
 inline int clamp_scale_percent(int p) {
-  if (p < 50) return 50;
-  if (p > 100) return 100;
+  if (p < kMinScalePercent) return kMinScalePercent;
+  if (p > kMaxScalePercent) return kMaxScalePercent;
   return p;
 }
 
@@ -131,7 +134,7 @@ inline int parse_keyed_int(const std::string& text, const std::string& key, int 
   return std::atoi(num.c_str());
 }
 
-// Capture signal → work resolution after lobby scale slider (50–100%).
+// Capture signal → work resolution after lobby scale slider (25–100%).
 // Even dimensions keep chroma-friendly sizes when downsampling.
 inline int scaled_extent(int dim, int scale_percent) {
   if (dim <= 0) return 0;
@@ -142,7 +145,7 @@ inline int scaled_extent(int dim, int scale_percent) {
   return out;
 }
 
-// Approximate pixel ratio vs native (for perf messaging / tests). 50% → 0.25 of RGB work pixels.
+// Approximate pixel ratio vs native (for perf messaging / tests). 50% → 0.25; 25% → ~0.0625.
 inline double scale_pixel_ratio(int scale_percent) {
   const double s = clamp_scale_percent(scale_percent) / 100.0;
   return s * s;

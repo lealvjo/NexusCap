@@ -16,6 +16,7 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <commdlg.h>
+#include <wincodec.h>
 #include <tchar.h>
 
 #include <algorithm>
@@ -29,6 +30,7 @@
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
+#pragma comment(lib, "windowscodecs.lib")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -406,6 +408,129 @@ std::string fg_path_display_tail(const std::string& path, size_t max_chars = 48)
   return "..." + path.substr(path.size() - (max_chars - 3));
 }
 
+std::wstring utf8_path_to_wide(const std::string& s) {
+  if (s.empty()) return L"";
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+  if (n <= 0) return L"";
+  std::wstring w(static_cast<size_t>(n), 0);
+  MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+  if (!w.empty() && w.back() == 0) w.pop_back();
+  return w;
+}
+
+std::string exe_dir_utf8() {
+  wchar_t exe_path[MAX_PATH]{};
+  GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+  return std::filesystem::path(exe_path).parent_path().string();
+}
+
+std::string resolve_logo_png_on_disk() {
+  const std::string dir = exe_dir_utf8();
+  for (const auto& p : {logo_png_candidate_assets(dir), logo_png_candidate_root(dir)}) {
+    const DWORD attr = GetFileAttributesW(utf8_path_to_wide(p).c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) return p;
+  }
+  return {};
+}
+
+bool load_png_bgra_file(const std::wstring& path, int& out_w, int& out_h, std::vector<uint8_t>& out_bgra) {
+  out_w = out_h = 0;
+  out_bgra.clear();
+  IWICImagingFactory* factory = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) {
+    return false;
+  }
+  IWICBitmapDecoder* decoder = nullptr;
+  HRESULT hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                    WICDecodeMetadataCacheOnLoad, &decoder);
+  if (FAILED(hr) || !decoder) {
+    factory->Release();
+    return false;
+  }
+  IWICBitmapFrameDecode* frame = nullptr;
+  hr = decoder->GetFrame(0, &frame);
+  if (FAILED(hr) || !frame) {
+    decoder->Release();
+    factory->Release();
+    return false;
+  }
+  IWICFormatConverter* conv = nullptr;
+  hr = factory->CreateFormatConverter(&conv);
+  if (FAILED(hr) || !conv ||
+      FAILED(conv->Initialize(frame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0,
+                              WICBitmapPaletteTypeCustom))) {
+    if (conv) conv->Release();
+    frame->Release();
+    decoder->Release();
+    factory->Release();
+    return false;
+  }
+  UINT w = 0, h = 0;
+  conv->GetSize(&w, &h);
+  if (w == 0 || h == 0) {
+    conv->Release();
+    frame->Release();
+    decoder->Release();
+    factory->Release();
+    return false;
+  }
+  out_bgra.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4u);
+  hr = conv->CopyPixels(nullptr, w * 4u, static_cast<UINT>(out_bgra.size()), out_bgra.data());
+  conv->Release();
+  frame->Release();
+  decoder->Release();
+  factory->Release();
+  if (FAILED(hr)) {
+    out_bgra.clear();
+    return false;
+  }
+  out_w = static_cast<int>(w);
+  out_h = static_cast<int>(h);
+  return true;
+}
+
+bool create_logo_srv(ID3D11Device* device, ID3D11ShaderResourceView** out_srv, int* out_w, int* out_h) {
+  if (out_srv) *out_srv = nullptr;
+  if (out_w) *out_w = 0;
+  if (out_h) *out_h = 0;
+  if (!device || !out_srv) return false;
+  const std::string path = resolve_logo_png_on_disk();
+  if (path.empty()) return false;
+  int w = 0, h = 0;
+  std::vector<uint8_t> bgra;
+  if (!load_png_bgra_file(utf8_path_to_wide(path), w, h, bgra)) return false;
+  D3D11_TEXTURE2D_DESC td{};
+  td.Width = static_cast<UINT>(w);
+  td.Height = static_cast<UINT>(h);
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_IMMUTABLE;
+  td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  D3D11_SUBRESOURCE_DATA sd{};
+  sd.pSysMem = bgra.data();
+  sd.SysMemPitch = static_cast<UINT>(w * 4);
+  ID3D11Texture2D* tex = nullptr;
+  if (FAILED(device->CreateTexture2D(&td, &sd, &tex)) || !tex) return false;
+  ID3D11ShaderResourceView* srv = nullptr;
+  const HRESULT hr = device->CreateShaderResourceView(tex, nullptr, &srv);
+  tex->Release();
+  if (FAILED(hr) || !srv) return false;
+  *out_srv = srv;
+  if (out_w) *out_w = w;
+  if (out_h) *out_h = h;
+  return true;
+}
+
+void apply_window_app_icon(HWND hwnd, HINSTANCE hi) {
+  if (!hwnd) return;
+  HICON icon = LoadIconW(hi, MAKEINTRESOURCEW(kAppIconResourceId));
+  if (!icon) return;
+  SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+  SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+}
+
 // Live HUD on left black bar of letterboxed preview — bright text readable on black.
 void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPreview& preview,
                               ImVec2 band_min, ImVec2 band_max, ImVec2 img_min, ImVec2 img_max) {
@@ -524,6 +649,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
   WNDCLASSEXW wc{sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hi, nullptr, nullptr, nullptr, nullptr, L"NexusCapLobby",
                  nullptr};
+  wc.hIcon = LoadIconW(hi, MAKEINTRESOURCEW(kAppIconResourceId));
+  if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+  wc.hIconSm = wc.hIcon;
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
     return false;
   }
@@ -533,6 +661,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     cleanup_device();
     return false;
   }
+  apply_window_app_icon(g_hwnd, hi);
   // Windowed, covering the monitor work area (not exclusive fullscreen, not a tiny centered box).
   ShowWindow(g_hwnd, SW_SHOWMAXIMIZED);
   UpdateWindow(g_hwnd);
@@ -546,6 +675,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   apply_steam_theme();
   ImGui_ImplWin32_Init(g_hwnd);
   ImGui_ImplDX11_Init(g_dx.device, g_dx.ctx);
+
+  ID3D11ShaderResourceView* logo_srv = nullptr;
+  int logo_w = 0, logo_h = 0;
+  create_logo_srv(g_dx.device, &logo_srv, &logo_w, &logo_h);
 
   LobbyPreview preview;
 
@@ -618,7 +751,6 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   restart_preview();
 
   float scale_f = static_cast<float>(clamp_scale_percent(settings.scale_percent));
-  bool lang_pt = true;
   bool gear_was_open = false;
 
   while (g_lobby_running) {
@@ -668,9 +800,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::BeginChild("header", ImVec2(0, 72), false, ImGuiWindowFlags_NoScrollbar);
     {
-      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.50f, 0.95f, 1.f));
-      ImGui::Button("N", ImVec2(48, 48));
-      ImGui::PopStyleColor();
+      if (logo_srv) {
+        ImGui::Image(reinterpret_cast<ImTextureID>(logo_srv), ImVec2(48, 48));
+      } else {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.55f, 0.95f, 1.f));
+        ImGui::Button("N", ImVec2(48, 48));
+        ImGui::PopStyleColor();
+      }
       ImGui::SameLine();
       ImGui::BeginGroup();
       ImGui::SetWindowFontScale(1.15f);
@@ -678,11 +814,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       ImGui::SetWindowFontScale(1.0f);
       ImGui::TextDisabled("Console de captura");
       ImGui::EndGroup();
-      ImGui::SameLine(ImGui::GetWindowWidth() - 340);
-      if (ImGui::Button(lang_pt ? "Portugues" : "Portugues##off", ImVec2(110, 40))) lang_pt = true;
-      ImGui::SameLine();
-      if (ImGui::Button(!lang_pt ? "English" : "English##off", ImVec2(100, 40))) lang_pt = false;
-      ImGui::SameLine();
+      ImGui::SameLine(ImGui::GetWindowWidth() - 72);
       if (ImGui::Button("CFG", ImVec2(56, 40))) g_open_gear = true;
     }
     ImGui::EndChild();
@@ -1045,7 +1177,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::Separator();
         ImGui::TextUnformatted("Escala de resolucao (trabalho GPU)");
         int scale_i = clamp_scale_percent(settings.scale_percent);
-        if (ImGui::SliderInt("##scale", &scale_i, 50, 100, "%d%%")) {
+        if (ImGui::SliderInt("##scale", &scale_i, kMinScalePercent, kMaxScalePercent, "%d%%")) {
           settings.scale_percent = clamp_scale_percent(scale_i);
         } else {
           settings.scale_percent = clamp_scale_percent(scale_i);
@@ -1055,7 +1187,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         const int work_h = scaled_extent(settings.height, settings.scale_percent);
         const int pct_pix = static_cast<int>(scale_pixel_ratio(settings.scale_percent) * 100.0 + 0.5);
         ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.f, 1.f), "Trabalho: %dx%d", work_w, work_h);
-        ImGui::TextDisabled("Sinal %dx%d  ·  pixels RGB ~%d%%", settings.width, settings.height, pct_pix);
+        ImGui::TextDisabled("Sinal %dx%d  ·  pixels RGB ~%d%%  ·  min %d%%", settings.width, settings.height,
+                            pct_pix, kMinScalePercent);
 
         ImGui::Separator();
         if (ImGui::Checkbox("RenoDX / Neural Rendering no Start", &settings.enhance_renodx)) {
@@ -1157,6 +1290,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
   // Free capture device BEFORE session start (device exclusive).
   preview.stop();
+  if (logo_srv) {
+    logo_srv->Release();
+    logo_srv = nullptr;
+  }
 
   ImGui_ImplDX11_Shutdown();
   ImGui_ImplWin32_Shutdown();

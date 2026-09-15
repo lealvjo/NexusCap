@@ -69,6 +69,7 @@ struct OverlayState {
   std::string fg_backend = "none";
   int fg_flow_scale = 100;
   std::string fg_capture_api = "WGC";
+  std::string session_notice;  // soft tip (FG / NR); empty = none
   double e2e_ms = 0;
   double present_ms = 0;
   uint64_t frames = 0;
@@ -152,7 +153,7 @@ public:
   void set_enhance(IFrameEnhance* enhance) { enhance_ = enhance; }
   void set_vsync(bool enabled) { vsync_ = enabled; }
   bool vsync() const { return vsync_; }
-  void set_scale_percent(int percent);  // 50–100; lower = softer image, less GPU work
+  void set_scale_percent(int percent);  // 25–100; lower = softer image, less GPU work
   int scale_percent() const { return scale_percent_; }
   // Espaco/intervalo reais no decode NV12 (mesmo contrato do preview CPU).
   void set_color_format(int space, int range);

@@ -53,7 +53,7 @@ target_include_directories(nexuscap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/incl
 target_compile_definitions(nexuscap_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_link_libraries(nexuscap_core PUBLIC
   nexuscap_imgui
-  d3d11 dxgi d3dcompiler strmiids ole32 oleaut32 user32 gdi32 winmm uuid avrt advapi32 pdh comdlg32
+  d3d11 dxgi d3dcompiler strmiids ole32 oleaut32 user32 gdi32 winmm uuid avrt advapi32 pdh comdlg32 windowscodecs
 )
 
 if(NEXUSCAP_HAVE_STREAMLINE)
@@ -62,9 +62,11 @@ if(NEXUSCAP_HAVE_STREAMLINE)
   target_link_libraries(nexuscap_core PUBLIC "${NEXUSCAP_STREAMLINE_DIR}/lib/x64/sl.interposer.lib")
 endif()
 
-add_executable(NexusCap src/main.cpp)
+add_executable(NexusCap src/main.cpp resources/nexuscap.rc)
 target_link_libraries(NexusCap PRIVATE nexuscap_core)
 target_compile_definitions(NexusCap PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_include_directories(NexusCap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
+
 
 add_executable(nexuscap_tests tests/test_core.cpp)
 target_include_directories(nexuscap_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
@@ -103,3 +105,12 @@ if(NEXUSCAP_HAVE_STREAMLINE)
 endif()
 
 install(TARGETS NexusCap RUNTIME DESTINATION bin)
+
+# Brand logo next to the exe for lobby / window icon.
+add_custom_command(TARGET NexusCap POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:NexusCap>/assets"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/assets/logo.png"
+    "$<TARGET_FILE_DIR:NexusCap>/assets/logo.png"
+  COMMENT "Copy assets/logo.png"
+)

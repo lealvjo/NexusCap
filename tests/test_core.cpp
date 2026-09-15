@@ -510,6 +510,39 @@ TEST_CASE("fg_path persists in settings and reaches AppConfig") {
   CHECK(cfg.fg_path.empty());
 }
 
+TEST_CASE("logo brand paths and app icon resource id") {
+  CHECK(kAppIconResourceId == 101);
+  CHECK(logo_png_candidate_assets("C:\\app") == "C:\\app\\assets\\logo.png");
+  CHECK(logo_png_candidate_root("C:\\app") == "C:\\app\\logo.png");
+  CHECK(logo_png_path_join("C:\\app\\", "assets\\logo.png") == "C:\\app\\assets\\logo.png");
+}
+
+TEST_CASE("session notices for FG enable/up and NR on/off") {
+  CHECK(session_notice_for_fg_toggle(true));
+  CHECK_FALSE(session_notice_for_fg_toggle(false));
+  CHECK(session_notice_for_fg_cycle(2, 3));
+  CHECK(session_notice_for_fg_cycle(3, 4));
+  CHECK_FALSE(session_notice_for_fg_cycle(4, 2));  // cycle wrap is not "subindo"
+  CHECK_FALSE(session_notice_for_fg_cycle(3, 3));
+
+  CHECK(session_notice_fg_on().find("Frame Gen ON") != std::string::npos);
+  CHECK(session_notice_fg_multiplier_up(3).find("x3") != std::string::npos);
+  CHECK(session_notice_nr_on().find("ON") != std::string::npos);
+  CHECK(session_notice_nr_off().find("OFF") != std::string::npos);
+
+  SessionNotice n;
+  n.push(session_notice_fg_on(), 1000.0, 500.0);
+  CHECK(n.active(1200.0));
+  CHECK(n.visible(1200.0).find("Frame Gen") != std::string::npos);
+  CHECK_FALSE(n.active(1600.0));
+  CHECK(n.visible(1600.0).empty());
+
+  n.push(session_notice_nr_off(), 2000.0, 1000.0);
+  CHECK(n.visible(2500.0) == session_notice_nr_off());
+  n.push(session_notice_nr_on(), 2600.0, 1000.0);
+  CHECK(n.visible(2700.0) == session_notice_nr_on());
+}
+
 TEST_CASE("session_start records fg fields") {
   AnalyzeWriter a;
   SessionInfo info;
@@ -531,8 +564,12 @@ TEST_CASE("session_start records fg fields") {
 TEST_CASE("clamp_scale_percent and defaults") {
   CHECK(clamp_scale_percent(100) == 100);
   CHECK(clamp_scale_percent(50) == 50);
-  CHECK(clamp_scale_percent(49) == 50);
+  CHECK(clamp_scale_percent(25) == 25);
+  CHECK(clamp_scale_percent(24) == 25);
+  CHECK(clamp_scale_percent(10) == 25);
   CHECK(clamp_scale_percent(200) == 100);
+  CHECK(kMinScalePercent == 25);
+  CHECK(kMaxScalePercent == 100);
   auto s = default_settings();
   CHECK(s.scale_percent == 100);
   CHECK_FALSE(s.fg_enabled);
@@ -545,10 +582,13 @@ TEST_CASE("scaled_extent and pixel ratio for work resolution") {
   CHECK(scaled_extent(1440, 100) == 1440);
   CHECK(scaled_extent(2560, 50) == 1280);
   CHECK(scaled_extent(1440, 50) == 720);
+  CHECK(scaled_extent(2560, 25) == 640);
+  CHECK(scaled_extent(1440, 25) == 360);
   CHECK(scaled_extent(1920, 75) == 1440);
   CHECK((scaled_extent(2560, 50) & 1) == 0);
   CHECK(scale_pixel_ratio(100) == doctest::Approx(1.0));
   CHECK(scale_pixel_ratio(50) == doctest::Approx(0.25));  // 50% linear → 25% pixels
+  CHECK(scale_pixel_ratio(25) == doctest::Approx(0.0625));
   CHECK(scale_pixel_ratio(50) < scale_pixel_ratio(75));
   CHECK(scale_pixel_ratio(75) < scale_pixel_ratio(100));
 }
@@ -591,7 +631,8 @@ TEST_CASE("feed work_resolution always matches UI scale (critical blur path)") {
 
   // Out-of-range UI scale clamps before writing feed.
   CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 200)) == 100);
-  CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 10)) == 50);
+  CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 10)) == 25);
+  CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 25)) == 25);
 
   // Mismatch detector: feed@50 + UI@100 is the bug condition.
   const int feed_v = 50;

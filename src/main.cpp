@@ -412,6 +412,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.sync_image = cfg.sync_image;
   overlay.hw_info = cfg.hw_info;
   g_overlay = cfg.show_overlay;
+  SessionNotice session_notice;
   g_analyze = true;
   analyze.set_verbose(true);
 
@@ -570,6 +571,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           append_log(cfg.log_dir, std::string("neural rendering ") + (g_nr_runtime_on ? "ON" : "OFF"));
           std::printf("neural rendering %s (Delete→Bridge) — Frame Gen nao muda\n",
                       g_nr_runtime_on ? "ON" : "OFF");
+          session_notice.push(g_nr_runtime_on ? session_notice_nr_on() : session_notice_nr_off(),
+                              clock.now_ms());
         } else if (plan.need_bridge_pulse && !dlss5_bridge_available()) {
           std::printf("nr toggle: Bridge ainda nao carregou — tente de novo em 1s\n");
         } else {
@@ -621,6 +624,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         std::printf("fg %s x%d\n", fg.state().active ? "ON" : "off", fg.state().multiplier);
         append_log(cfg.log_dir, std::string("fg ") + (fg.state().active ? "ON" : "off") + " x" +
                                     std::to_string(fg.state().multiplier));
+        if (session_notice_for_fg_toggle(fg.state().active)) {
+          session_notice.push(session_notice_fg_on(), clock.now_ms());
+        }
       }
       info.fg_enabled = fg.state().active;
       info.fg_multiplier = fg.state().multiplier;
@@ -628,12 +634,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
     if (g_cycle_fg.exchange(false)) {
       std::string ferr;
+      const int prev_mult = fg.state().multiplier;
       if (!fg.cycle_multiplier(hwnd, ferr)) {
         std::printf("fg cycle: %s\n", ferr.c_str());
       } else {
         cfg.fg_multiplier = fg.state().multiplier;
         std::printf("fg multiplier x%d (%s)\n", fg.state().multiplier, fg_status_name(fg.state().status));
         append_log(cfg.log_dir, "fg cycle x" + std::to_string(fg.state().multiplier));
+        if (session_notice_for_fg_cycle(prev_mult, fg.state().multiplier)) {
+          session_notice.push(session_notice_fg_multiplier_up(fg.state().multiplier), clock.now_ms());
+        }
       }
       info.fg_enabled = fg.state().active;
       info.fg_multiplier = fg.state().multiplier;
@@ -704,6 +714,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.fg_backend = fg.state().backend;
     overlay.fg_flow_scale = fg.state().flow_scale;
     overlay.fg_capture_api = fg.state().capture_api;
+    overlay.session_notice = session_notice.visible(now);
     if (overlay.fg_on && overlay.fg_multiplier >= 2) {
       overlay.fps_fg_est = fps_smooth * static_cast<double>(overlay.fg_multiplier);
     } else {

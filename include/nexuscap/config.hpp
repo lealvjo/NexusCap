@@ -31,7 +31,7 @@ struct AppConfig {
   bool hw_info = false;  // painel Infos GPU/CPU
   bool hide_panel_on_capture = true;
   bool sync_image = false;  // vsync Present
-  int scale_percent = 100;  // 50–100; 100 = native
+  int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // Default / Natural / Cinematic
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
   int video_fourcc = 0;     // NV12 default
@@ -85,6 +85,25 @@ inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
 // Separate floating strip for CPU/GPU/RAM/VRAM/PWR when "Infos GPU / CPU" is on.
 inline int hw_info_panel_width() { return 360; }
 inline int hw_info_panel_height() { return 12 + 5 * 28; }
+
+// Brand logo next to the exe (copied at build) or under assets/.
+inline std::string logo_png_path_join(const std::string& exe_dir, const char* rel) {
+  if (exe_dir.empty()) return rel ? rel : "";
+  const char sep = (exe_dir.back() == '\\' || exe_dir.back() == '/') ? '\0' : '\\';
+  std::string out = exe_dir;
+  if (sep) out.push_back(sep);
+  if (rel) out += rel;
+  return out;
+}
+inline std::string logo_png_candidate_assets(const std::string& exe_dir) {
+  return logo_png_path_join(exe_dir, "assets\\logo.png");
+}
+inline std::string logo_png_candidate_root(const std::string& exe_dir) {
+  return logo_png_path_join(exe_dir, "logo.png");
+}
+
+// Win32 ICON resource id embedded in NexusCap.exe (resources/nexuscap.rc).
+inline constexpr int kAppIconResourceId = 101;
 
 // Lines on lobby HUD preview (0 = HUD hidden). Compact also shows gear fields.
 inline int lobby_hud_preview_lines(bool show_fps, bool advanced_metrics, bool hw_info = false) {
@@ -227,5 +246,36 @@ inline LobbyEscAction lobby_esc_action(bool gear_open, bool capturing_hotkey) {
   if (gear_open) return LobbyEscAction::CloseGear;
   return LobbyEscAction::None;
 }
+
+// Soft on-screen tips while playing (FG / Neural Rendering hotkeys).
+inline constexpr double kSessionNoticeTtlMs = 3200.0;
+
+inline std::string session_notice_fg_on() {
+  return "Frame Gen ON — latencia / artefatos podem subir";
+}
+inline std::string session_notice_fg_multiplier_up(int mult) {
+  mult = clamp_fg_multiplier(mult);
+  return "Frame Gen x" + std::to_string(mult) + " — mais FPS, mais carga GPU";
+}
+inline std::string session_notice_nr_on() { return "Neural Rendering ON — mais qualidade, mais GPU"; }
+inline std::string session_notice_nr_off() { return "Neural Rendering OFF"; }
+
+// Warn when enabling FG; when cycling, only if multiplier went up (2→3→4).
+inline bool session_notice_for_fg_toggle(bool now_active) { return now_active; }
+inline bool session_notice_for_fg_cycle(int prev_mult, int next_mult) {
+  return clamp_fg_multiplier(next_mult) > clamp_fg_multiplier(prev_mult);
+}
+
+struct SessionNotice {
+  std::string text;
+  double until_ms = 0;
+  void push(std::string msg, double now_ms, double ttl_ms = kSessionNoticeTtlMs) {
+    if (msg.empty()) return;
+    text = std::move(msg);
+    until_ms = now_ms + ttl_ms;
+  }
+  bool active(double now_ms) const { return !text.empty() && now_ms < until_ms; }
+  std::string visible(double now_ms) const { return active(now_ms) ? text : std::string{}; }
+};
 
 }  // namespace nexuscap

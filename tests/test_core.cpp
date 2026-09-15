@@ -454,6 +454,30 @@ TEST_CASE("next_fg_multiplier cycles 2-3-4") {
   CHECK(fg_wants_process(2) == true);
 }
 
+TEST_CASE("lobby HUD FPS never shows fake dual when FG only armed") {
+  char line[128]{};
+  format_lobby_hud_fps_line(line, sizeof(line), 60.0, false, 2);
+  CHECK_FALSE(lobby_fps_line_implies_active_fg(line));
+  CHECK(std::strstr(line, "60") != nullptr);
+
+  format_lobby_hud_fps_line(line, sizeof(line), 60.0, true, 2);
+  CHECK_FALSE(lobby_fps_line_implies_active_fg(line));  // armado, not "60 | 120"
+  CHECK(std::strstr(line, "armado") != nullptr);
+  CHECK(std::strstr(line, "x2") != nullptr);
+  CHECK(std::strstr(line, " | ") == nullptr);
+
+  format_lobby_hud_fps_line(line, sizeof(line), 60.0, true, 1);
+  CHECK(std::strstr(line, "armado") == nullptr);
+
+  PersistedSettings s = default_settings();
+  s.ui.show_fps = true;
+  s.fg_enabled = true;
+  s.fg_multiplier = 2;
+  auto hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "armado"));
+  CHECK_FALSE(lobby_hud_contains(hud, " | "));
+}
+
 TEST_CASE("mira settings xml never writes Flow 70") {
   const std::string built = build_mira_settings_xml(2);
   CHECK(built.find("LSFGFlowScale>100") != std::string::npos);
@@ -1467,10 +1491,10 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(1, 1, 1));
-  CHECK(std::string(kAppVersion) == "1.1.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v1.1.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.1");
+  CHECK(app_version_is(1, 1, 2));
+  CHECK(std::string(kAppVersion) == "1.1.2");
+  CHECK(std::strstr(kAppNameWithVersion, "v1.1.2") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.2");
 }
 
 TEST_CASE("renodx runtime dirs prefer writable AppData cache") {

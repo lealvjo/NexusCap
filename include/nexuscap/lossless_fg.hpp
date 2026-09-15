@@ -4,6 +4,8 @@
 #endif
 #include <windows.h>
 
+#include <cstdio>
+#include <cstring>
 #include <cstdint>
 #include <string>
 
@@ -71,6 +73,23 @@ inline int next_fg_multiplier(int m) {
 
 inline bool fg_wants_process(int multiplier) { return clamp_fg_multiplier(multiplier) >= 2; }
 
+// Lobby HUD must NOT show "60 | 120" as if FG were already running — only "armado".
+inline void format_lobby_hud_fps_line(char* out, size_t out_n, double fps, bool fg_enabled, int fg_mult) {
+  if (!out || out_n == 0) return;
+  const int m = clamp_fg_multiplier(fg_mult);
+  if (fg_enabled && m >= 2) {
+    std::snprintf(out, out_n, "FPS  %.0f   FG x%d armado", fps, m);
+  } else {
+    std::snprintf(out, out_n, "FPS  %.0f", fps);
+  }
+}
+
+inline bool lobby_fps_line_implies_active_fg(const char* line) {
+  if (!line) return false;
+  // Old misleading "60 | 120" estimate, or explicit FG ON runtime.
+  return std::strstr(line, " | ") != nullptr;
+}
+
 // Pure helpers (unit-tested): mira-lock profile fragments.
 std::string default_steam_lossless_exe();
 std::string resolve_lossless_exe(const std::string& override_path);
@@ -117,6 +136,7 @@ public:
   bool ensure_process(std::string& err);
 
   // Toggle FG on target HWND via LS hotkey (F24). Starts process if needed.
+  // Turning OFF kills the LS process so a leftover instance cannot keep injecting frames.
   bool toggle(HWND target, std::string& err);
 
   // Change multiplier (2/3/4). If FG was on, re-toggle to apply.
@@ -127,12 +147,17 @@ public:
 
   void shutdown();
 
+  // How many LosslessScaling.exe are running (0 = none). Used to avoid duplicate instances.
+  static unsigned count_running_lossless_processes();
+
 private:
   bool send_ls_hotkey();
   bool focus_window(HWND hwnd);
   void hide_ls_windows();
   bool write_settings_file(const std::string& xml, std::string& err);
   bool write_ini_alongside_exe(std::string& err);
+  bool adopt_existing_lossless(std::string& err);
+  void terminate_extra_lossless_processes(DWORD keep_pid);
 
   FgState state_;
   HANDLE job_ = nullptr;

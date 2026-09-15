@@ -149,9 +149,9 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       std::snprintf(out.line[n++], 128, "signal  %dx%d @ %.0f  work 100%%", s.width, s.height, s.fps);
     }
     if (s.fg_enabled) {
-      std::snprintf(out.line[n++], 128, "FPS  %.0f | %.0f   FG x%d", fps, fps * static_cast<float>(fgx), fgx);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx);
     } else {
-      std::snprintf(out.line[n++], 128, "FPS  %.0f", fps);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx);
     }
     std::snprintf(out.line[n++], 128, "frametime  %.1f ms", ft);
     std::snprintf(out.line[n++], 128, "FG  %s  x%d   scale %d%%", s.fg_enabled ? "ON" : "off", fgx, scale);
@@ -171,9 +171,9 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]");
     std::snprintf(out.line[n++], 128, "%dx%d @ %.0f", s.width, s.height, s.fps);
     if (s.fg_enabled) {
-      std::snprintf(out.line[n++], 128, "FPS  %.0f | %.0f  FG x%d", fps, fps * static_cast<float>(fgx), fgx);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx);
     } else {
-      std::snprintf(out.line[n++], 128, "FPS  %.0f", fps);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx);
     }
     std::snprintf(out.line[n++], 128, "frametime  %.1f ms", ft);
     std::snprintf(out.line[n++], 128, "FG %s x%d  scale %d%%", s.fg_enabled ? "ON" : "off", fgx, scale);

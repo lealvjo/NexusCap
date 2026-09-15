@@ -647,7 +647,10 @@ void MetricsHud::paint(HDC hdc) const {
     swprintf(lines[n++], 180, L"NexusCap  [%s]", mode);
     swprintf(lines[n++], 180, L"%dx%d @ %.0f", o.capture_w, o.capture_h, o.target_fps);
     if (o.fg_on && o.fg_multiplier >= 2) {
-      swprintf(lines[n++], 180, L"FPS  %.1f | %.1f  FG x%d", o.fps_smooth, o.fps_fg_est, o.fg_multiplier);
+      swprintf(lines[n++], 180, L"FPS  %.1f | %.1f  cap|FG x%d", o.fps_smooth, o.fps_fg_est, o.fg_multiplier);
+    } else if (o.fg_multiplier >= 2) {
+      swprintf(lines[n++], 180, L"FPS  %.1f   FG x%d pronto", o.fps_smooth > 0 ? o.fps_smooth : o.fps,
+               o.fg_multiplier);
     } else {
       swprintf(lines[n++], 180, L"FPS  %.1f", o.fps_smooth > 0 ? o.fps_smooth : o.fps);
     }
@@ -703,7 +706,9 @@ void MetricsHud::paint(HDC hdc) const {
   }
   swprintf(lines[3], 180, L"FPS     %.1f  (smooth %.1f)", o.fps, o.fps_smooth);
   if (o.fg_on && o.fg_multiplier >= 2) {
-    swprintf(lines[3], 180, L"FPS     %.1f | %.1f   cap | FG x%d", o.fps_smooth, o.fps_fg_est, o.fg_multiplier);
+    swprintf(lines[3], 180, L"FPS     %.1f | %.1f   cap|FG x%d", o.fps_smooth, o.fps_fg_est, o.fg_multiplier);
+  } else if (o.fg_multiplier >= 2) {
+    swprintf(lines[3], 180, L"FPS     %.1f   FG x%d pronto (PageDn)", o.fps_smooth, o.fg_multiplier);
   }
   swprintf(lines[4], 180, L"frametime  %.2f ms   avg %.2f  p95 %.2f  max %.2f  %s", o.frame_ms, o.ft_avg_ms,
            o.ft_p95_ms, o.ft_max_ms, o.ft_stable ? L"STABLE" : L"UNSTABLE");

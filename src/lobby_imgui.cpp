@@ -684,7 +684,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
     return false;
   }
-  g_hwnd = CreateWindowW(wc.lpszClassName, L"Nexus Cap v1.1.1 — Console de captura", WS_OVERLAPPEDWINDOW, 0, 0, 1280, 720,
+  g_hwnd = CreateWindowW(wc.lpszClassName, L"Nexus Cap v1.1.2 — Console de captura", WS_OVERLAPPEDWINDOW, 0, 0, 1280, 720,
                          nullptr, nullptr, wc.hInstance, nullptr);
   if (!g_hwnd || !create_device(g_hwnd)) {
     cleanup_device();

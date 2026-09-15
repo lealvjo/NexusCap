@@ -196,7 +196,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   g_session_signal_w = cap_w;
   g_session_signal_h = cap_h;
   g_session_fullscreen = cfg.exclusive_fullscreen && !cfg.smoke;
-  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, L"Nexus Cap v1.1.1");
+  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, L"Nexus Cap v1.1.2");
   if (!hwnd) {
     std::fprintf(stderr, "create window failed\n");
     return 1;

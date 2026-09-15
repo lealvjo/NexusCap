@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "1.1.1",
+  [string]$Version = "1.1.2",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -92,10 +92,15 @@ New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 Copy-Item -LiteralPath $Exe -Destination (Join-Path $Stage "NexusCap.exe") -Force
 
 $logoSrc = Join-Path $Root "assets\logo.png"
+$logoIco = Join-Path $Root "assets\logo.ico"
 $logoDst = Join-Path $Stage "assets"
 New-Item -ItemType Directory -Force -Path $logoDst | Out-Null
 if (Test-Path $logoSrc) {
   Copy-Item -LiteralPath $logoSrc -Destination (Join-Path $logoDst "logo.png") -Force
+}
+if (Test-Path $logoIco) {
+  Copy-Item -LiteralPath $logoIco -Destination (Join-Path $Stage "logo.ico") -Force
+  Copy-Item -LiteralPath $logoIco -Destination (Join-Path $logoDst "logo.ico") -Force
 }
 
 $runtimeFiles = @(
@@ -158,9 +163,14 @@ Write-Host "Arquivos no stage: $stageCount"
 
 Write-Host "`n-- Compilar Inno Setup --" -ForegroundColor Cyan
 $outBase = "NexusCap-Setup-$Version"
+$iconPath = Join-Path $Root "assets\logo.ico"
+if (-not (Test-Path -LiteralPath $iconPath)) {
+  throw "Falta assets\logo.ico para o icone do instalador."
+}
 & $Iscc `
   "/DMyAppVersion=$Version" `
   "/DStageDir=$Stage" `
+  "/DSetupIconFile=$iconPath" `
   "/O$Dist" `
   "/F$outBase" `
   $Iss

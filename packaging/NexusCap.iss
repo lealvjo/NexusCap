@@ -1,14 +1,17 @@
 ; NexusCap — Inno Setup 6
-; Compilar via tools\make_installer.ps1 (define MyAppVersion / StageDir).
+; Compilar via tools\make_installer.ps1 (define MyAppVersion / StageDir / SetupIconFile).
 ;
 ; NÃO embute Lossless Scaling — Frame Gen é opcional (Steam do usuário).
 ; Instala em %LOCALAPPDATA%\NexusCap (gravável) — RenoDX precisa escrever ini/cfg/cache.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.1"
+  #define MyAppVersion "1.1.2"
 #endif
 #ifndef StageDir
   #define StageDir "..\dist\stage"
+#endif
+#ifndef SetupIconFile
+  #define SetupIconFile "..\assets\logo.ico"
 #endif
 
 #define MyAppName "NexusCap"
@@ -32,8 +35,8 @@ LicenseFile=
 InfoBeforeFile=NOTICE.txt
 OutputDir=..\dist
 OutputBaseFilename=NexusCap-Setup-{#MyAppVersion}
-SetupIconFile=..\assets\logo.ico
-UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile={#SetupIconFile}
+UninstallDisplayIcon={app}\logo.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -64,9 +67,9 @@ Name: "{app}\reshade-cache"; Permissions: users-modify
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\logo.ico"
+Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"; IconFilename: "{app}\logo.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\logo.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall skipifsilent

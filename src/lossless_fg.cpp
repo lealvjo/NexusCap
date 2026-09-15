@@ -6,6 +6,12 @@
 #include <sstream>
 #include <vector>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <tlhelp32.h>
+
 namespace nexuscap {
 namespace {
 
@@ -354,6 +360,8 @@ bool LosslessFgController::ensure_process(std::string& err) {
   if (proc_) {
     DWORD code = 0;
     if (GetExitCodeProcess(proc_, &code) && code == STILL_ACTIVE) {
+      // Drop any second LS that appeared (Steam auto-start, old session, etc.).
+      terminate_extra_lossless_processes(state_.pid);
       state_.status = state_.active ? FgStatus::On : FgStatus::Ready;
       return true;
     }
@@ -363,6 +371,13 @@ bool LosslessFgController::ensure_process(std::string& err) {
   }
 
   if (!apply_profile(err)) return false;
+
+  // Prefer a single already-running LS instead of launching a duplicate.
+  if (adopt_existing_lossless(err)) {
+    terminate_extra_lossless_processes(state_.pid);
+    hide_ls_windows();
+    return true;
+  }
 
   if (!job_) {
     job_ = CreateJobObjectW(nullptr, nullptr);
@@ -415,6 +430,124 @@ bool LosslessFgController::ensure_process(std::string& err) {
   // Give LS a moment to create windows, then hide.
   Sleep(400);
   hide_ls_windows();
+  terminate_extra_lossless_processes(state_.pid);
+  return true;
+}
+
+unsigned LosslessFgController::count_running_lossless_processes() {
+  unsigned n = 0;
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap == INVALID_HANDLE_VALUE) return 0;
+  PROCESSENTRY32W pe{};
+  pe.dwSize = sizeof(pe);
+  if (Process32FirstW(snap, &pe)) {
+    do {
+      if (_wcsicmp(pe.szExeFile, L"LosslessScaling.exe") == 0) ++n;
+    } while (Process32NextW(snap, &pe));
+  }
+  CloseHandle(snap);
+  return n;
+}
+
+void LosslessFgController::terminate_extra_lossless_processes(DWORD keep_pid) {
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap == INVALID_HANDLE_VALUE) return;
+  PROCESSENTRY32W pe{};
+  pe.dwSize = sizeof(pe);
+  if (Process32FirstW(snap, &pe)) {
+    do {
+      if (_wcsicmp(pe.szExeFile, L"LosslessScaling.exe") != 0) continue;
+      if (keep_pid != 0 && pe.th32ProcessID == keep_pid) continue;
+      HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+      if (h) {
+        TerminateProcess(h, 0);
+        CloseHandle(h);
+      }
+    } while (Process32NextW(snap, &pe));
+  }
+  CloseHandle(snap);
+}
+
+bool LosslessFgController::adopt_existing_lossless(std::string& err) {
+  HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap == INVALID_HANDLE_VALUE) return false;
+  DWORD found = 0;
+  PROCESSENTRY32W pe{};
+  pe.dwSize = sizeof(pe);
+  if (Process32FirstW(snap, &pe)) {
+    do {
+      if (_wcsicmp(pe.szExeFile, L"LosslessScaling.exe") == 0) {
+        found = pe.th32ProcessID;
+        break;
+      }
+    } while (Process32NextW(snap, &pe));
+  }
+  CloseHandle(snap);
+  if (!found) return false;
+
+  HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, found);
+  if (!h) {
+    err = "OpenProcess LosslessScaling failed";
+    return false;
+  }
+  if (job_) {
+    // Best-effort: foreign process may refuse job assignment.
+    AssignProcessToJobObject(job_, h);
+  }
+  proc_ = h;
+  state_.pid = found;
+  state_.active = false;  // never assume FG already on our window
+  state_.status = FgStatus::Ready;
+  err.clear();
+  return true;
+}
+
+bool LosslessFgController::toggle(HWND target, std::string& err) {
+  if (!configured_) {
+    err = "not configured";
+    return false;
+  }
+  if (state_.multiplier <= 1) {
+    state_.status = FgStatus::Off;
+    state_.active = false;
+    err = "fg-x is 1 (off); use PageUp or --fg-x 2+";
+    return false;
+  }
+
+  const bool turning_on = !state_.active;
+  if (turning_on) {
+    if (!ensure_process(err)) return false;
+    if (!focus_window(target)) {
+      err = "failed to focus NexusCap window";
+      state_.status = FgStatus::Error;
+      return false;
+    }
+    Sleep(50);
+    hide_ls_windows();
+    if (!send_ls_hotkey()) {
+      err = "SendInput F24 failed";
+      state_.status = FgStatus::Error;
+      return false;
+    }
+    state_.active = true;
+    state_.status = FgStatus::On;
+    state_.last_error.clear();
+    return true;
+  }
+
+  // Turning OFF: ask LS to release the window, then kill the process so nothing
+  // keeps injecting frames (fixes "60|120" / duplicate LS after FG off).
+  if (proc_) {
+    focus_window(target);
+    Sleep(30);
+    send_ls_hotkey();
+    Sleep(80);
+  }
+  shutdown();
+  state_.active = false;
+  state_.status = FgStatus::Ready;
+  state_.last_error.clear();
+  err.clear();
   return true;
 }
 
@@ -438,36 +571,6 @@ bool LosslessFgController::send_ls_hotkey() {
   inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
   const UINT sent = SendInput(2, inputs, sizeof(INPUT));
   return sent == 2;
-}
-
-bool LosslessFgController::toggle(HWND target, std::string& err) {
-  if (!configured_) {
-    err = "not configured";
-    return false;
-  }
-  if (state_.multiplier <= 1) {
-    state_.status = FgStatus::Off;
-    state_.active = false;
-    err = "fg-x is 1 (off); use PageUp or --fg-x 2+";
-    return false;
-  }
-  if (!ensure_process(err)) return false;
-  if (!focus_window(target)) {
-    err = "failed to focus NexusCap window";
-    state_.status = FgStatus::Error;
-    return false;
-  }
-  Sleep(50);
-  hide_ls_windows();
-  if (!send_ls_hotkey()) {
-    err = "SendInput F24 failed";
-    state_.status = FgStatus::Error;
-    return false;
-  }
-  state_.active = !state_.active;
-  state_.status = state_.active ? FgStatus::On : FgStatus::Ready;
-  state_.last_error.clear();
-  return true;
 }
 
 bool LosslessFgController::set_multiplier(int multiplier, HWND target, std::string& err) {

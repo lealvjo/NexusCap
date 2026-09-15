@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `1.0.0` na `main` · branch de ajustes `v1.1` |
+| **Versão** | `1.1.0` (`main`) · instalador Inno em Releases |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -159,7 +159,7 @@ Placa HDMI (DShow)
 | **RenoDX / Neural Rendering** | Checkbox + presets Default / Natural / Cinematic; Delete liga/desliga NR. |
 | **Atalhos** | Remapeáveis. |
 
-Avisos leves no HUD ao ligar FG, subir multiplicador (2→3→4), ou ligar/desligar NR.
+Avisos leves (lobby toast + HUD na sessão): ao **ligar FG**, ao **subir** o multiplicador (2→3→4), e ao **ligar/desligar** Neural Rendering. Na sessão o tip aparece mesmo se o HUD estiver oculto.
 
 ---
 
@@ -222,6 +222,31 @@ powershell -ExecutionPolicy Bypass -File tools\setup_renodx.ps1
 ```
 
 Ou `build.bat`. POST_BUILD copia Streamline + `assets/logo.png`. Ícone do exe vem do `.rc`.
+
+---
+
+## Instalador (Inno Setup)
+
+Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Frame Gen continua opcional via Steam).
+
+**Requisitos extras:** [Inno Setup 6+](https://jrsoftware.org/isinfo.php) (o script pode instalar via winget) e, para embutir RenoDX, a pasta X2 (`C:\Program Files\DLSS5 MGF X2`).
+
+```bat
+tools\make_installer.bat
+rem ou:
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 1.1.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
+```
+
+| Peça | Caminho |
+|------|---------|
+| Script Inno | `packaging/NexusCap.iss` |
+| Stage limpo | `dist/stage/` |
+| Aviso LS | `packaging/NOTICE.txt` (wizard + pasta do app) |
+| Saída | `dist/NexusCap-Setup-*.exe` |
+
+Desinstalação remove o app; **não** apaga `%LOCALAPPDATA%\NexusCap\settings.ini`.
 
 ---
 

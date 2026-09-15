@@ -112,9 +112,9 @@ def make_arch_diagram(dst: Path) -> Path:
     boxes = [
         (40, 280, 260, 440, "HDMI\nConsole / PC", CYAN),
         (320, 280, 560, 440, "Placa captura\nDirectShow", CYAN),
-        (620, 180, 980, 540, "NexusCap  C++17\nLobby preview\n+ Present sessão", (62, 146, 204)),
-        (1040, 120, 1340, 280, "RenoDX / NR\n(opcional)", ACCENT),
-        (1040, 320, 1340, 480, "Frame Gen\nmira-lock", ACCENT),
+        (620, 180, 980, 540, "NexusCap  (C++)\nLobby + preview\n+ sessão na tela", (62, 146, 204)),
+        (1040, 120, 1340, 280, "Filtro RenoDX\n(opcional)", ACCENT),
+        (1040, 320, 1340, 480, "Frame Gen\nmira firme", ACCENT),
         (1040, 520, 1340, 640, "Monitor\nsaída limpa", GREEN),
     ]
     for x0, y0, x1, y1, label, col in boxes:
@@ -131,8 +131,8 @@ def make_arch_diagram(dst: Path) -> Path:
     arrow((980, 260), (1040, 200))
     arrow((980, 360), (1040, 400))
     arrow((1190, 480), (1190, 520))
-    d.text((40, 40), "Arquitetura: um Present. Zero recaptura de tela.", fill=WHITE, font=font_b)
-    d.text((40, 90), "Sinal HDMI → placa → NexusCap → enhance/FG → monitor", fill=MUTED, font=font_s)
+    d.text((40, 40), "Arquitetura: uma saída limpa. Sem recapturar a tela.", fill=WHITE, font=font_b)
+    d.text((40, 90), "Sinal HDMI → placa → NexusCap → filtro/Frame Gen → monitor", fill=MUTED, font=font_s)
     im.save(dst)
     return dst
 
@@ -144,7 +144,7 @@ def page_cover(c):
     draw_text(c, "NEXUSCAP", W / 2, H - 195, 36, True, WHITE, "center")
     draw_text(
         c,
-        "Captura HDMI nativa · Preview ao vivo · Alterações da CFG aparecem na hora",
+        "Captura HDMI nativa · Preview ao vivo · Frame Gen opcional (Lossless Scaling)",
         W / 2,
         H - 228,
         12,
@@ -154,8 +154,8 @@ def page_cover(c):
     )
     pills = [
         (W * 0.18, H * 0.40, "PREVIEW\nao vivo"),
-        (W * 0.50, H * 0.40, "CFG → PREVIEW\nna hora"),
-        (W * 0.82, H * 0.40, "FG + RenoDX\nsem hitch"),
+        (W * 0.50, H * 0.40, "AJUSTES → PREVIEW\nna hora"),
+        (W * 0.82, H * 0.40, "Frame Gen + filtro\nsem engasgo"),
     ]
     for cx, cy, label in pills:
         c.setFillColorRGB(*(x / 255 for x in CARD))
@@ -175,7 +175,7 @@ def page_problem(c):
     draw_text(c, "O problema que ninguém quer admitir", 40, H - 50, 22, True)
     wrap_draw(
         c,
-        "Viewers que aplicam filtro capturando a tela (ou a janela de outro app) geram hitch, latência e inconsistência. O compositor e o capturador brigam pelo mesmo frame.",
+        "Apps que “filtram” capturando a tela (ou a janela de outro programa) engasgam, atrasam a imagem e ficam inconsistentes. Dois programas brigam pelo mesmo quadro na tela.",
         40,
         H - 85,
         W - 80,
@@ -189,10 +189,10 @@ def page_problem(c):
     for i, line in enumerate(
         [
             "• Sinal → app → tela",
-            "• Recaptura da saída",
-            "• Hitch aleatório",
-            "• Latência empilhada",
-            "• FG amplifica o problema",
+            "• Recaptura o que já saiu",
+            "• Engasgos aleatórios",
+            "• Atraso se acumulando",
+            "• Frame Gen piora o caos",
             "• Ajuste “no escuro”",
         ]
     ):
@@ -201,11 +201,11 @@ def page_problem(c):
     for i, line in enumerate(
         [
             "• HDMI direto da placa",
-            "• Um Present D3D11",
+            "• Uma saída limpa pra tela",
             "• Preview ao vivo no lobby",
-            "• CFG muda → preview muda",
-            "• Frametime previsível",
-            "• FG mira-lock (flow 100)",
+            "• Ajustes → preview na hora",
+            "• Ritmo de frames estável",
+            "• Frame Gen com mira firme",
         ]
     ):
         draw_text(c, line, right_x, H - 195 - i * 28, 11)
@@ -218,7 +218,7 @@ def page_preview(c):
     draw_text(c, "Preview ao vivo — você vê antes de entrar", 40, H - 40, 20, True)
     wrap_draw(
         c,
-        "No lobby o HDMI já está rodando. Qualquer alteração na CFG (Frame Gen, escala, RenoDX, presets, atalhos) reflete no preview na hora — sem reiniciar, sem “adivinhar” o resultado.",
+        "No lobby o HDMI já está rodando. Qualquer mudança nos ajustes (Frame Gen, escala, filtro RenoDX, presets, atalhos) aparece no preview na hora — sem reiniciar, sem “adivinhar” o resultado.",
         40,
         H - 68,
         W - 80,
@@ -232,9 +232,9 @@ def page_preview(c):
     x = W * 0.62
     y = H - 120
     points = [
-        ("AO VIVO", "Sinal da placa no letterbox"),
-        ("CFG aberta", "Ajuste e veja no preview"),
-        ("HUD na hora", "FPS / FG / RenoDX atualizam"),
+        ("AO VIVO", "Sinal da placa, com barras pretas"),
+        ("Painel de ajustes", "Mude e veja no preview"),
+        ("Painel de métricas", "FPS / Frame Gen / filtro"),
         ("Iniciar", "Só então libera a placa"),
     ]
     for title, sub in points:
@@ -250,10 +250,10 @@ def page_preview(c):
 
 def page_cfg_live(c):
     fill_bg(c)
-    draw_text(c, "CFG → Preview na hora", 40, H - 40, 20, True)
+    draw_text(c, "Ajustes → Preview na hora", 40, H - 40, 20, True)
     wrap_draw(
         c,
-        "Painel Configurações (CFG) fica ao lado do preview. Liga Frame Gen, muda x2/x3/x4, escala GPU, RenoDX/NR ou preset visual — o HUD e o feedback no preview mudam imediatamente.",
+        "Painel de ajustes ao lado do preview. Frame Gen exige o app Lossless Scaling (não vem no NexusCap): tentamos achar sozinho; se falhar, use Pasta e aponte o LosslessScaling.exe. Escala, filtro RenoDX e presets Default/Natural/Cinematic também atualizam o preview na hora.",
         40,
         H - 68,
         W - 80,
@@ -266,8 +266,69 @@ def page_cfg_live(c):
     if PRINT_LOBBY.exists() or LIVE.exists():
         draw_image_fit(c, PRINT_LOBBY if PRINT_LOBBY.exists() else LIVE, W * 0.42, 40, W * 0.55, H - 130)
 
-    draw_text(c, "CFG", 40, H - 95, 9, True, CYAN)
+    draw_text(c, "Painel de ajustes", 40, H - 95, 9, True, CYAN)
     draw_text(c, "Preview (mesmo instante)", W * 0.42, H - 95, 9, True, GREEN)
+    c.showPage()
+
+
+def page_lossless_req(c):
+    """Frame Gen dependency — Lossless Scaling is NOT bundled."""
+    fill_bg(c)
+    draw_text(c, "Frame Gen — requisito importante", 40, H - 45, 22, True, ACCENT)
+    wrap_draw(
+        c,
+        "O NexusCap NÃO inclui o Lossless Scaling. Frame Gen (gerar frames extras para suavizar) é opcional: quem quiser usar precisa ter o Lossless Scaling instalado pela Steam.",
+        40,
+        H - 80,
+        W - 80,
+        12,
+        WHITE,
+    )
+
+    # two cards
+    c.setFillColorRGB(*(x / 255 for x in CARD))
+    c.roundRect(40, H / 2 - 20, (W - 100) / 2, 200, 14, fill=1, stroke=0)
+    c.roundRect(60 + (W - 100) / 2, H / 2 - 20, (W - 100) / 2, 200, 14, fill=1, stroke=0)
+
+    left = 60
+    right = 80 + (W - 100) / 2
+    draw_text(c, "1. Ter o Lossless Scaling", left, H / 2 + 150, 13, True, CYAN)
+    wrap_draw(
+        c,
+        "Instale pelo Steam. Sem o LosslessScaling.exe, captura HDMI e o filtro RenoDX funcionam normalmente — só o Frame Gen fica indisponível.",
+        left,
+        H / 2 + 120,
+        (W - 100) / 2 - 40,
+        10,
+        MUTED,
+    )
+
+    draw_text(c, "2. Caminho do programa", right, H / 2 + 150, 13, True, CYAN)
+    wrap_draw(
+        c,
+        "O app tenta achar sozinho (pasta Steam). Se não encontrar, abra Ajustes → Frame Gen → botão Pasta e selecione o LosslessScaling.exe. Auto limpa o caminho manual.",
+        right,
+        H / 2 + 120,
+        (W - 100) / 2 - 40,
+        10,
+        MUTED,
+    )
+
+    c.setFillColorRGB(*(x / 255 for x in CARD))
+    c.roundRect(40, 50, W - 80, 70, 12, fill=1, stroke=0)
+    c.setStrokeColorRGB(*(x / 255 for x in ACCENT))
+    c.setLineWidth(1.5)
+    c.roundRect(40, 50, W - 80, 70, 12, fill=0, stroke=1)
+    draw_text(c, "Resumo", 56, 95, 11, True, ACCENT)
+    draw_text(
+        c,
+        "Lossless Scaling = fora do instalador  ·  busca automática primeiro  ·  Ajustes → Pasta se falhar",
+        56,
+        70,
+        11,
+        False,
+        WHITE,
+    )
     c.showPage()
 
 
@@ -276,7 +337,7 @@ def page_arch(c, arch: Path):
     draw_text(c, "Arquitetura — uma passagem limpa", 40, H - 45, 20, True)
     wrap_draw(
         c,
-        "Regra de ouro: a captura nunca olha para o framebuffer já filtrado. Preview no lobby = sinal real; sessão = o mesmo pipeline, sem recapturar a tela.",
+        "Regra de ouro: a captura nunca “fotografa” a imagem já filtrada na tela. Preview no lobby = sinal real da placa; na sessão é o mesmo caminho, sem recapturar o monitor.",
         40,
         H - 75,
         W - 80,
@@ -288,10 +349,10 @@ def page_arch(c, arch: Path):
 
 def page_session(c):
     fill_bg(c)
-    draw_text(c, "Sessão — métricas ADV + Frame Gen", 40, H - 40, 18, True)
+    draw_text(c, "Sessão — métricas + Frame Gen", 40, H - 40, 18, True)
     draw_text(
         c,
-        "Gameplay limpo  ·  60 → 240 com FG x4  ·  STABLE  ·  e2e ~1 ms  ·  RenoDX ON",
+        "Gameplay limpo  ·  60 → 240 fps com Frame Gen x4  ·  ritmo estável  ·  atraso ~1 ms  ·  filtro RenoDX ligado",
         40,
         H - 60,
         10,
@@ -306,11 +367,11 @@ def page_session(c):
     x = W * 0.66
     y = H - 105
     for title, sub in [
-        ("FG x4", "60 → 240 LSFG3 mira-lock"),
-        ("STABLE", "frametime flat no gráfico"),
-        ("e2e ~1 ms", "latência de Present baixa"),
-        ("Analyze ON", "prova medida, não feeling"),
-        ("C++17", "hot path sem GC"),
+        ("Frame Gen x4", "60 → 240 fps, mira firme"),
+        ("Ritmo estável", "gráficos sem picos de engasgo"),
+        ("Atraso ~1 ms", "da captura até a tela"),
+        ("Analyze", "mede de verdade, não “feeling”"),
+        ("Feito em C++", "caminho do frame sem pausas"),
     ]:
         c.setFillColorRGB(*(v / 255 for v in CARD))
         c.roundRect(x, y - 28, W - x - 28, 52, 10, fill=1, stroke=0)
@@ -322,10 +383,10 @@ def page_session(c):
 
 def page_hud(c):
     fill_bg(c)
-    draw_text(c, "HUD avançado — transparência total", 40, H - 40, 18, True)
+    draw_text(c, "Painel de métricas — tudo visível", 40, H - 40, 18, True)
     wrap_draw(
         c,
-        "FPS cap | FG, frametime p95, sync, RenoDX, CPU/GPU/RAM/VRAM/PWR, last600. O mesmo nível de detalhe que o preview já adiantava no lobby.",
+        "FPS, Frame Gen, tempo entre frames, sync, filtro RenoDX, CPU/GPU/RAM/VRAM/energia. O mesmo nível de detalhe que o preview já adiantava no lobby.",
         40,
         H - 68,
         W - 80,
@@ -340,12 +401,12 @@ def page_product(c):
     fill_bg(c)
     draw_text(c, "O produto — o que o usuário sente", 40, H - 45, 20, True)
     cards = [
-        ("Preview ao vivo", "HDMI no lobby com letterbox. AO VIVO antes do Iniciar."),
-        ("CFG na hora", "Mudou FG, escala, RenoDX ou preset → preview e HUD atualizam."),
-        ("Sessão limpa", "Esc volta ao lobby. HUD compacto ou ADV com frametime."),
-        ("Escala 25–100%", "4K na placa, 50% no GPU se precisar."),
-        ("RenoDX / NR", "Enhance no Present; Delete liga/desliga e persiste."),
-        ("Frame Gen", "Lossless auto/Pasta. Mira-lock flow 100 anti-ghost."),
+        ("Preview ao vivo", "HDMI no lobby com barras pretas. AO VIVO antes do Iniciar."),
+        ("Ajustes na hora", "Mudou Frame Gen, escala, RenoDX ou preset → preview atualiza."),
+        ("Sessão limpa", "Esc volta ao lobby. Painel compacto ou avançado com gráficos."),
+        ("Escala 25–100%", "4K na placa, metade na GPU se precisar aliviar."),
+        ("Filtro RenoDX", "Melhora a imagem na saída; Delete liga/desliga e lembra."),
+        ("Frame Gen", "Opcional. Exige Lossless Scaling (Steam). Auto ou Pasta nos ajustes."),
     ]
     cols, rows = 3, 2
     gap = 16
@@ -365,31 +426,84 @@ def page_product(c):
     c.showPage()
 
 
-def page_cpp(c):
+def page_hotkeys(c):
+    """Default shortcuts — plain language for non-dev audience."""
     fill_bg(c)
-    draw_text(c, "Por que C++17 — e por que isso vende", 40, H - 50, 20, True)
+    draw_text(c, "Atalhos padrão (podem mudar nos ajustes)", 40, H - 42, 20, True)
     wrap_draw(
         c,
-        "O caminho do frame é nativo, determinístico e medível — por isso o preview consegue acompanhar a CFG em tempo real.",
+        "Na sessão e no lobby, teclas rápidas controlam Frame Gen, filtro e painéis. Tudo remapeável em Ajustes → Atalhos.",
+        40,
+        H - 70,
+        W - 80,
+        11,
+    )
+
+    keys = [
+        ("Esc", "Volta ao lobby (não fecha o app de cara)"),
+        ("Page Down", "Liga / desliga Frame Gen"),
+        ("Page Up", "Cicla Frame Gen: x2 → x3 → x4"),
+        ("Delete", "Liga / desliga o filtro RenoDX (Neural Rendering)"),
+        ("Home", "Overlay RenoDX (presets / detalhes do filtro)"),
+        ("F3", "Mostra / esconde o painel de métricas"),
+        ("F4", "Analyze — grava prova de desempenho"),
+        ("F11", "Tela cheia"),
+        ("F12", "Abre o painel de ajustes (lobby)"),
+    ]
+
+    left_x, right_x = 48, W / 2 + 10
+    col_w = W / 2 - 70
+    y0 = H - 115
+    row_h = 38
+    for i, (key, desc) in enumerate(keys):
+        col = 0 if i < 5 else 1
+        row = i if i < 5 else i - 5
+        x = left_x if col == 0 else right_x
+        y = y0 - row * row_h
+        c.setFillColorRGB(*(v / 255 for v in CARD))
+        c.roundRect(x, y - 8, col_w, 32, 8, fill=1, stroke=0)
+        draw_text(c, key, x + 12, y + 2, 11, True, CYAN)
+        draw_text(c, desc, x + 118, y + 2, 10, False, WHITE)
+
+    c.setFillColorRGB(*(v / 255 for v in CARD))
+    c.roundRect(40, 36, W - 80, 48, 10, fill=1, stroke=0)
+    draw_text(
+        c,
+        "Dica: Frame Gen e filtro RenoDX são independentes — pode deixar o Frame Gen ligado e só desligar o filtro com Delete.",
+        56,
+        52,
+        10,
+        False,
+        MUTED,
+    )
+    c.showPage()
+
+
+def page_cpp(c):
+    fill_bg(c)
+    draw_text(c, "Por que C++ — e por que isso importa pra você", 40, H - 50, 20, True)
+    wrap_draw(
+        c,
+        "O caminho do quadro (da placa até a tela) é nativo e previsível. Sem “pausas de limpeza de memória” no meio do jogo — por isso o preview acompanha os ajustes em tempo real e o ritmo fica estável.",
         40,
         H - 80,
         W - 80,
         11,
     )
     rows = [
-        ("Latência", "Sem GC no hot path. Cada ms conta em captura + FG."),
-        ("APIs Windows", "DirectShow, D3D11, WASAPI, ReShade — no mesmo processo."),
-        ("Preview vivo", "Mesmo sinal da placa no lobby; CFG não precisa “aplicar e reabrir”."),
-        ("Controle GPU", "Decode NV12, scale e Present sob nosso código."),
-        ("Qualidade", "Testes unitários, analyze JSONL, HUD de hitch/frametime."),
-        ("Marca", "Logo no app, no .exe e na experiência do lobby."),
+        ("Resposta rápida", "Sem pausas automáticas de memória no caminho da imagem. Cada milissegundo conta."),
+        ("Tudo no mesmo app", "Captura, desenho na tela, áudio e filtro visual juntos — sem gambiarra entre programas."),
+        ("Preview vivo", "Mesmo sinal da placa no lobby; ajustes não precisam “aplicar e reabrir”."),
+        ("Controle da imagem", "Conversão de cor, escala e saída pra tela sob nosso código."),
+        ("Qualidade", "Testes automáticos, Analyze com log, painel de engasgos e ritmo de frames."),
+        ("Marca", "Logo no app, no instalável e na experiência do lobby."),
     ]
     y = H - 130
     for title, body in rows:
         c.setFillColorRGB(*(v / 255 for v in CYAN))
         c.circle(52, y + 6, 5, fill=1, stroke=0)
         draw_text(c, title, 70, y, 12, True)
-        draw_text(c, body, 200, y, 11, False, MUTED)
+        draw_text(c, body, 200, y, 10, False, MUTED)
         y -= 42
     c.showPage()
 
@@ -401,10 +515,10 @@ def page_close(c):
     draw_text(c, "NexusCap", W / 2, H - 190, 28, True, WHITE, "center")
     draw_text(
         c,
-        "HDMI nativo. Preview ao vivo. CFG que você vê na hora.",
+        "HDMI nativo. Preview ao vivo. Frame Gen opcional (Lossless Scaling não incluso).",
         W / 2,
         H - 220,
-        13,
+        12,
         False,
         MUTED,
         "center",
@@ -414,7 +528,7 @@ def page_close(c):
     draw_text(c, "Próximo passo", W / 2, H / 2 + 25, 12, True, CYAN, "center")
     draw_text(c, "Demo ao vivo · build Release · repo privado v1.0", W / 2, H / 2 - 5, 12, False, WHITE, "center")
     draw_text(c, "github.com/lealvjo/NexusCap", W / 2, H / 2 - 35, 11, False, MUTED, "center")
-    draw_text(c, "Feito em C++17  ·  Windows x64  ·  D3D11 / DirectShow", W / 2, 40, 9, False, MUTED, "center")
+    draw_text(c, "Feito em C++  ·  Windows 64-bit  ·  captura + saída nativas", W / 2, 40, 9, False, MUTED, "center")
     c.showPage()
 
 
@@ -427,10 +541,12 @@ def main() -> None:
     page_problem(c)
     page_preview(c)
     page_cfg_live(c)
+    page_lossless_req(c)
     page_arch(c, arch)
     page_session(c)
     page_hud(c)
     page_product(c)
+    page_hotkeys(c)
     page_cpp(c)
     page_close(c)
     c.save()

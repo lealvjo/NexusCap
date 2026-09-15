@@ -92,6 +92,46 @@ inline bool settings_imply_runtime_on_at_boot(bool enhance_renodx, bool neural_r
   return false;  // always OFF until Bridge pulse
 }
 
+// Lobby CFG: enable/disable or change Default/Natural/Cinematic while preview is live.
+struct LobbyRenodxPreviewPlan {
+  bool show_on_present = false;       // want NR → visible via lobby Present
+  bool sync_preset_files = false;     // rewrite feed + ReShade preset keys
+  bool need_nr_pulse = false;         // single Bridge pulse to match want↔runtime
+  bool need_preset_reload_cycle = false;  // OFF→ON so RenoDX re-reads NRPreset/feed
+  bool resulting_runtime_on = false;
+};
+
+inline LobbyRenodxPreviewPlan plan_lobby_renodx_toggle(bool enhance_renodx, bool neural_rendering_flag,
+                                                      bool runtime_on) {
+  LobbyRenodxPreviewPlan p;
+  const bool want = want_neural_rendering(enhance_renodx, neural_rendering_flag);
+  p.show_on_present = want;
+  const NeuralRuntimePlan nr = plan_neural_runtime(want, runtime_on);
+  p.need_nr_pulse = nr.need_bridge_pulse;
+  p.resulting_runtime_on = nr.resulting_runtime_on;
+  return p;
+}
+
+inline LobbyRenodxPreviewPlan plan_lobby_renodx_preset_change(bool enhance_renodx, bool neural_rendering_flag,
+                                                             int old_preset, int new_preset, bool runtime_on) {
+  LobbyRenodxPreviewPlan p;
+  const bool want = want_neural_rendering(enhance_renodx, neural_rendering_flag);
+  p.show_on_present = want;
+  const int a = old_preset < 0 ? 0 : (old_preset > 2 ? 2 : old_preset);
+  const int b = new_preset < 0 ? 0 : (new_preset > 2 ? 2 : new_preset);
+  p.sync_preset_files = (a != b);
+  if (want && runtime_on && p.sync_preset_files) {
+    // Disk write alone may not refresh RenoDX look — cycle NR to re-ingest preset.
+    p.need_preset_reload_cycle = true;
+    p.resulting_runtime_on = true;
+  } else {
+    const NeuralRuntimePlan nr = plan_neural_runtime(want, runtime_on);
+    p.need_nr_pulse = nr.need_bridge_pulse;
+    p.resulting_runtime_on = nr.resulting_runtime_on;
+  }
+  return p;
+}
+
 bool dlss5_bridge_available();
 bool dlss5_bridge_ready_for_nr();
 bool dlss5_bridge_pulse_nr();
@@ -100,5 +140,9 @@ bool dlss5_bridge_query(Dlss5BridgeStatus& out);
 // Apply want_on: sync feed/ReShade files + Bridge pulse if runtime differs.
 // Updates *runtime_on in/out. Returns true if files synced and (pulse ok or not needed).
 bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on);
+
+// Lobby live preview: sync visual preset + apply NR (reload cycle when already ON).
+bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
+                                    bool* runtime_on);
 
 }  // namespace nexuscap

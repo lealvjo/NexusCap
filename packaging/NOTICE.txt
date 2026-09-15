@@ -1,0 +1,13 @@
+NexusCap — avisos de distribuição
+=================================
+
+O instalador NÃO inclui o Lossless Scaling (Steam).
+Frame Gen é opcional: instale o Lossless Scaling à parte; o NexusCap tenta
+encontrar o LosslessScaling.exe automaticamente ou via Ajustes → Pasta.
+
+Incluídos (quando presentes no build):
+  - ReShade / RenoDX / dlss5-feed / dlss5-bridge (enhance Neural Rendering)
+  - NVIDIA Streamline / nvngx (caminho Streamline opcional)
+
+Settings do usuário ficam em %LOCALAPPDATA%\NexusCap\ — não são removidos
+na desinstalação (preserve suas preferências).

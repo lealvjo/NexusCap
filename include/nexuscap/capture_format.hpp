@@ -194,9 +194,15 @@ inline bool color_decode_differs(int space_a, int range_a, int space_b, int rang
          std::abs(ca.b_cb - cb.b_cb) > 1e-4f;
 }
 
-// Lobby preview band is CPU NV12→RGBA for ImGui. RenoDX/NR does NOT run on that texture.
-inline constexpr bool kLobbyPreviewUsesRenodxNeural = false;
-// Session (and lobby window Present via ReShade) can run RenoDX when enabled.
+// Lobby preview band decode is still CPU NV12→RGBA; when RenoDX is ON the band also
+// gets a CPU look-alike grade for Default/Natural/Cinematic (instant radio feedback).
+inline constexpr bool kLobbyPreviewCpuBandUsesRenodxNeural = false;
+inline constexpr bool kLobbyPreviewAppliesVisualPresetGrade = true;
+// ReShade hooks lobby Present: when NR is ON, filters also apply to the whole window.
+inline constexpr bool kLobbyPresentShowsRenodxWhenEnabled = true;
+// Product contract: toggling RenoDX + presets must change what you see in the lobby preview.
+inline constexpr bool kLobbyPreviewUsesRenodxNeural = kLobbyPresentShowsRenodxWhenEnabled;
+// Session Present can also run RenoDX when enabled.
 inline constexpr bool kSessionPresentCanUseRenodxNeural = true;
 
 // Preference for "Qualquer" / pick_best: NV12 first (validated HDMI).

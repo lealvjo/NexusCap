@@ -196,7 +196,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   g_session_signal_w = cap_w;
   g_session_signal_h = cap_h;
   g_session_fullscreen = cfg.exclusive_fullscreen && !cfg.smoke;
-  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, L"NexusCap");
+  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, L"Nexus Cap v1.1.0");
   if (!hwnd) {
     std::fprintf(stderr, "create window failed\n");
     return 1;
@@ -413,6 +413,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.hw_info = cfg.hw_info;
   g_overlay = cfg.show_overlay;
   SessionNotice session_notice;
+  // Soft tip on enter when FG is armed in CFG (Page Down still toggles runtime).
+  if (cfg.fg_multiplier >= 2) {
+    session_notice.push(session_notice_fg_on(), clock.now_ms());
+  } else if ((cfg.enhance == EnhanceBackend::Renodx) && cfg.neural_rendering) {
+    session_notice.push(session_notice_nr_on(), clock.now_ms());
+  }
   g_analyze = true;
   analyze.set_verbose(true);
 
@@ -715,6 +721,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.fg_flow_scale = fg.state().flow_scale;
     overlay.fg_capture_api = fg.state().capture_api;
     overlay.session_notice = session_notice.visible(now);
+    // Soft tips must be readable even if the user hid the HUD.
+    if (session_notice.active(now)) overlay.visible = true;
     if (overlay.fg_on && overlay.fg_multiplier >= 2) {
       overlay.fps_fg_est = fps_smooth * static_cast<double>(overlay.fg_multiplier);
     } else {

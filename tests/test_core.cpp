@@ -528,7 +528,14 @@ TEST_CASE("session notices for FG enable/up and NR on/off") {
   CHECK(session_notice_fg_on().find("Frame Gen ON") != std::string::npos);
   CHECK(session_notice_fg_multiplier_up(3).find("x3") != std::string::npos);
   CHECK(session_notice_nr_on().find("ON") != std::string::npos);
+  CHECK(session_notice_nr_on().find("imagem mais bonita") != std::string::npos);
   CHECK(session_notice_nr_off().find("OFF") != std::string::npos);
+  {
+    std::string t, d;
+    session_notice_split(session_notice_nr_on(), t, d);
+    CHECK(t.find("Neural Rendering ON") != std::string::npos);
+    CHECK(d.find("imagem mais bonita") != std::string::npos);
+  }
 
   SessionNotice n;
   n.push(session_notice_fg_on(), 1000.0, 500.0);
@@ -1420,6 +1427,124 @@ TEST_CASE("neural rendering toggle helpers independent of FG") {
   CHECK(loaded.hotkeys.vk_nr_toggle == 0x2E);
 }
 
+TEST_CASE("lobby preview visual preset grade changes pixels") {
+  CHECK(kLobbyPreviewAppliesVisualPresetGrade);
+  CHECK(lobby_preview_grade_is_identity(lobby_preview_grade_for_preset(0, false)));
+  CHECK(lobby_preview_grade_is_identity(lobby_preview_grade_for_preset(2, false)));
+
+  const auto g0 = lobby_preview_grade_for_preset(0, true);
+  const auto g1 = lobby_preview_grade_for_preset(1, true);
+  const auto g2 = lobby_preview_grade_for_preset(2, true);
+  CHECK_FALSE(lobby_preview_grade_is_identity(g0));
+  CHECK(lobby_preview_grades_differ(g0, g1));
+  CHECK(lobby_preview_grades_differ(g0, g2));
+  CHECK(lobby_preview_grades_differ(g1, g2));
+
+  uint8_t px0[4] = {128, 100, 80, 255};
+  uint8_t px1[4] = {128, 100, 80, 255};
+  uint8_t px2[4] = {128, 100, 80, 255};
+  apply_lobby_preview_grade_pixel(px0, g0);
+  apply_lobby_preview_grade_pixel(px1, g1);
+  apply_lobby_preview_grade_pixel(px2, g2);
+  // Default / Natural / Cinematic must not produce the same RGB on a midtone sample.
+  CHECK(!(px0[0] == px1[0] && px0[1] == px1[1] && px0[2] == px1[2]));
+  CHECK(!(px0[0] == px2[0] && px0[1] == px2[1] && px0[2] == px2[2]));
+  CHECK(!(px1[0] == px2[0] && px1[1] == px2[1] && px1[2] == px2[2]));
+
+  // Off → identity leaves buffer untouched.
+  uint8_t raw[4] = {90, 110, 130, 255};
+  uint8_t copy[4] = {90, 110, 130, 255};
+  apply_lobby_preview_grade_pixel(copy, lobby_preview_grade_for_preset(2, false));
+  CHECK(copy[0] == raw[0]);
+  CHECK(copy[1] == raw[1]);
+  CHECK(copy[2] == raw[2]);
+
+  // rgba batch path
+  uint8_t buf[8] = {128, 100, 80, 255, 200, 180, 160, 255};
+  apply_lobby_preview_grade_rgba(buf, 2, g2);
+  CHECK(buf[3] == 255);
+  CHECK(buf[7] == 255);
+}
+
+TEST_CASE("app version brand string") {
+  CHECK(app_version_is(1, 1, 0));
+  CHECK(std::string(kAppVersion) == "1.1.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v1.1.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.0");
+}
+
+TEST_CASE("lobby RenoDX preview: toggle and presets apply on Present") {
+  // Product: enable/disable RenoDX in CFG must show/hide filters on lobby preview Present.
+  CHECK(kLobbyPresentShowsRenodxWhenEnabled);
+  CHECK(kLobbyPreviewUsesRenodxNeural);
+  CHECK_FALSE(kLobbyPreviewCpuBandUsesRenodxNeural);
+
+  {
+    // Enable while runtime OFF → pulse ON, preview shows RenoDX.
+    const auto p = plan_lobby_renodx_toggle(true, true, false);
+    CHECK(p.show_on_present);
+    CHECK(p.need_nr_pulse);
+    CHECK_FALSE(p.need_preset_reload_cycle);
+    CHECK(p.resulting_runtime_on);
+  }
+  {
+    // Disable while runtime ON → pulse OFF, preview limpo.
+    const auto p = plan_lobby_renodx_toggle(false, false, true);
+    CHECK_FALSE(p.show_on_present);
+    CHECK(p.need_nr_pulse);
+    CHECK_FALSE(p.resulting_runtime_on);
+  }
+  {
+    // Already matched ON — no extra pulse on re-check.
+    const auto p = plan_lobby_renodx_toggle(true, true, true);
+    CHECK(p.show_on_present);
+    CHECK_FALSE(p.need_nr_pulse);
+  }
+
+  // Default → Natural / Cinematic while NR ON: sync files + OFF→ON reload cycle.
+  {
+    const auto p = plan_lobby_renodx_preset_change(true, true, 0, 2, true);
+    CHECK(p.show_on_present);
+    CHECK(p.sync_preset_files);
+    CHECK(p.need_preset_reload_cycle);
+    CHECK_FALSE(p.need_nr_pulse);
+    CHECK(p.resulting_runtime_on);
+  }
+  {
+    const auto p = plan_lobby_renodx_preset_change(true, true, 1, 0, true);
+    CHECK(p.sync_preset_files);
+    CHECK(p.need_preset_reload_cycle);
+  }
+  {
+    // Same preset → no sync / no cycle.
+    const auto p = plan_lobby_renodx_preset_change(true, true, 2, 2, true);
+    CHECK_FALSE(p.sync_preset_files);
+    CHECK_FALSE(p.need_preset_reload_cycle);
+  }
+  {
+    // Preset change with RenoDX OFF: still write files, no Present filters, no cycle.
+    const auto p = plan_lobby_renodx_preset_change(false, false, 0, 1, false);
+    CHECK_FALSE(p.show_on_present);
+    CHECK(p.sync_preset_files);
+    CHECK_FALSE(p.need_preset_reload_cycle);
+    CHECK_FALSE(p.need_nr_pulse);
+  }
+  {
+    // Preset change while enhance ON but runtime still OFF → single enable pulse (boot).
+    const auto p = plan_lobby_renodx_preset_change(true, true, 0, 1, false);
+    CHECK(p.show_on_present);
+    CHECK(p.sync_preset_files);
+    CHECK_FALSE(p.need_preset_reload_cycle);
+    CHECK(p.need_nr_pulse);
+    CHECK(p.resulting_runtime_on);
+  }
+
+  // Distinct disk fingerprints so Default/Natural/Cinematic look different on preview.
+  CHECK(renodx_visual_presets_differ_on_disk(0, 1));
+  CHECK(renodx_visual_presets_differ_on_disk(0, 2));
+  CHECK(renodx_visual_presets_differ_on_disk(1, 2));
+}
+
 TEST_CASE("neural rendering Bridge plan: enable/disable cannot desync") {
   // Regression: settings ON at boot must NOT imply runtime ON (ReShade.log: enabled=OFF).
   CHECK_FALSE(settings_imply_runtime_on_at_boot(true, true));
@@ -1520,15 +1645,17 @@ TEST_CASE("format change must not re-query device every frame") {
 }
 
 TEST_CASE("lobby preview vs RenoDX and real color/format contracts") {
-  // Preview band = CPU NV12→RGBA. RenoDX does NOT evaluate that texture.
-  CHECK_FALSE(kLobbyPreviewUsesRenodxNeural);
+  // CPU band stays NV12→RGBA; with enhance ON a visual grade previews Default/Natural/Cinematic.
+  CHECK_FALSE(kLobbyPreviewCpuBandUsesRenodxNeural);
+  CHECK(kLobbyPreviewAppliesVisualPresetGrade);
+  CHECK(kLobbyPresentShowsRenodxWhenEnabled);
+  CHECK(kLobbyPreviewUsesRenodxNeural);
   CHECK(kSessionPresentCanUseRenodxNeural);
 
-  // Checkbox "no Start": want NR only when RenoDX + flag; preview path stays CPU.
+  // Checkbox: want NR only when RenoDX + flag; Present path shows filters on preview.
   CHECK(want_neural_rendering(true, true));
   CHECK_FALSE(want_neural_rendering(false, true));
-  // Even with NR wanted, lobby preview decode contract is still CPU (no NR on band).
-  CHECK_FALSE(kLobbyPreviewUsesRenodxNeural);
+  CHECK_FALSE(kLobbyPreviewCpuBandUsesRenodxNeural);
 
   // Color/range are REAL in decode matrix (not cosmetic labels).
   CHECK(color_decode_differs(/*709 lim*/ 2, 0, /*709 full*/ 2, 1));

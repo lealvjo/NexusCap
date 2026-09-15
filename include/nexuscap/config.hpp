@@ -8,6 +8,7 @@
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/system_metrics.hpp"
+#include "nexuscap/version.hpp"
 
 namespace nexuscap {
 
@@ -257,8 +258,26 @@ inline std::string session_notice_fg_multiplier_up(int mult) {
   mult = clamp_fg_multiplier(mult);
   return "Frame Gen x" + std::to_string(mult) + " — mais FPS, mais carga GPU";
 }
-inline std::string session_notice_nr_on() { return "Neural Rendering ON — mais qualidade, mais GPU"; }
-inline std::string session_notice_nr_off() { return "Neural Rendering OFF"; }
+inline std::string session_notice_nr_on() {
+  return "Neural Rendering ON — imagem mais bonita; mais GPU";
+}
+inline std::string session_notice_nr_off() {
+  return "Neural Rendering OFF — imagem limpa; menos GPU";
+}
+
+// Split "titulo — detalhe" so HUD/toast never clip the second half.
+inline void session_notice_split(const std::string& msg, std::string& title, std::string& detail) {
+  title.clear();
+  detail.clear();
+  if (msg.empty()) return;
+  const auto pos = msg.find(" — ");
+  if (pos == std::string::npos) {
+    title = msg;
+    return;
+  }
+  title = msg.substr(0, pos);
+  detail = msg.substr(pos + 3);
+}
 
 // Warn when enabling FG; when cycling, only if multiplier went up (2→3→4).
 inline bool session_notice_for_fg_toggle(bool now_active) { return now_active; }

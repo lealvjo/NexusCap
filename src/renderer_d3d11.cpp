@@ -600,9 +600,14 @@ void MetricsHud::reposition() {
   if (!hwnd_ || !owner_) return;
   RECT r{};
   GetWindowRect(owner_, &r);
-  const int ww = hud_panel_width(state_.advanced_metrics);
+  const int ww = (std::max)(hud_panel_width(state_.advanced_metrics),
+                            state_.session_notice.empty() ? 0 : 720);
   int hh = hud_panel_height(state_.advanced_metrics, state_.hw_info);
-  if (!state_.session_notice.empty()) hh += 32;
+  if (!state_.session_notice.empty()) {
+    std::string t, d;
+    session_notice_split(state_.session_notice, t, d);
+    hh += d.empty() ? 32 : 56;
+  }
   SetWindowPos(hwnd_, HWND_TOPMOST, r.left + 24, r.top + 24, ww, hh,
                SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
@@ -653,9 +658,17 @@ void MetricsHud::paint(HDC hdc) const {
     if (o.hw_info) n = append_hw_metric_lines(lines, n, 15, o);
     const int hotkey_i = n;
     swprintf(lines[n++], 180, L"F3 HUD  PgDn FG  Delete NR  Esc");
-    const int notice_i = (!o.session_notice.empty() && n < 16) ? n : -1;
-    if (notice_i >= 0) {
-      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(o.session_notice).c_str());
+    int notice_i = -1;
+    int notice_i2 = -1;
+    if (!o.session_notice.empty() && n < 15) {
+      std::string title, detail;
+      session_notice_split(o.session_notice, title, detail);
+      notice_i = n;
+      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(title.empty() ? o.session_notice : title).c_str());
+      if (!detail.empty() && n < 16) {
+        notice_i2 = n;
+        swprintf(lines[n++], 180, L"  %s", utf8_to_wide_hud(detail).c_str());
+      }
     }
     for (int i = 0; i < n; ++i) {
       COLORREF c = RGB(200, 200, 210);
@@ -665,7 +678,7 @@ void MetricsHud::paint(HDC hdc) const {
       else if (i == 4) c = o.sync_image ? RGB(120, 220, 255) : RGB(255, 160, 90);
       else if (o.hw_info && i >= hw_start && i < hotkey_i) c = RGB(140, 255, 180);
       else if (i == hotkey_i) c = RGB(150, 150, 160);
-      else if (i == notice_i) c = RGB(255, 200, 120);
+      else if (i == notice_i || i == notice_i2) c = RGB(255, 200, 120);
       SetTextColor(hdc, c);
       TextOutW(hdc, 14, 10 + i * 28, lines[i], static_cast<int>(wcslen(lines[i])));
     }
@@ -731,9 +744,17 @@ void MetricsHud::paint(HDC hdc) const {
     swprintf(lines[idx++], 180, L"last600 (aguardando ~10s de frames...)");
   }
   swprintf(lines[idx++], 180, L"F3 HUD  F4 analyze  PgDn FG  Delete NR  Home RenoDX  Esc");
-  const int notice_i = (!o.session_notice.empty() && idx < 20) ? idx : -1;
-  if (notice_i >= 0) {
-    swprintf(lines[idx++], 180, L"%s", utf8_to_wide_hud(o.session_notice).c_str());
+  int notice_i = -1;
+  int notice_i2 = -1;
+  if (!o.session_notice.empty() && idx < 18) {
+    std::string title, detail;
+    session_notice_split(o.session_notice, title, detail);
+    notice_i = idx;
+    swprintf(lines[idx++], 180, L"%s", utf8_to_wide_hud(title.empty() ? o.session_notice : title).c_str());
+    if (!detail.empty() && idx < 20) {
+      notice_i2 = idx;
+      swprintf(lines[idx++], 180, L"  %s", utf8_to_wide_hud(detail).c_str());
+    }
   }
   const int nlines = idx;
 
@@ -747,11 +768,10 @@ void MetricsHud::paint(HDC hdc) const {
     if (i == 6) return RGB(180, 160, 255);
     if (i == 7) return o.fg_on ? RGB(120, 255, 200) : RGB(160, 170, 180);
     if (o.hw_info && i >= hw_start && i < hw_end) return RGB(140, 255, 180);
-    if (i == notice_i) return RGB(255, 200, 120);
-    if (notice_i >= 0 && i == nlines - 2) return RGB(150, 150, 160);
+    if (i == notice_i || i == notice_i2) return RGB(255, 200, 120);
+    if (notice_i >= 0 && i == notice_i - 1) return RGB(150, 150, 160);
     if (i == nlines - 1 && notice_i < 0) return RGB(150, 150, 160);
     if (i == nlines - 2 && notice_i < 0) return RGB(255, 140, 140);
-    if (i == nlines - 3 && notice_i >= 0) return RGB(255, 140, 140);
     return RGB(255, 180, 120);
   };
 

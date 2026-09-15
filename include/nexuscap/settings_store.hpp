@@ -101,6 +101,82 @@ inline bool renodx_visual_presets_differ_on_disk(int a, int b) {
          renodx_feed_model_preset(a) != renodx_feed_model_preset(b);
 }
 
+// CPU look-alike for Default/Natural/Cinematic on the lobby preview band (ImGui texture).
+// RenoDX still runs on Present; this grade makes radio changes visible immediately.
+struct LobbyPreviewGrade {
+  float contrast = 1.f;
+  float saturation = 1.f;
+  float brightness = 0.f;
+  float warm = 0.f;  // +R / -B
+};
+
+inline bool lobby_preview_grade_is_identity(const LobbyPreviewGrade& g) {
+  return g.contrast == 1.f && g.saturation == 1.f && g.brightness == 0.f && g.warm == 0.f;
+}
+
+inline LobbyPreviewGrade lobby_preview_grade_for_preset(int visual_preset, bool enhance_on) {
+  LobbyPreviewGrade g;
+  if (!enhance_on) return g;
+  switch (clamp_renodx_visual_preset(visual_preset)) {
+    case static_cast<int>(RenodxVisualPreset::Natural):
+      g.contrast = 1.06f;
+      g.saturation = 1.10f;
+      g.brightness = 0.025f;
+      g.warm = 0.01f;
+      break;
+    case static_cast<int>(RenodxVisualPreset::Cinematic):
+      g.contrast = 1.22f;
+      g.saturation = 0.82f;
+      g.brightness = -0.04f;
+      g.warm = 0.06f;
+      break;
+    default:  // Default — subtle clarity
+      g.contrast = 1.10f;
+      g.saturation = 1.03f;
+      g.brightness = 0.f;
+      g.warm = 0.f;
+      break;
+  }
+  return g;
+}
+
+inline bool lobby_preview_grades_differ(const LobbyPreviewGrade& a, const LobbyPreviewGrade& b) {
+  return a.contrast != b.contrast || a.saturation != b.saturation || a.brightness != b.brightness ||
+         a.warm != b.warm;
+}
+
+inline uint8_t lobby_preview_grade_clamp_u8(float v) {
+  if (v < 0.f) return 0;
+  if (v > 255.f) return 255;
+  return static_cast<uint8_t>(v + 0.5f);
+}
+
+inline void apply_lobby_preview_grade_pixel(uint8_t* rgb, const LobbyPreviewGrade& g) {
+  if (!rgb || lobby_preview_grade_is_identity(g)) return;
+  float r = rgb[0] / 255.f;
+  float gg = rgb[1] / 255.f;
+  float b = rgb[2] / 255.f;
+  r = (r - 0.5f) * g.contrast + 0.5f + g.brightness;
+  gg = (gg - 0.5f) * g.contrast + 0.5f + g.brightness;
+  b = (b - 0.5f) * g.contrast + 0.5f + g.brightness;
+  const float y = 0.2126f * r + 0.7152f * gg + 0.0722f * b;
+  r = y + (r - y) * g.saturation;
+  gg = y + (gg - y) * g.saturation;
+  b = y + (b - y) * g.saturation;
+  r += g.warm;
+  b -= g.warm;
+  rgb[0] = lobby_preview_grade_clamp_u8(r * 255.f);
+  rgb[1] = lobby_preview_grade_clamp_u8(gg * 255.f);
+  rgb[2] = lobby_preview_grade_clamp_u8(b * 255.f);
+}
+
+inline void apply_lobby_preview_grade_rgba(uint8_t* rgba, int pixel_count, const LobbyPreviewGrade& g) {
+  if (!rgba || pixel_count <= 0 || lobby_preview_grade_is_identity(g)) return;
+  for (int i = 0; i < pixel_count; ++i) {
+    apply_lobby_preview_grade_pixel(rgba + static_cast<size_t>(i) * 4, g);
+  }
+}
+
 inline constexpr int kMinScalePercent = 25;
 inline constexpr int kMaxScalePercent = 100;
 

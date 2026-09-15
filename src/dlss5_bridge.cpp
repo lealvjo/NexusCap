@@ -89,4 +89,17 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
   return files_ok;
 }
 
+bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
+                                    bool* runtime_on) {
+  if (!runtime_on) return false;
+  const bool files_ok = sync_renodx_visual_preset_files(exe_dir, visual_preset);
+  if (want_nr && *runtime_on) {
+    // Force RenoDX to re-read NRPreset / feed model after Default↔Natural↔Cinematic.
+    if (!apply_neural_rendering_state(exe_dir, false, runtime_on)) return false;
+    if (!apply_neural_rendering_state(exe_dir, true, runtime_on)) return false;
+    return files_ok;
+  }
+  return apply_neural_rendering_state(exe_dir, want_nr, runtime_on) || files_ok;
+}
+
 }  // namespace nexuscap

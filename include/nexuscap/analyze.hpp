@@ -7,11 +7,12 @@
 
 #include "nexuscap/hitch.hpp"
 #include "nexuscap/stats_window.hpp"
+#include "nexuscap/version.hpp"
 
 namespace nexuscap {
 
 struct SessionInfo {
-  std::string build = "NexusCap-0.1.0";
+  std::string build = kAppAnalyzeBuild;
   std::string device;
   int width = 0;
   int height = 0;

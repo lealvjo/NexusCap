@@ -2,12 +2,14 @@
 #include "nexuscap/capture.hpp"
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/clock.hpp"
+#include "nexuscap/config.hpp"
 #include "nexuscap/display_geom.hpp"
 #include "nexuscap/dlss_options.hpp"
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/system_metrics.hpp"
+#include "nexuscap/version.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
@@ -114,7 +116,8 @@ struct LobbyPreview {
   ID3D11ShaderResourceView* srv = nullptr;
   int tex_w = 0;
   int tex_h = 0;
-  std::vector<uint8_t> rgba;
+  std::vector<uint8_t> rgba_base;  // decode only
+  std::vector<uint8_t> rgba;       // graded for upload
   std::string err;
   std::string started_dev;
   int started_w = 0;
@@ -124,6 +127,8 @@ struct LobbyPreview {
   int started_buf = -1;
   int color_space = 0;
   int color_range = 0;
+  int visual_preset = 0;
+  bool enhance_preview = false;
   double fps_ema = 0;
   double last_frame_ms = 0;
   uint64_t frames_seen = 0;
@@ -132,6 +137,16 @@ struct LobbyPreview {
   void apply_color(int space, int range) {
     color_space = clamp_color_space(space);
     color_range = clamp_color_range(range);
+  }
+
+  // Instant Default/Natural/Cinematic look on the preview band (not only disk/Present).
+  void set_visual_preview(int preset, bool enhance) {
+    const int p = clamp_renodx_visual_preset(preset);
+    const bool e = enhance;
+    if (p == visual_preset && e == enhance_preview) return;
+    visual_preset = p;
+    enhance_preview = e;
+    regrade_and_upload();
   }
 
   void release_tex() {
@@ -144,6 +159,46 @@ struct LobbyPreview {
       tex = nullptr;
     }
     tex_w = tex_h = 0;
+  }
+
+  void upload_rgba(int ow, int oh) {
+    if (!g_dx.device || !g_dx.ctx || rgba.empty() || ow <= 0 || oh <= 0) return;
+    if (!tex || tex_w != ow || tex_h != oh) {
+      release_tex();
+      D3D11_TEXTURE2D_DESC td{};
+      td.Width = static_cast<UINT>(ow);
+      td.Height = static_cast<UINT>(oh);
+      td.MipLevels = 1;
+      td.ArraySize = 1;
+      td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+      td.SampleDesc.Count = 1;
+      td.Usage = D3D11_USAGE_DYNAMIC;
+      td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+      td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+      if (FAILED(g_dx.device->CreateTexture2D(&td, nullptr, &tex))) return;
+      if (FAILED(g_dx.device->CreateShaderResourceView(tex, nullptr, &srv))) {
+        release_tex();
+        return;
+      }
+      tex_w = ow;
+      tex_h = oh;
+    }
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (SUCCEEDED(g_dx.ctx->Map(tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+      for (int y = 0; y < oh; ++y) {
+        std::memcpy(static_cast<uint8_t*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch,
+                    rgba.data() + static_cast<size_t>(y) * ow * 4, static_cast<size_t>(ow) * 4);
+      }
+      g_dx.ctx->Unmap(tex, 0);
+    }
+  }
+
+  void regrade_and_upload() {
+    if (rgba_base.empty() || tex_w <= 0 || tex_h <= 0) return;
+    rgba = rgba_base;
+    const auto grade = lobby_preview_grade_for_preset(visual_preset, enhance_preview);
+    apply_lobby_preview_grade_rgba(rgba.data(), tex_w * tex_h, grade);
+    upload_rgba(tex_w, tex_h);
   }
 
   void stop() {
@@ -239,7 +294,7 @@ struct LobbyPreview {
     const int step = lobby_preview_downsample_step(frame.width, max_w);
     const int ow = (std::max)(1, frame.width / step);
     const int oh = (std::max)(1, frame.height / step);
-    rgba.resize(static_cast<size_t>(ow) * static_cast<size_t>(oh) * 4);
+    rgba_base.resize(static_cast<size_t>(ow) * static_cast<size_t>(oh) * 4);
 
     const size_t need = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 3 / 2;
     if (frame.nv12.size() < need) return;
@@ -255,44 +310,16 @@ struct LobbyPreview {
         const uint8_t* uv = uvplane + static_cast<size_t>(sy / 2) * frame.width + (sx & ~1);
         const int U = uv[0];
         const int V = uv[1];
-        // Lobby preview = CPU decode only. RenoDX/NR does NOT process this texture
-        // (it hooks swapchain Present on Start / whole-window Present — not the preview band).
-        uint8_t* dst = rgba.data() + (static_cast<size_t>(y) * ow + x) * 4;
+        uint8_t* dst = rgba_base.data() + (static_cast<size_t>(y) * ow + x) * 4;
         yuv_to_rgb8(Y, U, V, coeffs, dst);
         dst[3] = 255;
       }
     }
 
-    if (!g_dx.device || !g_dx.ctx) return;
-    if (!tex || tex_w != ow || tex_h != oh) {
-      release_tex();
-      D3D11_TEXTURE2D_DESC td{};
-      td.Width = static_cast<UINT>(ow);
-      td.Height = static_cast<UINT>(oh);
-      td.MipLevels = 1;
-      td.ArraySize = 1;
-      td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-      td.SampleDesc.Count = 1;
-      td.Usage = D3D11_USAGE_DYNAMIC;
-      td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-      td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-      if (FAILED(g_dx.device->CreateTexture2D(&td, nullptr, &tex))) return;
-      if (FAILED(g_dx.device->CreateShaderResourceView(tex, nullptr, &srv))) {
-        release_tex();
-        return;
-      }
-      tex_w = ow;
-      tex_h = oh;
-    }
-
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    if (SUCCEEDED(g_dx.ctx->Map(tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
-      for (int y = 0; y < oh; ++y) {
-        std::memcpy(static_cast<uint8_t*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch,
-                    rgba.data() + static_cast<size_t>(y) * ow * 4, static_cast<size_t>(ow) * 4);
-      }
-      g_dx.ctx->Unmap(tex, 0);
-    }
+    rgba = rgba_base;
+    const auto grade = lobby_preview_grade_for_preset(visual_preset, enhance_preview);
+    apply_lobby_preview_grade_rgba(rgba.data(), ow * oh, grade);
+    upload_rgba(ow, oh);
   }
 };
 
@@ -655,7 +682,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
     return false;
   }
-  g_hwnd = CreateWindowW(wc.lpszClassName, L"Nexus Cap — Console de captura", WS_OVERLAPPEDWINDOW, 0, 0, 1280, 720,
+  g_hwnd = CreateWindowW(wc.lpszClassName, L"Nexus Cap v1.1.0 — Console de captura", WS_OVERLAPPEDWINDOW, 0, 0, 1280, 720,
                          nullptr, nullptr, wc.hInstance, nullptr);
   if (!g_hwnd || !create_device(g_hwnd)) {
     cleanup_device();
@@ -752,6 +779,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
   float scale_f = static_cast<float>(clamp_scale_percent(settings.scale_percent));
   bool gear_was_open = false;
+  std::string lobby_toast;
+  double lobby_toast_until = 0.0;
+  auto push_lobby_toast = [&](std::string msg) {
+    if (msg.empty()) return;
+    lobby_toast = std::move(msg);
+    lobby_toast_until = ImGui::GetTime() + (kSessionNoticeTtlMs / 1000.0);
+  };
 
   while (g_lobby_running) {
     MSG msg;
@@ -769,6 +803,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     }
     if (!g_lobby_running) break;
 
+    preview.set_visual_preview(settings.renodx_preset,
+                               want_neural_rendering(settings.enhance_renodx, settings.neural_rendering));
     preview.tick();
 
     // Lobby Present loads Bridge asynchronously — pulse NR when ready if checkbox wants ON.
@@ -810,7 +846,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       ImGui::SameLine();
       ImGui::BeginGroup();
       ImGui::SetWindowFontScale(1.15f);
-      ImGui::TextUnformatted("Nexus Cap");
+      ImGui::TextUnformatted(kAppNameWithVersion);
       ImGui::SetWindowFontScale(1.0f);
       ImGui::TextDisabled("Console de captura");
       ImGui::EndGroup();
@@ -1145,6 +1181,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.f, 1.f), "Ajuste e veja no preview ao vivo");
         ImGui::Separator();
         ImGui::TextUnformatted("Frame Gen (Lossless Scaling)");
+        const bool fg_was = settings.fg_enabled;
+        const int fg_mult_was = settings.fg_multiplier;
         ImGui::Checkbox("Habilitar Frame Gen", &settings.fg_enabled);
         ImGui::BeginDisabled(!settings.fg_enabled);
         ImGui::RadioButton("x2", &settings.fg_multiplier, 2);
@@ -1153,6 +1191,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::SameLine();
         ImGui::RadioButton("x4", &settings.fg_multiplier, 4);
         ImGui::EndDisabled();
+        if (settings.fg_enabled && !fg_was) {
+          push_lobby_toast(session_notice_fg_on());
+        } else if (settings.fg_enabled && session_notice_for_fg_cycle(fg_mult_was, settings.fg_multiplier)) {
+          push_lobby_toast(session_notice_fg_multiplier_up(settings.fg_multiplier));
+        }
         {
           const std::string resolved = resolve_lossless_exe(settings.fg_path);
           ImGui::TextUnformatted("Exe do Lossless Scaling");
@@ -1191,7 +1234,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                             pct_pix, kMinScalePercent);
 
         ImGui::Separator();
-        if (ImGui::Checkbox("RenoDX / Neural Rendering no Start", &settings.enhance_renodx)) {
+        if (ImGui::Checkbox("RenoDX / Neural Rendering (preview ao vivo)", &settings.enhance_renodx)) {
           settings.neural_rendering = settings.enhance_renodx;
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
@@ -1202,15 +1245,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
               !dlss5_bridge_ready_for_nr()) {
             nr_boot_retries = 120;  // retry after Present warms Bridge
           }
+          push_lobby_toast(want ? session_notice_nr_on() : session_notice_nr_off());
         }
         ImGui::TextDisabled(settings.enhance_renodx
-                                ? "  → NR/Feed no Present (Delete liga/desliga; estado persiste)"
-                                : "  → so Frame Gen / captura limpa — sem Neural Rendering");
+                                ? "  → NR no Present do lobby (olhe o preview; Delete liga/desliga)"
+                                : "  → preview limpo — sem Neural Rendering");
         if (settings.enhance_renodx) {
-          ImGui::TextDisabled(nr_runtime_on ? "  runtime NR: ON" : "  runtime NR: OFF (aguardando Bridge…)");
+          ImGui::TextDisabled(nr_runtime_on ? "  runtime NR: ON (filtros no preview)"
+                                            : "  runtime NR: OFF (aguardando Bridge…)");
         }
         ImGui::BeginDisabled(!settings.enhance_renodx);
-        ImGui::TextUnformatted("Preset visual (aplica no Present agora)");
+        ImGui::TextUnformatted("Preset visual (ao vivo no preview)");
         const int preset_before = clamp_renodx_visual_preset(settings.renodx_preset);
         int preset_i = preset_before;
         if (ImGui::RadioButton("Default", preset_i == 0)) preset_i = 0;
@@ -1222,13 +1267,21 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (settings.renodx_preset != preset_before) {
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-          sync_renodx_visual_preset_files(std::filesystem::path(exe_path).parent_path().string(),
-                                          settings.renodx_preset);
+          const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+          const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
+          // Immediate look on the preview band + sync RenoDX files / Bridge for Present.
+          preview.set_visual_preview(settings.renodx_preset, want);
+          apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on);
+          if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
+            nr_boot_retries = 120;
+          }
+          push_lobby_toast(std::string("Preset: ") + renodx_visual_preset_name(settings.renodx_preset) +
+                           " — olhe o preview");
         }
         ImGui::TextDisabled("NR=%d  model=%d  ·  olhe a imagem (nao so o texto)",
                             renodx_nr_preset_index(settings.renodx_preset),
                             renodx_feed_model_preset(settings.renodx_preset));
-        ImGui::TextDisabled("Mesmo arquivo no Iniciar — janela ou tela cheia.");
+        ImGui::TextDisabled("Mesmo look no Iniciar — janela ou tela cheia.");
         ImGui::EndDisabled();
 
         ImGui::Separator();
@@ -1277,6 +1330,36 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
       }
       ImGui::End();
+    }
+
+    // Soft tip: FG on / FG up / NR on-off — mirrors session HUD notices.
+    if (!lobby_toast.empty() && ImGui::GetTime() < lobby_toast_until) {
+      const ImGuiViewport* tv = ImGui::GetMainViewport();
+      ImGui::SetNextWindowPos(ImVec2(tv->WorkPos.x + tv->WorkSize.x * 0.5f, tv->WorkPos.y + tv->WorkSize.y - 56.f),
+                              ImGuiCond_Always, ImVec2(0.5f, 1.f));
+      ImGui::SetNextWindowBgAlpha(0.92f);
+      ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.14f, 0.20f, 0.95f));
+      ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.65f, 0.95f, 0.8f));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.f, 10.f));
+      if (ImGui::Begin("##lobby_toast", nullptr,
+                       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                           ImGuiWindowFlags_NoNav)) {
+        std::string title, detail;
+        session_notice_split(lobby_toast, title, detail);
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 42.f);
+        ImGui::TextColored(ImVec4(1.f, 0.82f, 0.45f, 1.f), "%s", title.empty() ? lobby_toast.c_str() : title.c_str());
+        if (!detail.empty()) {
+          ImGui::TextColored(ImVec4(0.95f, 0.88f, 0.65f, 1.f), "%s", detail.c_str());
+        }
+        ImGui::PopTextWrapPos();
+      }
+      ImGui::End();
+      ImGui::PopStyleVar(2);
+      ImGui::PopStyleColor(2);
+    } else if (!lobby_toast.empty() && ImGui::GetTime() >= lobby_toast_until) {
+      lobby_toast.clear();
     }
 
     ImGui::Render();

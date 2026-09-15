@@ -1,0 +1,46 @@
+{
+    "name": "streamline-agent-skills",
+    "version": "2.14.1",
+    "author": {
+        "name": "NVIDIA"
+    },
+    "repository": "https://github.com/NVIDIA-RTX/Streamline",
+    "license": "MIT",
+    "keywords": [
+        "streamline",
+        "dlss",
+        "super-resolution",
+        "ray-reconstruction",
+        "frame-generation",
+        "reflex",
+        "ngx",
+        "game-engine"
+    ],
+    "skills": "./skills/",
+    "description": "NVIDIA Streamline DLSS and Reflex integration skills for AI coding agents.",
+    "interface": {
+        "displayName": "Streamline Agent Skills",
+        "shortDescription": "Streamline DLSS and Reflex workflows for coding agents",
+        "longDescription": "Use Streamline Agent Skills to integrate and validate NVIDIA DLSS Super Resolution, Ray Reconstruction, Frame Generation, and Reflex/PCL latency markers through NVIDIA Streamline in game engines.",
+        "developerName": "NVIDIA",
+        "category": "Coding",
+        "capabilities": [
+            "Interactive",
+            "Read",
+            "Write"
+        ],
+        "defaultPrompt": [
+            "Use $integrate-dlss-sr to integrate DLSS Super Resolution through Streamline.",
+            "Use $integrate-dlss-sr to review this Streamline DLSS-SR integration.",
+            "Use $integrate-dlss-rr to integrate DLSS Ray Reconstruction through Streamline.",
+            "Use $integrate-dlss-rr to review this Streamline DLSS-RR integration.",
+            "Use $integrate-dlss-fg to integrate DLSS Frame Generation through Streamline.",
+            "Use $integrate-dlss-fg to validate this Streamline DLSS-G integration.",
+            "Use $integrate-reflex-pcl to integrate Streamline Reflex and PCL latency markers.",
+            "Use $integrate-reflex-pcl to validate this Streamline Reflex/PCL integration.",
+            "Use $authoring-dlss-agent-skills to update the Streamline DLSS Agent Skills package.",
+            "Use $authoring-dlss-agent-skills to validate Codex/Claude manifest generation before release."
+        ],
+        "brandColor": "#76B900"
+    }
+}

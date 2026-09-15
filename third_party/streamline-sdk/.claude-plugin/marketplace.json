@@ -1,0 +1,14 @@
+{
+  "name": "streamline",
+  "owner": {
+    "name": "NVIDIA"
+  },
+  "description": "NVIDIA Streamline SDK agent skills marketplace.",
+  "plugins": [
+    {
+      "name": "streamline-agent-skills",
+      "source": "./plugins/streamline-agent-skills",
+      "description": "NVIDIA Streamline DLSS and Reflex integration skills for Claude Code."
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "streamline",
+  "interface": {
+    "displayName": "Streamline"
+  },
+  "plugins": [
+    {
+      "name": "streamline-agent-skills",
+      "source": {
+        "source": "local",
+        "path": "./plugins/streamline-agent-skills"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    }
+  ]
+}

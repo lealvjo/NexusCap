@@ -1,0 +1,31 @@
+# Build
+/build/
+/out/
+/cmake-build-*/
+*.user
+*.suo
+.vs/
+.vscode/
+
+# Unused duplicate SDK tree (CMake uses third_party/streamline-sdk)
+/third_party/streamline/
+
+# Logs / local runtime
+/logs/
+*.log
+nexuscap.log
+
+# Local settings / secrets
+.env
+.env.*
+*.pem
+credentials.json
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ReShade runtime next to exe (if run from source tree)
+**/ReShade.log*
+**/ReShade.ini.backup

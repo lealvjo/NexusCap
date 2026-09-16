@@ -277,6 +277,37 @@ inline bool renodx_files_reflect_visual_preset(const std::string& feed_text, con
   return true;
 }
 
+// DLSS5MGF.ini: Kernel (MV) -> Feed (DLSS) -> Sharpen. Sharpen/Feed before Kernel = cintilacao.
+inline bool renodx_mgf_technique_chain_ok(const std::string& chain) {
+  const auto k = chain.find("Lumenite_Kernel@lumenite_Kernel.fx");
+  const auto f = chain.find("DLSS5_Feed@DLSS5_Feed.fx");
+  const auto s = chain.find("DLSS5_Sharpen@DLSS5_Sharpen.fx");
+  if (k == std::string::npos || f == std::string::npos || s == std::string::npos) return false;
+  return k < f && f < s;
+}
+
+inline bool renodx_mgf_chain_order_ok(const std::string& mgf_ini_or_script) {
+  auto value_after = [&](const char* key) -> std::string {
+    const std::string k(key);
+    std::size_t pos = 0;
+    while (pos < mgf_ini_or_script.size()) {
+      const auto line_end = mgf_ini_or_script.find('\n', pos);
+      const auto end = line_end == std::string::npos ? mgf_ini_or_script.size() : line_end;
+      std::string line = mgf_ini_or_script.substr(pos, end - pos);
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.size() >= k.size() && line.compare(0, k.size(), k) == 0) {
+        return line.substr(k.size());
+      }
+      pos = end == mgf_ini_or_script.size() ? end : end + 1;
+    }
+    return {};
+  };
+  const std::string techniques = value_after("Techniques=");
+  const std::string sorting = value_after("TechniqueSorting=");
+  if (techniques.empty() || sorting.empty()) return false;
+  return renodx_mgf_technique_chain_ok(techniques) && renodx_mgf_technique_chain_ok(sorting);
+}
+
 inline std::string apply_renodx_visual_preset_to_feed(std::string feed, int visual_preset) {
   return apply_feed_model_preset(std::move(feed), visual_preset);
 }

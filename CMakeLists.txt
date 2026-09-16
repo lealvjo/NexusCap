@@ -71,7 +71,8 @@ target_include_directories(NexusCap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resource
 add_executable(nexuscap_tests tests/test_core.cpp)
 target_include_directories(nexuscap_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 target_link_libraries(nexuscap_tests PRIVATE nexuscap_core)
-target_compile_definitions(nexuscap_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_definitions(nexuscap_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
+  "NEXUSCAP_SOURCE_DIR=R\"(${CMAKE_SOURCE_DIR})\"")
 
 enable_testing()
 add_test(NAME unit COMMAND nexuscap_tests)

@@ -21,6 +21,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -852,6 +854,33 @@ TEST_CASE("program opens lobby first; windowed capture covers monitor (no auto-s
   CHECK(cfg.exclusive_fullscreen);
 }
 
+TEST_CASE("renodx DLSS5MGF chain is Kernel then Feed then Sharpen") {
+  // Wrong order / Kernel off = cintilacao temporal (docs no DLSS5_Sharpen.fx).
+  const std::string ok =
+      "Techniques=Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx\n"
+      "TechniqueSorting=Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx\n";
+  CHECK(renodx_mgf_chain_order_ok(ok));
+
+  const std::string kernel_off =
+      "Techniques=DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx\n"
+      "TechniqueSorting=DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx,Lumenite_Kernel@lumenite_Kernel.fx\n";
+  CHECK_FALSE(renodx_mgf_chain_order_ok(kernel_off));
+
+  const std::string sharpen_above_feed =
+      "Techniques=Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx,DLSS5_Feed@DLSS5_Feed.fx\n"
+      "TechniqueSorting=Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx,DLSS5_Feed@DLSS5_Feed.fx\n";
+  CHECK_FALSE(renodx_mgf_chain_order_ok(sharpen_above_feed));
+
+#ifdef NEXUSCAP_SOURCE_DIR
+  const std::string setup_path = std::string(NEXUSCAP_SOURCE_DIR) + "/tools/setup_renodx.ps1";
+  std::ifstream in(setup_path, std::ios::binary);
+  REQUIRE(in);
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  CHECK(renodx_mgf_chain_order_ok(ss.str()));
+#endif
+}
+
 TEST_CASE("gear renodx preset change+save reflects in feed and ReShade") {
   // Scenario: change Default → Natural → Cinematic in gear, Salvar must rewrite both files.
   CHECK(std::string(renodx_visual_preset_name(0)) == "Default");
@@ -1552,16 +1581,16 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(1, 1, 4));
-  CHECK(std::string(kAppVersion) == "1.1.4");
-  CHECK(std::strstr(kAppNameWithVersion, "v1.1.4") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.4");
+  CHECK(app_version_is(1, 1, 5));
+  CHECK(std::string(kAppVersion) == "1.1.5");
+  CHECK(std::strstr(kAppNameWithVersion, "v1.1.5") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.5");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("1.1.4") != std::string::npos);
+  CHECK(lobby_t.find("1.1.5") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("1.1.4") != std::string::npos);
+  CHECK(sess_t.find("1.1.5") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 

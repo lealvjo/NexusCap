@@ -39,11 +39,12 @@ if (Test-Path -LiteralPath $shadersSrc) {
   Write-Host "copied reshade-shaders"
 }
 
-# Preset com Feed + Sharpen LIGADOS no boot (Techniques nao pode ficar vazio).
+# Preset = ordem X2: Kernel (MV) -> Feed (DLSS) -> Sharpen (so DEPOIS do Feed).
+# Kernel fora / Sharpen acima do Feed = cintilacao temporal.
 $preset = @"
 PreprocessorDefinitions=DLSS5_MV_PROVIDER=3
-Techniques=DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx
-TechniqueSorting=DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx,Lumenite_Kernel@lumenite_Kernel.fx
+Techniques=Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx
+TechniqueSorting=Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx
 
 [DLSS5_Feed.fx]
 DEBUG_VIEW=0
@@ -77,7 +78,7 @@ HaloProtect=0.800000
 Sharpness=0.450000
 "@
 Set-Content -Path (Join-Path $DestDir "DLSS5MGF.ini") -Value $preset -Encoding UTF8
-Write-Host "wrote DLSS5MGF.ini (Feed+Sharpen ON)"
+Write-Host "wrote DLSS5MGF.ini (Kernel->Feed->Sharpen)"
 
 # NRToggleKey=0: Delete/NumDel NAO desliga NR sem querer (usar Home pro overlay).
 $ini = @"

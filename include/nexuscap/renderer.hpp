@@ -176,6 +176,7 @@ private:
   bool create_color_rt(int w, int h, std::string& err);
   bool create_pipeline(std::string& err);
   bool create_blit_pipeline(std::string& err);
+  void burn_mini_overlay(const OverlayState& overlay);
 
   HWND hwnd_ = nullptr;
   int back_w_ = 0;

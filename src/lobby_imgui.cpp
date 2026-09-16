@@ -570,15 +570,15 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
 
   // Mini overlay preview: colored ADV+HW segments + sparkline (matches session HUD).
   if (settings.ui.mini_overlay) {
-    const float bar_h = 32.f;
+    const float bar_h = 72.f;  // +50% vs 48
     ImVec2 p0(img_min.x, img_min.y);
     ImVec2 p1(img_max.x, img_min.y + bar_h);
     dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
-    const float graph_w = 120.f;
-    const float gx = (std::max)(p0.x + 6.f, p1.x - 6.f - graph_w);
-    const float gy = p0.y + 4.f;
-    const float gh = 24.f;
-    const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 12.f));
+    const float graph_w = 240.f;
+    const float gx = (std::max)(p0.x + 8.f, p1.x - 8.f - graph_w);
+    const float gy = p0.y + 9.f;
+    const float gh = 54.f;
+    const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 16.f));
 
     const float fps = preview.fps_ema > 1.0 ? static_cast<float>(preview.fps_ema) : 0.f;
     const float ft = fps > 1.f ? (1000.f / fps) : 0.f;
@@ -611,23 +611,24 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
         renodx_visual_preset_name(settings.renodx_preset), hw_compact[0] ? hw_compact : nullptr, 0, 0, 0,
         nullptr, settings.fps);
 
-    float x = p0.x + 6.f;
-    const float y = p0.y + 7.f;
-    const float text_max_x = gx - 6.f;
+    float x = p0.x + 8.f;
+    const float font_sz = 27.f;  // +50% vs 18
+    const float y = p0.y + (bar_h - font_sz) * 0.5f;
+    const float text_max_x = gx - 8.f;
     for (int i = 0; i < nseg; ++i) {
       if (!segs[i].text[0]) continue;
       const ImU32 col = IM_COL32(segs[i].r, segs[i].g, segs[i].b, 255);
       const ImVec2 sz = ImGui::CalcTextSize(segs[i].text);
+      const float w = sz.x * (font_sz / ImGui::GetFontSize());
       if (x >= text_max_x) break;
-      if (x + sz.x > text_max_x) {
-        // Clip remaining with a truncated draw in available space.
+      if (x + w > text_max_x) {
         dl->PushClipRect(ImVec2(x, p0.y), ImVec2(text_max_x, p1.y), true);
-        dl->AddText(ImVec2(x, y), col, segs[i].text);
+        dl->AddText(nullptr, font_sz, ImVec2(x, y), col, segs[i].text);
         dl->PopClipRect();
         break;
       }
-      dl->AddText(ImVec2(x, y), col, segs[i].text);
-      x += sz.x;
+      dl->AddText(nullptr, font_sz, ImVec2(x, y), col, segs[i].text);
+      x += w;
     }
 
     if (gw >= 48.f) {

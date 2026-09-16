@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `2.1.0` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `2.2.0` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-2.1.0.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-2.2.0.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-2.1.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
+1. Instalar `NexusCap-Setup-2.2.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -43,7 +43,7 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-2.1.0.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-2.2.0.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -52,7 +52,7 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
 
-### Qualidade e latência (2.1.0)
+### Qualidade e latência (2.2.0)
 
 - Stack enhance: **Krish `renodx-dlss5` + Feed + Bridge** (não usar builds ShortFuse / “super-anus”).
 - Guardrail: mudanças de enhance não devem piorar nitidez nem `present_ms` vs 1.1.7.
@@ -291,9 +291,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 2.1.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 2.2.0
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 2.1.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 2.2.0
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

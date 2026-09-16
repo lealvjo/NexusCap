@@ -89,7 +89,8 @@ inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
   if (hw_info) h += 5 * 28;
   return h;
 }
-inline int hud_mini_overlay_height() { return 34; }  // one dense metric row + frametime sparkline
+inline int hud_mini_overlay_height() { return 77; }  // +50% vs 51 (18px era)
+inline int hud_mini_overlay_font_px() { return 27; }  // +50% vs 18
 
 // When mini overlay is on, multi-line compact/advanced HUD is suppressed.
 inline bool hud_uses_mini_overlay(bool show_fps, bool mini_overlay) { return show_fps && mini_overlay; }

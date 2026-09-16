@@ -331,6 +331,14 @@ bool LosslessFgController::apply_profile(std::string& err) {
     state_.status = FgStatus::Error;
     return false;
   }
+  // Read-back: HUD xN must match disk (QA: no memory-only multiplier).
+  const std::string on_disk = path.empty() ? std::string() : read_file_utf8(path);
+  if (!fg_multiplier_confirmed_on_disk(m, on_disk)) {
+    err = "Settings.xml LSFG3Multiplier != " + std::to_string(m) + " apos gravar";
+    state_.status = FgStatus::Error;
+    state_.last_error = err;
+    return false;
+  }
   write_ini_alongside_exe(err);
   state_.flow_scale = 100;
   state_.capture_api = "WGC";
@@ -344,7 +352,7 @@ bool LosslessFgController::apply_profile(std::string& err) {
   return true;
 }
 
-bool LosslessFgController::ensure_process(std::string& err) {
+bool LosslessFgController::ensure_process(std::string& err, bool allow_adopt) {
   if (!fg_wants_process(state_.multiplier)) {
     state_.status = FgStatus::Off;
     return true;
@@ -372,11 +380,15 @@ bool LosslessFgController::ensure_process(std::string& err) {
 
   if (!apply_profile(err)) return false;
 
-  // Prefer a single already-running LS instead of launching a duplicate.
-  if (adopt_existing_lossless(err)) {
+  // Prefer a single already-running LS instead of launching a duplicate —
+  // except after multiplier change (stale RAM profile vs new XML).
+  if (allow_adopt && adopt_existing_lossless(err)) {
     terminate_extra_lossless_processes(state_.pid);
     hide_ls_windows();
     return true;
+  }
+  if (!allow_adopt) {
+    terminate_extra_lossless_processes(0);  // kill every LS so next CreateProcess reloads XML
   }
 
   if (!job_) {
@@ -426,9 +438,7 @@ bool LosslessFgController::ensure_process(std::string& err) {
   state_.pid = pi.dwProcessId;
   state_.status = FgStatus::Ready;
   state_.active = false;
-
-  // Give LS a moment to create windows, then hide.
-  Sleep(400);
+  // No Sleep here — session tick() waits so HDMI Present never freezes.
   hide_ls_windows();
   terminate_extra_lossless_processes(state_.pid);
   return true;
@@ -502,21 +512,20 @@ bool LosslessFgController::adopt_existing_lossless(std::string& err) {
   return true;
 }
 
-bool LosslessFgController::toggle(HWND target, std::string& err) {
+bool LosslessFgController::request_toggle(HWND target, std::string& err) {
   if (!configured_) {
     err = "not configured";
     return false;
   }
-  // Lobby may leave FG unchecked (multiplier still preferred ≥2). If somehow ≤1, arm x2 for enable.
-  if (state_.multiplier <= 1) {
-    state_.multiplier = 2;
+  if (pending_ != FgPending::None) {
+    err = "fg op already pending";
+    return false;
   }
-
-  const bool turning_on = !state_.active;
-  if (turning_on) {
-    if (state_.exe_path.empty()) {
-      state_.exe_path = resolve_lossless_exe({});
-    }
+  if (state_.multiplier <= 1) state_.multiplier = 2;
+  pending_hwnd_ = target;
+  pending_finished_ok_ = false;
+  if (!state_.active) {
+    if (state_.exe_path.empty()) state_.exe_path = resolve_lossless_exe({});
     if (state_.exe_path.empty()) {
       err = "LosslessScaling.exe missing";
       state_.status = FgStatus::Missing;
@@ -524,38 +533,202 @@ bool LosslessFgController::toggle(HWND target, std::string& err) {
       return false;
     }
     if (!ensure_process(err)) return false;
-    if (!focus_window(target)) {
-      err = "failed to focus NexusCap window";
-      state_.status = FgStatus::Error;
-      return false;
-    }
-    Sleep(50);
-    hide_ls_windows();
-    if (!send_ls_hotkey()) {
-      err = "SendInput F24 failed";
-      state_.status = FgStatus::Error;
-      return false;
-    }
-    state_.active = true;
-    state_.status = FgStatus::On;
-    state_.last_error.clear();
+    pending_ = FgPending::OnWaitLaunch;
+    pending_due_ms_ = -350;
+    pending_retries_ = 0;
     return true;
   }
-
-  // Turning OFF: ask LS to release the window, then kill the process so nothing
-  // keeps injecting frames (fixes "60|120" / duplicate LS after FG off).
   if (proc_) {
     focus_window(target);
-    Sleep(30);
     send_ls_hotkey();
-    Sleep(80);
   }
-  shutdown();
-  state_.active = false;
-  state_.status = FgStatus::Ready;
-  state_.last_error.clear();
+  pending_ = FgPending::OffAfterHotkey;
+  pending_due_ms_ = -50;
+  pending_retries_ = 0;
+  return true;
+}
+
+bool LosslessFgController::request_set_multiplier(int multiplier, HWND target, std::string& err) {
+  if (pending_ != FgPending::None) {
+    err = "fg op already pending";
+    return false;
+  }
+  const int m = clamp_fg_multiplier(multiplier);
+  pending_prev_mult_ = state_.multiplier;
+  pending_want_mult_ = m;
+  pending_was_active_ = state_.active;
+  pending_hwnd_ = target;
+  pending_finished_ok_ = false;
+  if (m <= 1) {
+    state_.multiplier = 1;
+    state_.active = false;
+    state_.status = FgStatus::Off;
+    return true;
+  }
+  if (state_.exe_path.empty()) state_.exe_path = resolve_lossless_exe({});
+  if (state_.exe_path.empty()) {
+    state_.status = FgStatus::Missing;
+    err = "LosslessScaling.exe missing";
+    return false;
+  }
+  // If FG on, release window first (hotkey) without blocking kill wait.
+  if (pending_was_active_ && target) {
+    focus_window(target);
+    send_ls_hotkey();
+    state_.active = false;
+  }
+  state_.multiplier = m;
+  if (!apply_profile(err)) {
+    state_.multiplier = pending_prev_mult_;
+    return false;
+  }
+  shutdown(/*wait_ms=*/50);
+  configure(m, state_.exe_path);
+  if (!ensure_process(err, /*allow_adopt=*/false)) {
+    state_.multiplier = pending_prev_mult_;
+    return false;
+  }
+  {
+    const std::string path = localappdata_settings_path();
+    const std::string on_disk = path.empty() ? std::string() : read_file_utf8(path);
+    if (!fg_multiplier_confirmed_on_disk(m, on_disk)) {
+      err = "LSFG3Multiplier no disco != x" + std::to_string(m);
+      state_.multiplier = pending_prev_mult_;
+      state_.status = FgStatus::Error;
+      state_.last_error = err;
+      return false;
+    }
+  }
+  pending_ = FgPending::MultWaitLaunch;
+  pending_due_ms_ = -350;
+  return true;
+}
+
+bool LosslessFgController::request_cycle_multiplier(HWND target, std::string& err) {
+  return request_set_multiplier(next_fg_multiplier(state_.multiplier), target, err);
+}
+
+bool LosslessFgController::tick(double now_ms) {
+  if (pending_ == FgPending::None) return false;
+  // Negative due = delay ms from first tick.
+  if (pending_due_ms_ < 0) {
+    pending_due_ms_ = now_ms + (-pending_due_ms_);
+  }
+  if (now_ms < pending_due_ms_) return false;
+
+  auto fail = [&](const std::string& e) {
+    state_.last_error = e;
+    state_.status = FgStatus::Error;
+    pending_ = FgPending::None;
+    pending_finished_ok_ = false;
+    return true;
+  };
+  auto ok_done = [&]() {
+    pending_ = FgPending::None;
+    pending_finished_ok_ = true;
+    state_.last_error.clear();
+    return true;
+  };
+
+  switch (pending_) {
+    case FgPending::OnWaitLaunch:
+      hide_ls_windows();
+      pending_ = FgPending::OnSendHotkey;
+      pending_due_ms_ = now_ms;  // immediate next tick
+      return false;
+    case FgPending::OnSendHotkey:
+      if (!focus_window(pending_hwnd_)) return fail("failed to focus NexusCap window");
+      hide_ls_windows();
+      if (!send_ls_hotkey()) return fail("SendInput F24 failed");
+      pending_ = FgPending::OnConfirm;
+      pending_due_ms_ = now_ms + 120.0;
+      return false;
+    case FgPending::OnConfirm:
+      if (count_running_lossless_processes() == 0) {
+        return fail("LosslessScaling exited after hotkey (FG nao confirmado)");
+      }
+      state_.active = true;
+      state_.status = FgStatus::On;
+      return ok_done();
+    case FgPending::OffAfterHotkey:
+      shutdown(/*wait_ms=*/50);  // don't block Present for 800ms
+      pending_ = FgPending::OffConfirmDead;
+      pending_due_ms_ = now_ms + 100.0;
+      pending_retries_ = 0;
+      return false;
+    case FgPending::OffConfirmDead:
+      if (count_running_lossless_processes() > 0) {
+        terminate_extra_lossless_processes(0);
+        if (pending_retries_ < 3) {
+          ++pending_retries_;
+          pending_due_ms_ = now_ms + 120.0;
+          return false;
+        }
+        state_.active = true;
+        return fail("LosslessScaling ainda rodando apos FG off");
+      }
+      state_.active = false;
+      state_.status = FgStatus::Ready;
+      return ok_done();
+    case FgPending::MultWaitLaunch:
+      hide_ls_windows();
+      pending_ = FgPending::MultAfterLaunch;
+      pending_due_ms_ = now_ms;
+      return false;
+    case FgPending::MultAfterLaunch:
+      if (pending_was_active_ && pending_hwnd_) {
+        pending_ = FgPending::OnSendHotkey;
+        pending_due_ms_ = now_ms;
+        return false;
+      }
+      state_.status = FgStatus::Ready;
+      return ok_done();
+    default:
+      pending_ = FgPending::None;
+      return false;
+  }
+}
+
+bool LosslessFgController::run_sync_until_idle(std::string& err) {
+  // Selftests only — pump tick with Sleep(1), not used in session Present loop.
+  LARGE_INTEGER freq{}, qpc{};
+  QueryPerformanceFrequency(&freq);
+  auto now_ms = [&]() {
+    QueryPerformanceCounter(&qpc);
+    return 1000.0 * static_cast<double>(qpc.QuadPart) / static_cast<double>(freq.QuadPart);
+  };
+  const double deadline = now_ms() + 5000.0;
+  while (busy() && now_ms() < deadline) {
+    tick(now_ms());
+    Sleep(1);
+  }
+  if (busy()) {
+    err = "fg async timeout";
+    pending_ = FgPending::None;
+    return false;
+  }
+  if (!pending_finished_ok_ && !state_.last_error.empty()) {
+    err = state_.last_error;
+    return false;
+  }
   err.clear();
   return true;
+}
+
+bool LosslessFgController::toggle(HWND target, std::string& err) {
+  if (!request_toggle(target, err)) return false;
+  if (!busy()) return true;
+  return run_sync_until_idle(err);
+}
+
+bool LosslessFgController::set_multiplier(int multiplier, HWND target, std::string& err) {
+  if (!request_set_multiplier(multiplier, target, err)) return false;
+  if (!busy()) return true;
+  return run_sync_until_idle(err);
+}
+
+bool LosslessFgController::cycle_multiplier(HWND target, std::string& err) {
+  return set_multiplier(next_fg_multiplier(state_.multiplier), target, err);
 }
 
 void LosslessFgController::hide_ls_windows() { EnumWindows(enum_hide_ls, 0); }
@@ -580,45 +753,7 @@ bool LosslessFgController::send_ls_hotkey() {
   return sent == 2;
 }
 
-bool LosslessFgController::set_multiplier(int multiplier, HWND target, std::string& err) {
-  const int m = clamp_fg_multiplier(multiplier);
-  const bool was_active = state_.active;
-  if (was_active && target) {
-    // Turn off first so LS picks up new profile.
-    if (!toggle(target, err)) {
-      // continue anyway
-    }
-  }
-  state_.multiplier = m;
-  if (m <= 1) {
-    state_.active = false;
-    state_.status = FgStatus::Off;
-    return true;
-  }
-  if (state_.exe_path.empty()) state_.exe_path = resolve_lossless_exe({});
-  if (state_.exe_path.empty()) {
-    state_.status = FgStatus::Missing;
-    err = "LosslessScaling.exe missing";
-    return false;
-  }
-  if (!apply_profile(err)) return false;
-  // Restart process so LS reloads Settings.xml cleanly.
-  shutdown();
-  configure(m, state_.exe_path);
-  if (!ensure_process(err)) return false;
-  if (was_active && target) {
-    state_.active = false;
-    return toggle(target, err);
-  }
-  state_.status = FgStatus::Ready;
-  return true;
-}
-
-bool LosslessFgController::cycle_multiplier(HWND target, std::string& err) {
-  return set_multiplier(next_fg_multiplier(state_.multiplier), target, err);
-}
-
-void LosslessFgController::shutdown() {
+void LosslessFgController::shutdown(DWORD wait_ms) {
   if (proc_) {
     // Prefer graceful close of main window, then terminate via job.
     DWORD pid = state_.pid;
@@ -631,7 +766,7 @@ void LosslessFgController::shutdown() {
             return TRUE;
           },
           static_cast<LPARAM>(pid));
-      WaitForSingleObject(proc_, 800);
+      if (wait_ms > 0) WaitForSingleObject(proc_, wait_ms);
     }
     CloseHandle(proc_);
     proc_ = nullptr;
@@ -646,6 +781,15 @@ void LosslessFgController::shutdown() {
     state_.status = state_.multiplier <= 1 ? FgStatus::Off
                                            : (state_.exe_path.empty() ? FgStatus::Missing : FgStatus::Ready);
   }
+}
+
+void LosslessFgController::reconcile_process() {
+  if (!state_.active) return;
+  if (count_running_lossless_processes() > 0) return;
+  state_.active = false;
+  state_.pid = 0;
+  state_.status = state_.exe_path.empty() ? FgStatus::Missing : FgStatus::Ready;
+  state_.last_error = "LosslessScaling saiu — FG desmarcado no overlay";
 }
 
 }  // namespace nexuscap

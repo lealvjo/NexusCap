@@ -683,8 +683,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   g_capture_vk_target = nullptr;
 
   // Scale is session-only. ReShade hooks lobby Present too — force feed 100% or the menu blurs.
-  // RenoDX NR runtime boots OFF every lobby device create — pulse Bridge when checkbox wants ON.
-  bool nr_runtime_on = false;
+  // Carry cfg.nr_runtime_on across Esc↔Iniciar (same RenoDX process — do not assume OFF).
+  bool nr_runtime_on = cfg.nr_runtime_on;
   int nr_boot_retries = 0;
   bool renodx_dir_ok = true;
   {
@@ -699,7 +699,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     const bool want_nr = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
     sync_neural_rendering_enabled_files(exe_dir.string(), want_nr,
                                         feed_pipeline_on_for_renodx(settings.enhance_renodx));
-    nr_boot_retries = want_nr ? 180 : 0;
+    if (want_nr != nr_runtime_on) nr_boot_retries = 180;
   }
 
   WNDCLASSEXW wc{sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hi, nullptr, nullptr, nullptr, nullptr, L"NexusCapLobby",
@@ -839,18 +839,19 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                                want_neural_rendering(settings.enhance_renodx, settings.neural_rendering));
     preview.tick();
 
-    // Lobby Present loads Bridge asynchronously — pulse NR when ready if checkbox wants ON.
+    // Lobby Present loads Bridge asynchronously — pulse only when carried runtime ≠ want.
     if (nr_boot_retries > 0) {
       --nr_boot_retries;
       const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-      if (!want) {
+      if (want == nr_runtime_on) {
         nr_boot_retries = 0;
-      } else if (!nr_runtime_on && dlss5_bridge_ready_for_nr()) {
+      } else if (dlss5_bridge_ready_for_nr()) {
         wchar_t exe_path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-        if (apply_neural_rendering_state(std::filesystem::path(exe_path).parent_path().string(), true,
+        if (apply_neural_rendering_state(std::filesystem::path(exe_path).parent_path().string(), want,
                                          &nr_runtime_on)) {
           nr_boot_retries = 0;
+          cfg.nr_runtime_on = nr_runtime_on;
         }
       }
     }
@@ -1321,6 +1322,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             push_lobby_toast(renodx_write_denied_notice());
           } else {
             apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on);
+            cfg.nr_runtime_on = nr_runtime_on;
             push_lobby_toast(std::string("Preset: ") + renodx_visual_preset_name(settings.renodx_preset) +
                              " — olhe o preview");
             if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
@@ -1441,6 +1443,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
   if (!g_start_requested) return false;
   apply_settings_to_cfg(settings, cfg);
+  cfg.nr_runtime_on = nr_runtime_on;
   return true;
 }
 

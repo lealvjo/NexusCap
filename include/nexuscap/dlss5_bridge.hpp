@@ -53,7 +53,8 @@ inline bool bridge_command_is_valid_nr_pulse(const Dlss5BridgeCommand& cmd) {
   return reinterpret_cast<const uint8_t*>(&cmd)[0x48] != 0;
 }
 
-// RenoDX runtime boots OFF every new effect_runtime / swapchain.
+// Fresh process / first ReShade attach: NR starts OFF. In-process lobby↔session often keeps
+// the same RenoDX runtime ON — never assume OFF without cfg.nr_runtime_on carry.
 inline constexpr bool kRenodxRuntimeStartsOff = true;
 
 struct NeuralRuntimePlan {
@@ -83,6 +84,13 @@ inline bool nr_boot_needs_enable_pulse(bool want_on) {
 // Delete mid-session: flip runtime via Bridge (not via RenoDX hearing the same VK).
 inline NeuralRuntimePlan plan_nr_user_toggle(bool runtime_on) {
   return plan_neural_runtime(!runtime_on, runtime_on);
+}
+
+// Ignore a second Delete within debounce_ms (auto-repeat / double WM_* that bit30 misses).
+inline bool nr_toggle_debounce_ok(double now_ms, double& last_accepted_ms, double debounce_ms = 350.0) {
+  if (last_accepted_ms > 0.0 && (now_ms - last_accepted_ms) < debounce_ms) return false;
+  last_accepted_ms = now_ms;
+  return true;
 }
 
 // Settings vs runtime must not be conflated — this was the Delete desync bug.
@@ -137,10 +145,71 @@ bool dlss5_bridge_ready_for_nr();
 bool dlss5_bridge_pulse_nr();
 bool dlss5_bridge_query(Dlss5BridgeStatus& out);
 
+// Snapshot nr_delivered or nr_pulses; either advancing means Bridge consumed an edge.
+inline bool bridge_nr_ack_advanced(uint32_t delivered_before, uint32_t pulses_before,
+                                   const Dlss5BridgeStatus& after) {
+  return after.nr_delivered > delivered_before || after.nr_pulses > pulses_before;
+}
+
+// Snapshot nr_delivered; after pulse, wait until it increases (Bridge consumed the edge).
+inline bool bridge_nr_delivered_advanced(uint32_t before, const Dlss5BridgeStatus& after) {
+  return after.nr_delivered > before;
+}
+
+// Parse RenoDX log lines: "NR toggled ON via 0x124" / "NR toggled OFF via ..."
+// Returns +1 ON, 0 OFF, -1 not a toggle line.
+inline int parse_reshade_nr_toggled_line(const std::string& line) {
+  if (line.find("NR toggled ON") != std::string::npos) return 1;
+  if (line.find("NR toggled OFF") != std::string::npos) return 0;
+  return -1;
+}
+
+// Scan log text newest-first (split by newline); last matching toggle wins.
+inline int parse_reshade_nr_last_toggled(const std::string& log_text) {
+  int last = -1;
+  size_t i = 0;
+  while (i < log_text.size()) {
+    size_t e = log_text.find('\n', i);
+    if (e == std::string::npos) e = log_text.size();
+    std::string line = log_text.substr(i, e - i);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const int v = parse_reshade_nr_toggled_line(line);
+    if (v >= 0) last = v;
+    i = e + 1;
+  }
+  return last;
+}
+
+// FG HUD: only claim ON if LS process is alive; OFF only if none remain.
+inline bool fg_overlay_on_confirmed(bool want_on, unsigned running_ls) {
+  if (want_on) return running_ls > 0;
+  return running_ls == 0;
+}
+
+bool dlss5_bridge_pulse_nr_confirmed(uint32_t timeout_ms = 400);
+
+// Non-blocking NR confirm: pulse now, finish on later poll (keeps capture Present alive).
+struct NrConfirmPending {
+  bool active = false;
+  std::string exe_dir;
+  std::streamoff log_size_before = 0;
+  bool want_on = false;
+  double deadline_ms = 0;
+};
+
+enum class NrConfirmPoll { Pending, Confirmed, Failed };
+
+// Read only bytes appended since log_size_before; -1 = no toggle line yet.
+int peek_reshade_nr_toggled_since(const std::string& exe_dir, std::streamoff log_size_before);
+
+NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_on, double now_ms);
+
 // Apply want_on: sync NeuralUplift + Bridge pulse if runtime differs.
-// feed_on: keep true for Renodx sessions (Delete); false when unloading Renodx entirely.
+// If async_out != nullptr: pulse without blocking and fill pending (HUD updates on poll).
+// If async_out == nullptr: wait for ReShade.log line (lobby/boot; may hitch briefly).
 bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on,
-                                  bool feed_on = true);
+                                  bool feed_on = true, NrConfirmPending* async_out = nullptr,
+                                  double now_ms = 0);
 
 // Lobby live preview: sync visual preset + apply NR (reload cycle when already ON).
 bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,

@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `1.1.6` (`v1.1`) · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `1.1.7` (`v1.1`) · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |

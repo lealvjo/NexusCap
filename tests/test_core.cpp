@@ -609,6 +609,10 @@ TEST_CASE("mira settings xml never writes Flow 70") {
   CHECK(patched.find("LSFGFlowScale>70") == std::string::npos);
   CHECK(patched.find("LSFG3Multiplier>3") != std::string::npos);
   CHECK(patched.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos);
+  CHECK(parse_lsfg3_multiplier_from_xml(patched) == 3);
+  CHECK(fg_multiplier_confirmed_on_disk(3, patched));
+  CHECK_FALSE(fg_multiplier_confirmed_on_disk(4, patched));
+  CHECK(parse_lsfg3_multiplier_from_xml("<nope>") == 0);
 }
 
 TEST_CASE("patch_lsfg_ini mira lock") {
@@ -1639,16 +1643,16 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(1, 1, 6));
-  CHECK(std::string(kAppVersion) == "1.1.6");
-  CHECK(std::strstr(kAppNameWithVersion, "v1.1.6") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.6");
+  CHECK(app_version_is(1, 1, 7));
+  CHECK(std::string(kAppVersion) == "1.1.7");
+  CHECK(std::strstr(kAppNameWithVersion, "v1.1.7") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.7");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("1.1.6") != std::string::npos);
+  CHECK(lobby_t.find("1.1.7") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("1.1.6") != std::string::npos);
+  CHECK(sess_t.find("1.1.7") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -1947,6 +1951,79 @@ TEST_CASE("neural rendering Bridge plan: enable/disable cannot desync") {
   CHECK_FALSE(runtime);
   CHECK(step(true).need_bridge_pulse);
   CHECK(runtime);
+
+  // Lobby left NR ON → Iniciar must NOT pulse again (that inverted HUD vs RenoDX).
+  {
+    bool carried = true;  // cfg.nr_runtime_on from lobby preview
+    const bool want = true;
+    const auto boot = plan_neural_runtime(want, carried);
+    CHECK_FALSE(boot.need_bridge_pulse);
+    CHECK(boot.resulting_runtime_on);
+  }
+  // Lobby NR ON, settings now want OFF → one pulse to OFF (not assume OFF then pulse ON).
+  {
+    const auto boot = plan_neural_runtime(false, true);
+    CHECK(boot.need_bridge_pulse);
+    CHECK_FALSE(boot.resulting_runtime_on);
+  }
+  // Fresh process / no lobby carry: OFF + want ON → pulse once.
+  {
+    const auto boot = plan_neural_runtime(true, false);
+    CHECK(boot.need_bridge_pulse);
+    CHECK(boot.resulting_runtime_on);
+  }
+
+  // Double Delete within 350ms must be ignored (log had OFF→ON ~400ms → HUD/RenoDX desync).
+  {
+    double last = 0;
+    CHECK(nr_toggle_debounce_ok(1000.0, last));
+    CHECK_FALSE(nr_toggle_debounce_ok(1200.0, last));   // +200ms
+    CHECK_FALSE(nr_toggle_debounce_ok(1349.0, last));   // +349ms
+    CHECK(nr_toggle_debounce_ok(1350.0, last));         // +350ms accept
+  }
+
+  // Overlay confirmation helpers — no false positive without ACK / process.
+  {
+    Dlss5BridgeStatus st{};
+    st.nr_delivered = 5;
+    st.nr_pulses = 3;
+    CHECK(bridge_nr_delivered_advanced(4, st));
+    CHECK_FALSE(bridge_nr_delivered_advanced(5, st));
+    CHECK(bridge_nr_ack_advanced(5, 2, st));   // pulses advanced
+    CHECK_FALSE(bridge_nr_ack_advanced(5, 3, st));
+  }
+  {
+    CHECK(parse_reshade_nr_toggled_line("NR toggled ON via 0x124") == 1);
+    CHECK(parse_reshade_nr_toggled_line("NR toggled OFF via 0x124") == 0);
+    CHECK(parse_reshade_nr_toggled_line("other") == -1);
+    const char* log =
+        "10:00:00 INFO stuff\n"
+        "10:01:00 NR toggled ON via 0x124\n"
+        "10:02:00 noise\n"
+        "10:03:00 NR toggled OFF via 0x124\n";
+    CHECK(parse_reshade_nr_last_toggled(log) == 0);
+    CHECK(parse_reshade_nr_last_toggled("NR toggled ON via 0x124\n") == 1);
+    const char* stale = "10:00 NR toggled ON via 0x124\n";
+    CHECK(parse_reshade_nr_last_toggled(stale) == 1);
+    // New append after OFF must win (Bridge-ACK-before-log bug regression).
+    CHECK(parse_reshade_nr_last_toggled("10:01 NR toggled OFF via 0x124\n") == 0);
+  }
+  {
+    CHECK(fg_overlay_on_confirmed(true, 1));
+    CHECK_FALSE(fg_overlay_on_confirmed(true, 0));  // no LS process → never FG ON
+    CHECK(fg_overlay_on_confirmed(false, 0));
+    CHECK_FALSE(fg_overlay_on_confirmed(false, 2));  // leftover LS → OFF not confirmed
+  }
+}
+
+TEST_CASE("mini overlay DLSS5 follows renodx_on only (not passthrough dlss_on)") {
+  // Regression: HUD used renodx_on || (dlss_on && backend has renodx) while enhance is
+  // passthrough — after Invert-bug fix, status is solely renodx_on / g_nr_runtime_on.
+  char line[256]{};
+  format_mini_overlay_line(line, sizeof(line), 60.0, 0.0, false, 2, true, 16.0, 8.0, 0, 0, 2560, 1440);
+  CHECK(std::strstr(line, "DLSS5 ON") != nullptr);
+  format_mini_overlay_line(line, sizeof(line), 60.0, 0.0, false, 2, false, 16.0, 8.0, 0, 0, 2560, 1440);
+  CHECK(std::strstr(line, "DLSS5 off") != nullptr);
 }
 
 TEST_CASE("format change must not re-query device every frame") {

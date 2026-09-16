@@ -654,8 +654,7 @@ void MetricsHud::paint(HDC hdc) const {
     HFONT old = static_cast<HFONT>(SelectObject(hdc, mini_font));
     char line[256]{};
     const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
-    const bool dlss5_on =
-        o.renodx_on || (o.dlss_on && o.dlss_backend.find("renodx") != std::string::npos);
+    const bool dlss5_on = o.renodx_on;
     format_mini_overlay_line(line, sizeof(line), show_fps, o.fps_fg_est, o.fg_on, o.fg_multiplier, dlss5_on,
                              o.frame_ms, o.e2e_ms, o.stalls_window, o.clusters, o.capture_w, o.capture_h,
                              o.work_w, o.work_h, o.output_w, o.output_h, o.scale_percent);
@@ -816,7 +815,7 @@ void MetricsHud::paint(HDC hdc) const {
   swprintf(lines[5], 180, L"latency e2e %.2f ms   present %.2f ms   %s Present(%u)", o.e2e_ms,
            o.present_ms, o.sync_image ? L"SYNC VSYNC" : L"SYNC TEAR", o.sync_image ? 1u : 0u);
   if (o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos) {
-    swprintf(lines[6], 180, L"RenoDX  %s  preset=%s  [%s] %s", o.renodx_on || o.dlss_on ? L"ON" : L"off",
+    swprintf(lines[6], 180, L"RenoDX  %s  preset=%s  [%s] %s", o.renodx_on ? L"ON" : L"off",
              utf8_to_wide_hud(o.renodx_preset).c_str(), utf8_to_wide_hud(o.dlss_backend).c_str(),
              utf8_to_wide_hud(o.dlss_status).c_str());
   } else {

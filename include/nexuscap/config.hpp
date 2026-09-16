@@ -36,6 +36,9 @@ struct AppConfig {
   int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // Default / Natural / Cinematic
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
+  // Live RenoDX NR (Bridge). Carried lobby↔session — NOT the same as neural_rendering on disk.
+  // Resetting this to false while RenoDX is still ON causes a boot pulse that inverts HUD vs image.
+  bool nr_runtime_on = false;
   int video_fourcc = 0;     // NV12 default
   int color_space = 0;      // Padrao → BT.709
   int color_range = 0;      // Limitado

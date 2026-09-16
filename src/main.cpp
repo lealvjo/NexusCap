@@ -43,9 +43,11 @@ std::atomic<bool> g_toggle_fs{false};
 std::atomic<bool> g_toggle_dlss{false};
 std::atomic<bool> g_toggle_fg{false};
 std::atomic<bool> g_toggle_nr{false};
-// RenoDX runtime NR — always starts OFF on new swapchain (see ReShade.log enabled=OFF).
+// RenoDX runtime NR — carry from lobby via cfg.nr_runtime_on (same process often keeps NR ON).
 bool g_nr_runtime_on = false;
 int g_nr_boot_retries = 0;
+double g_nr_toggle_last_ms = 0;  // Delete debounce (bit30 + time)
+nexuscap::NrConfirmPending g_nr_confirm{};  // async log ACK — no Present freeze
 std::atomic<bool> g_cycle_fg{false};
 std::atomic<bool> g_return_to_lobby{false};
 std::atomic<bool> g_session_exiting{false};
@@ -97,7 +99,8 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if (vk == g_hotkeys.vk_dlss) g_toggle_dlss = true;
       if (vk == g_hotkeys.vk_fg_toggle) g_toggle_fg = true;
       if (vk == g_hotkeys.vk_fg_cycle) g_cycle_fg = true;
-      if (vk == g_hotkeys.vk_nr_toggle) g_toggle_nr = true;
+      // Bit 30 = auto-repeat KEYDOWN — one Delete must be one Bridge pulse (else HUD/RenoDX desync).
+      if (vk == g_hotkeys.vk_nr_toggle && (lp & (1u << 30)) == 0) g_toggle_nr = true;
       if (vk == g_hotkeys.vk_fullscreen) g_toggle_fs = true;
       return 0;
     }
@@ -156,8 +159,31 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
     const fs::path exe_dir = fs::path(exe_path).parent_path();
     const bool want_nr = (cfg.enhance == EnhanceBackend::Renodx) && cfg.neural_rendering;
-    g_nr_runtime_on = false;  // new swapchain → RenoDX boots NR OFF
-    g_nr_boot_retries = want_nr ? 180 : 0;  // ~3s at 60fps to wait for Bridge nr_ready
+    // Lobby preview may already have NR ON in this process — never force false then pulse.
+    g_nr_runtime_on = cfg.nr_runtime_on;
+    g_nr_toggle_last_ms = 0;
+    // Resync from last RenoDX log line (fixes HUD vs image after prior inverted session).
+    if (cfg.enhance == EnhanceBackend::Renodx) {
+      std::ifstream lin(exe_dir / "ReShade.log", std::ios::binary);
+      if (lin) {
+        lin.seekg(0, std::ios::end);
+        const auto end = static_cast<std::streamoff>(lin.tellg());
+        const auto start = end > 65536 ? end - 65536 : std::streamoff{0};
+        lin.seekg(start);
+        const std::string tail((std::istreambuf_iterator<char>(lin)), std::istreambuf_iterator<char>());
+        const int logged = parse_reshade_nr_last_toggled(tail);
+        if (logged >= 0) {
+          g_nr_runtime_on = logged == 1;
+          cfg.nr_runtime_on = g_nr_runtime_on;
+          append_log(cfg.log_dir, std::string("nr runtime resync from ReShade.log → ") +
+                                      (g_nr_runtime_on ? "ON" : "OFF"));
+        }
+      }
+    }
+    {
+      const NeuralRuntimePlan boot = plan_neural_runtime(want_nr, g_nr_runtime_on);
+      g_nr_boot_retries = boot.need_bridge_pulse ? 180 : 0;  // ~3s @60fps for Bridge nr_ready
+    }
 
     if (cfg.enhance == EnhanceBackend::Renodx) {
       const fs::path feed_cfg = exe_dir / "dlss5-feed.cfg";
@@ -424,7 +450,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.scale_percent = cfg.scale_percent;
   overlay.work_w = scaled_extent(info.width > 0 ? info.width : cap_w, cfg.scale_percent);
   overlay.work_h = scaled_extent(info.height > 0 ? info.height : cap_h, cfg.scale_percent);
-  overlay.renodx_on = false;  // runtime OFF until Bridge pulse; settings may still want ON
+  overlay.renodx_on = g_nr_runtime_on;
   overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset);
   overlay.sync_image = cfg.sync_image;
   overlay.hw_info = cfg.hw_info;
@@ -583,7 +609,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
 
     if (g_toggle_nr.exchange(false)) {
-      if (!session_nr_hotkey_allowed(cfg.enhance)) {
+      const double now_nr = clock.now_ms();
+      if (g_nr_confirm.active) {
+        append_log(cfg.log_dir, "nr toggle ignored (confirm pending)");
+      } else if (!nr_toggle_debounce_ok(now_nr, g_nr_toggle_last_ms)) {
+        append_log(cfg.log_dir, "nr toggle ignored (debounce <350ms)");
+      } else if (!session_nr_hotkey_allowed(cfg.enhance)) {
         std::printf("nr toggle: RenoDX off — marque RenoDX no lobby (FG continua independente)\n");
         append_log(cfg.log_dir, "nr toggle blocked: RenoDX not loaded this session");
         session_notice.push(session_notice_nr_off(), clock.now_ms());
@@ -592,42 +623,73 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         const fs::path exe_dir = fs::path(exe_path).parent_path();
         const NeuralRuntimePlan plan = plan_nr_user_toggle(g_nr_runtime_on);
-        // Pulse via Bridge (F13 inject) — do NOT also let RenoDX hear Delete.
-        if (apply_neural_rendering_state(exe_dir.string(), plan.resulting_runtime_on, &g_nr_runtime_on)) {
-          overlay.renodx_on = g_nr_runtime_on;
-          apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
-          info.dlss_enabled = g_nr_runtime_on;
-          append_log(cfg.log_dir, std::string("neural rendering ") + (g_nr_runtime_on ? "ON" : "OFF"));
-          std::printf("neural rendering %s (Delete→Bridge) — Frame Gen nao muda\n",
-                      g_nr_runtime_on ? "ON" : "OFF");
-          session_notice.push(g_nr_runtime_on ? session_notice_nr_on() : session_notice_nr_off(),
-                              clock.now_ms());
+        // Pulse async — wait for ReShade.log on later frames (no 2s Present freeze).
+        if (apply_neural_rendering_state(exe_dir.string(), plan.resulting_runtime_on, &g_nr_runtime_on,
+                                         /*feed_on=*/true, &g_nr_confirm, now_nr)) {
+          if (g_nr_confirm.active) {
+            session_notice.push("Neural Rendering — aplicando…", clock.now_ms());
+            append_log(cfg.log_dir, "neural rendering pulse sent (await log confirm)");
+          } else {
+            overlay.renodx_on = g_nr_runtime_on;
+            cfg.nr_runtime_on = g_nr_runtime_on;
+            apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
+            info.dlss_enabled = g_nr_runtime_on;
+            append_log(cfg.log_dir, std::string("neural rendering ") + (g_nr_runtime_on ? "ON" : "OFF"));
+            std::printf("neural rendering %s (Delete→Bridge) — Frame Gen nao muda\n",
+                        g_nr_runtime_on ? "ON" : "OFF");
+            session_notice.push(g_nr_runtime_on ? session_notice_nr_on() : session_notice_nr_off(),
+                                clock.now_ms());
+          }
         } else if (plan.need_bridge_pulse && !dlss5_bridge_available()) {
           std::printf("nr toggle: Bridge ainda nao carregou — tente de novo em 1s\n");
         } else {
-          std::printf("nr toggle: falha ao aplicar feed/ReShade/Bridge\n");
+          std::printf("nr toggle: falha ao pulsar Bridge\n");
+          append_log(cfg.log_dir, "neural rendering pulse failed");
         }
       }
     }
 
-    // Boot: RenoDX NR starts OFF; pulse Bridge once nr_ready after Present path is up.
-    if (g_nr_boot_retries > 0) {
+    // Finish async NR confirm without blocking Present.
+    if (g_nr_confirm.active) {
+      const auto polled = poll_nr_confirm_pending(g_nr_confirm, &g_nr_runtime_on, clock.now_ms());
+      if (polled == NrConfirmPoll::Confirmed) {
+        overlay.renodx_on = g_nr_runtime_on;
+        cfg.nr_runtime_on = g_nr_runtime_on;
+        apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
+        info.dlss_enabled = g_nr_runtime_on;
+        append_log(cfg.log_dir, std::string("neural rendering ") + (g_nr_runtime_on ? "ON" : "OFF") +
+                                    " (log confirm)");
+        std::printf("neural rendering %s (confirm) — Frame Gen nao muda\n",
+                    g_nr_runtime_on ? "ON" : "OFF");
+        session_notice.push(g_nr_runtime_on ? session_notice_nr_on() : session_notice_nr_off(),
+                            clock.now_ms());
+      }
+    }
+
+    // Boot: pulse Bridge only when carried runtime ≠ want (lobby may already match).
+    if (g_nr_boot_retries > 0 && !g_nr_confirm.active) {
       --g_nr_boot_retries;
       const bool want_nr = (cfg.enhance == EnhanceBackend::Renodx) && cfg.neural_rendering;
-      if (!want_nr) {
+      if (want_nr == g_nr_runtime_on) {
         g_nr_boot_retries = 0;
-      } else if (g_nr_runtime_on) {
-        g_nr_boot_retries = 0;
-        overlay.renodx_on = true;
+        overlay.renodx_on = g_nr_runtime_on;
       } else if (dlss5_bridge_ready_for_nr()) {
         wchar_t exe_path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-        if (apply_neural_rendering_state(fs::path(exe_path).parent_path().string(), true, &g_nr_runtime_on)) {
-          overlay.renodx_on = g_nr_runtime_on;
-          info.dlss_enabled = g_nr_runtime_on;
+        const double now_boot = clock.now_ms();
+        if (apply_neural_rendering_state(fs::path(exe_path).parent_path().string(), want_nr, &g_nr_runtime_on,
+                                         /*feed_on=*/true, &g_nr_confirm, now_boot)) {
           g_nr_boot_retries = 0;
-          append_log(cfg.log_dir, "neural rendering runtime ON (Bridge pulse)");
-          std::printf("neural rendering runtime: ON (Bridge pulse)\n");
+          if (!g_nr_confirm.active) {
+            overlay.renodx_on = g_nr_runtime_on;
+            info.dlss_enabled = g_nr_runtime_on;
+            cfg.nr_runtime_on = g_nr_runtime_on;
+            append_log(cfg.log_dir, std::string("neural rendering runtime ") +
+                                        (g_nr_runtime_on ? "ON" : "OFF") + " (Bridge pulse)");
+            std::printf("neural rendering runtime: %s (Bridge pulse)\n", g_nr_runtime_on ? "ON" : "OFF");
+          } else {
+            append_log(cfg.log_dir, "neural rendering boot pulse sent (await log confirm)");
+          }
         }
       }
     }
@@ -646,42 +708,58 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     if (g_toggle_fg.exchange(false)) {
       std::string ferr;
-      if (!fg.toggle(hwnd, ferr)) {
+      if (fg.busy()) {
+        append_log(cfg.log_dir, "fg toggle ignored (op pending)");
+      } else if (!fg.request_toggle(hwnd, ferr)) {
         std::printf("fg toggle: %s\n", ferr.c_str());
         append_log(cfg.log_dir, "fg toggle fail: " + ferr);
         if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
           session_notice.push(session_notice_fg_missing(), clock.now_ms());
+        } else {
+          session_notice.push("Frame Gen — sem confirmacao; overlay nao mudou", clock.now_ms());
         }
       } else {
-        apply_session_fg_to_config(fg.state().active, fg.state().multiplier, cfg);
-        std::printf("fg %s x%d\n", fg.state().active ? "ON" : "off", fg.state().multiplier);
-        append_log(cfg.log_dir, std::string("fg ") + (fg.state().active ? "ON" : "off") + " x" +
-                                    std::to_string(fg.state().multiplier));
-        if (session_notice_for_fg_toggle(fg.state().active)) {
-          session_notice.push(session_notice_fg_on(), clock.now_ms());
-        }
+        session_notice.push(fg.state().active ? "Frame Gen — desligando…" : "Frame Gen — aplicando…",
+                            clock.now_ms());
+        append_log(cfg.log_dir, "fg toggle requested (async)");
       }
-      info.fg_enabled = fg.state().active;
-      info.fg_multiplier = fg.state().multiplier;
-      info.fg_status = fg_status_name(fg.state().status);
     }
     if (g_cycle_fg.exchange(false)) {
       std::string ferr;
-      const int prev_mult = fg.state().multiplier;
-      if (!fg.cycle_multiplier(hwnd, ferr)) {
+      if (fg.busy()) {
+        append_log(cfg.log_dir, "fg cycle ignored (op pending)");
+      } else if (!fg.request_cycle_multiplier(hwnd, ferr)) {
         std::printf("fg cycle: %s\n", ferr.c_str());
       } else {
-        apply_session_fg_to_config(fg.state().active, fg.state().multiplier, cfg);
-        std::printf("fg multiplier x%d (%s)\n", fg.state().multiplier, fg_status_name(fg.state().status));
-        append_log(cfg.log_dir, "fg cycle x" + std::to_string(fg.state().multiplier));
-        if (session_notice_for_fg_cycle(prev_mult, fg.state().multiplier)) {
-          session_notice.push(session_notice_fg_multiplier_up(fg.state().multiplier), clock.now_ms());
-        }
+        session_notice.push("Frame Gen — trocando x" + std::to_string(fg.state().multiplier) + "…",
+                            clock.now_ms());
+        append_log(cfg.log_dir, "fg cycle requested (async)");
       }
+    }
+
+    // Finish async FG without blocking Present (same idea as NR log confirm).
+    if (fg.busy() && fg.tick(clock.now_ms())) {
+      apply_session_fg_to_config(fg.state().active, fg.state().multiplier, cfg);
       info.fg_enabled = fg.state().active;
       info.fg_multiplier = fg.state().multiplier;
       info.fg_status = fg_status_name(fg.state().status);
+      if (!fg.state().last_error.empty() && fg.state().status == FgStatus::Error) {
+        session_notice.push("Frame Gen — " + fg.state().last_error, clock.now_ms());
+        append_log(cfg.log_dir, "fg async fail: " + fg.state().last_error);
+      } else {
+        std::printf("fg %s x%d\n", fg.state().active ? "ON" : "off", fg.state().multiplier);
+        append_log(cfg.log_dir, std::string("fg ") + (fg.state().active ? "ON" : "off") + " x" +
+                                    std::to_string(fg.state().multiplier) + " (async confirm)");
+        if (session_notice_for_fg_toggle(fg.state().active)) {
+          session_notice.push(session_notice_fg_on(), clock.now_ms());
+        } else if (fg.state().active) {
+          session_notice.push(session_notice_fg_multiplier_up(fg.state().multiplier), clock.now_ms());
+        }
+      }
     }
+    info.fg_enabled = fg.state().active;
+    info.fg_multiplier = fg.state().multiplier;
+    info.fg_status = fg_status_name(fg.state().status);
 
     const bool analyze_on = g_analyze.load();
     if (analyze_on && !analyze_was) {
@@ -742,7 +820,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.clusters = cluster_count;
     overlay.fake_capture = cfg.fake_capture;
     overlay.device = info.device;
-    overlay.fg_on = fg.state().active;
+    fg.reconcile_process();
+    overlay.fg_on = fg.state().active &&
+                    fg_overlay_on_confirmed(true, LosslessFgController::count_running_lossless_processes());
     overlay.fg_multiplier = fg.state().multiplier;
     overlay.fg_status = fg_status_name(fg.state().status);
     overlay.fg_backend = fg.state().backend;
@@ -759,6 +839,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     if (!renderer.present_frame(frame, overlay, present_ms, err)) {
       append_log(cfg.log_dir, "present error: " + err);
+    }
+    // Passthrough enhance overwrites dlss_* — keep RenoDX NR status authoritative for HUD.
+    if (cfg.enhance == EnhanceBackend::Renodx) {
+      overlay.renodx_on = g_nr_runtime_on;
+      overlay.dlss_on = g_nr_runtime_on;
+      overlay.dlss_backend = "renodx+feed";
+      overlay.dlss_status = g_nr_runtime_on ? "nr-on" : "nr-off";
     }
     last_dlss_ms = overlay.dlss_ms;
     overlay.present_ms = present_ms;
@@ -843,6 +930,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       g_running = false;
     }
   }
+
+  cfg.nr_runtime_on = g_nr_runtime_on;
 
   session_panel.destroy();
   hud.destroy();

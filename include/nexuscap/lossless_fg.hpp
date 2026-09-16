@@ -198,6 +198,27 @@ std::string patch_mira_settings_xml(const std::string& xml, int multiplier);
 // Build a minimal valid Settings.xml with mira lock + LSFG3 FIXED.
 std::string build_mira_settings_xml(int multiplier);
 
+// Read LSFG3Multiplier from Settings.xml text; 0 = missing/invalid.
+inline int parse_lsfg3_multiplier_from_xml(const std::string& xml) {
+  const std::string open = "<LSFG3Multiplier>";
+  const std::string close = "</LSFG3Multiplier>";
+  const auto a = xml.find(open);
+  if (a == std::string::npos) return 0;
+  const auto b = xml.find(close, a + open.size());
+  if (b == std::string::npos) return 0;
+  const std::string raw = xml.substr(a + open.size(), b - (a + open.size()));
+  int m = 0;
+  if (!parse_fg_multiplier(raw, m)) return 0;
+  return clamp_fg_multiplier(m);
+}
+
+// Overlay xN only after disk confirms the same multiplier (no memory-only hope).
+inline bool fg_multiplier_confirmed_on_disk(int want_mult, const std::string& settings_xml) {
+  const int want = clamp_fg_multiplier(want_mult);
+  if (want < 2) return parse_lsfg3_multiplier_from_xml(settings_xml) >= 2 || want <= 1;
+  return parse_lsfg3_multiplier_from_xml(settings_xml) == want;
+}
+
 // Patch [lsfg] section in config.ini text for mira lock.
 std::string patch_lsfg_ini(const std::string& ini);
 
@@ -225,29 +246,48 @@ public:
   void configure(int multiplier, const std::string& exe_override = {});
 
   const FgState& state() const { return state_; }
+  bool busy() const { return pending_ != FgPending::None; }
 
   // Apply mira profile to %LOCALAPPDATA%\Lossless Scaling\Settings.xml (+ Steam config.ini).
   bool apply_profile(std::string& err);
 
   // Start LS process under Job Object if multiplier >= 2 and exe exists.
-  bool ensure_process(std::string& err);
+  // allow_adopt=false forces a fresh process (required after x2↔x3↔x4 so LS reloads XML).
+  // No Sleep — caller waits via tick() so Present keeps running.
+  bool ensure_process(std::string& err, bool allow_adopt = true);
 
-  // Toggle FG on target HWND via LS hotkey (F24). Starts process if needed.
-  // Turning OFF kills the LS process so a leftover instance cannot keep injecting frames.
+  // Async FG ops (no Present freeze). Call tick() every frame until !busy().
+  bool request_toggle(HWND target, std::string& err);
+  bool request_set_multiplier(int multiplier, HWND target, std::string& err);
+  bool request_cycle_multiplier(HWND target, std::string& err);
+  // Returns true when an async op just finished this frame (success or fail in last_error).
+  bool tick(double now_ms);
+
+  // Sync wrappers (selftests). Prefer request_* + tick in the session loop.
   bool toggle(HWND target, std::string& err);
-
-  // Change multiplier (2/3/4). If FG was on, re-toggle to apply.
   bool set_multiplier(int multiplier, HWND target, std::string& err);
-
-  // Cycle 2→3→4→2 (from 1 goes to 2).
   bool cycle_multiplier(HWND target, std::string& err);
 
-  void shutdown();
+  void shutdown(DWORD wait_ms = 800);
 
   // How many LosslessScaling.exe are running (0 = none). Used to avoid duplicate instances.
   static unsigned count_running_lossless_processes();
 
+  // If active but LS process gone → clear active (HUD never stays ON as false positive).
+  void reconcile_process();
+
 private:
+  enum class FgPending {
+    None,
+    OnWaitLaunch,
+    OnSendHotkey,
+    OnConfirm,
+    OffAfterHotkey,
+    OffConfirmDead,
+    MultWaitLaunch,
+    MultAfterLaunch,
+  };
+
   bool send_ls_hotkey();
   bool focus_window(HWND hwnd);
   void hide_ls_windows();
@@ -255,11 +295,21 @@ private:
   bool write_ini_alongside_exe(std::string& err);
   bool adopt_existing_lossless(std::string& err);
   void terminate_extra_lossless_processes(DWORD keep_pid);
+  bool run_sync_until_idle(std::string& err);
 
   FgState state_;
   HANDLE job_ = nullptr;
   HANDLE proc_ = nullptr;
   bool configured_ = false;
+
+  FgPending pending_ = FgPending::None;
+  double pending_due_ms_ = 0;
+  HWND pending_hwnd_ = nullptr;
+  int pending_prev_mult_ = 2;
+  int pending_want_mult_ = 2;
+  bool pending_was_active_ = false;
+  int pending_retries_ = 0;
+  bool pending_finished_ok_ = false;
 };
 
 }  // namespace nexuscap

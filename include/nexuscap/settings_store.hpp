@@ -21,6 +21,8 @@ struct HotkeyConfig {
 struct SessionUiFlags {
   bool show_fps = true;
   bool advanced_metrics = false;
+  // Steam Deck-style: one horizontal top bar; turns off compact/advanced multi-line HUD.
+  bool mini_overlay = false;
   bool hw_info = false;  // painel CPU(+C) / GPU(+C) / RAM / VRAM / PWR (abaixo de métricas)
   bool fullscreen = true;
   bool hide_panel_on_capture = true;

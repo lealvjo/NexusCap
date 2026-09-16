@@ -29,6 +29,7 @@ struct AppConfig {
   bool frames_limited = false;  // true when --frames was passed (auto-quit)
   bool show_lobby = true;       // false with --no-lobby / --smoke / selftests
   bool advanced_metrics = false;
+  bool mini_overlay = false;    // Steam Deck-style top bar
   bool hw_info = false;  // painel Infos GPU/CPU
   bool hide_panel_on_capture = true;
   bool sync_image = false;  // vsync Present
@@ -77,12 +78,20 @@ inline unsigned present_sync_interval(bool sync_image) { return sync_image ? 1u 
 
 // Compact vs advanced metrics panel size (MetricsHud).
 // Advanced needs room for long signal/hotkey lines; HW adds 5 stacked rows.
+// Mini overlay: thin Steam Deck-style top bar (height only; width follows owner).
 inline int hud_panel_width(bool advanced_metrics) { return advanced_metrics ? 920 : 560; }
 inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
   int h = advanced_metrics ? 640 : 220;
   // 5 lines: CPU / GPU / RAM / VRAM / PWR
   if (hw_info) h += 5 * 28;
   return h;
+}
+inline int hud_mini_overlay_height() { return 36; }  // single row: metrics + frametime sparkline side-by-side
+
+// When mini overlay is on, multi-line compact/advanced HUD is suppressed.
+inline bool hud_uses_mini_overlay(bool show_fps, bool mini_overlay) { return show_fps && mini_overlay; }
+inline bool hud_uses_advanced_metrics(bool show_fps, bool mini_overlay, bool advanced_metrics) {
+  return show_fps && !mini_overlay && advanced_metrics;
 }
 
 // Separate floating strip for CPU/GPU/RAM/VRAM/PWR when "Infos GPU / CPU" is on.
@@ -109,8 +118,10 @@ inline std::string logo_png_candidate_root(const std::string& exe_dir) {
 inline constexpr int kAppIconResourceId = 101;
 
 // Lines on lobby HUD preview (0 = HUD hidden). Compact also shows gear fields.
-inline int lobby_hud_preview_lines(bool show_fps, bool advanced_metrics, bool hw_info = false) {
+inline int lobby_hud_preview_lines(bool show_fps, bool advanced_metrics, bool hw_info = false,
+                                   bool mini_overlay = false) {
   if (!show_fps) return 0;
+  if (mini_overlay) return 1;
   int n = advanced_metrics ? 8 : 6;
   if (hw_info) n += kSysMetricsLineCount;
   return n;
@@ -119,7 +130,7 @@ inline int lobby_hud_preview_lines(bool show_fps, bool advanced_metrics, bool hw
 // Pure HUD text for live preview — gear/Sessão toggles must change these strings.
 struct LobbyHudPreviewLines {
   int count = 0;
-  char line[16][128]{};
+  char line[16][192]{};
 };
 
 inline bool lobby_hud_contains(const LobbyHudPreviewLines& h, const char* needle) {
@@ -139,6 +150,15 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
   const int fgx = s.fg_enabled ? (s.fg_multiplier >= 2 ? s.fg_multiplier : 2) : 1;
   const int scale = clamp_scale_percent(s.scale_percent);
   int n = 0;
+
+  if (s.ui.mini_overlay) {
+    const bool dlss5 = s.enhance_renodx && s.neural_rendering;
+    format_mini_overlay_line(out.line[n++], 192, fps, fps * static_cast<double>((std::max)(fgx, 1)), false,
+                             fgx, dlss5, ft, ft, 0, 0, s.width, s.height, scaled_extent(s.width, scale),
+                             scaled_extent(s.height, scale), s.width, s.height, scale);
+    out.count = n;
+    return out;
+  }
 
   if (s.ui.advanced_metrics) {
     std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]  ADV");

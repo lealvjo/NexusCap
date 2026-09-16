@@ -378,6 +378,20 @@ TEST_CASE("lobby HUD sits on left black bar with readable colors") {
   CHECK_FALSE(hud_color_readable_on_black(40, 40, 45));  // old dark-card gray fails
 }
 
+TEST_CASE("lobby side panels follow letterbox black-bar widths") {
+  // Wider side menus (~+25%): preview may squeeze; mid still usable.
+  const auto wide = lobby_side_panel_layout(2400.f, 900.f, 1920, 1080, 375.f, 525.f, 280.f);
+  CHECK(wide.left_w >= 375.f);
+  CHECK(wide.right_w >= 375.f);
+  CHECK(wide.mid_w >= 280.f);
+  CHECK(doctest::Approx(wide.left_w + wide.right_w + wide.mid_w).epsilon(0.5) == 2400.f);
+
+  const auto tight = lobby_side_panel_layout(1920.f, 1080.f, 1920, 1080, 375.f, 525.f, 280.f);
+  CHECK(tight.left_w == doctest::Approx(375.f));
+  CHECK(tight.right_w == doctest::Approx(375.f));
+  CHECK(tight.mid_w >= 280.f);
+}
+
 TEST_CASE("letterbox fits 1080p signal into 1440p output centered") {
   const auto v = fit_letterbox(1920, 1080, 2560, 1440);
   CHECK(v.w == doctest::Approx(2560.f).epsilon(0.01));
@@ -509,6 +523,46 @@ TEST_CASE("session HUD shows real|FG dual FPS when FG on") {
   CHECK(std::strstr(fg, "60") != nullptr);
   CHECK(std::strstr(fg, "120") != nullptr);
   CHECK(std::strstr(fg, "->") != nullptr);
+}
+
+TEST_CASE("mini overlay one-line has FPS FG and DLSS5") {
+  char line[256]{};
+  format_mini_overlay_line(line, sizeof(line), 60.0, 120.0, true, 2, true, 16.7, 8.5, 2, 1, 2560, 1440, 2560,
+                           1440, 2560, 1440, 100);
+  CHECK(std::strstr(line, "60.0") != nullptr);
+  CHECK(std::strstr(line, "120.0") != nullptr);
+  CHECK(std::strstr(line, "cap|FG") != nullptr);
+  CHECK(std::strstr(line, "DLSS5 ON") != nullptr);
+  CHECK(std::strstr(line, "ft 16.7") != nullptr);
+  CHECK(std::strstr(line, "e2e 8.5") != nullptr);
+  CHECK(std::strstr(line, "stall 2") != nullptr);
+  CHECK(std::strstr(line, "cl 1") != nullptr);
+  CHECK(std::strstr(line, "in=work=out 2560x1440") != nullptr);
+
+  format_mini_overlay_line(line, sizeof(line), 59.9, 0.0, false, 2, false, 16.6, 12.0, 0, 0, 2560, 1440, 1280,
+                           720, 2560, 1440, 50);
+  CHECK(std::strstr(line, "DLSS5 off") != nullptr);
+  CHECK(std::strstr(line, "FG x2 off") != nullptr);
+  CHECK(std::strstr(line, "stall 0") != nullptr);
+  CHECK(std::strstr(line, "cl 0") != nullptr);
+  CHECK(std::strstr(line, "in 2560x1440") != nullptr);
+  CHECK(std::strstr(line, "work 1280x720") != nullptr);
+  CHECK(std::strstr(line, "out 2560x1440") != nullptr);
+
+  PersistedSettings s = default_settings();
+  s.ui.show_fps = true;
+  s.ui.mini_overlay = true;
+  s.ui.advanced_metrics = true;  // ignored while mini is on
+  s.enhance_renodx = true;
+  s.neural_rendering = true;
+  s.width = 2560;
+  s.height = 1440;
+  auto hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(hud.count == 1);
+  CHECK(lobby_hud_contains(hud, "DLSS5 ON"));
+  CHECK(lobby_hud_preview_lines(true, true, false, true) == 1);
+  CHECK(hud_uses_mini_overlay(true, true));
+  CHECK_FALSE(hud_uses_advanced_metrics(true, true, true));
 }
 
 TEST_CASE("default FG off but multiplier stays armed for PageDn") {
@@ -791,6 +845,7 @@ TEST_CASE("settings ini round-trip") {
   s.hotkeys.vk_hud = 0x71;
   s.ui.show_fps = true;
   s.ui.advanced_metrics = true;
+  s.ui.mini_overlay = true;
   s.ui.fullscreen = false;
   s.ui.hide_panel_on_capture = false;
   s.ui.sync_image = true;
@@ -807,6 +862,7 @@ TEST_CASE("settings ini round-trip") {
   CHECK(out.hotkeys.vk_fg_toggle == 0x22);
   CHECK(out.ui.show_fps);
   CHECK(out.ui.advanced_metrics);
+  CHECK(out.ui.mini_overlay);
   CHECK_FALSE(out.ui.fullscreen);
   CHECK_FALSE(out.ui.hide_panel_on_capture);
   CHECK(out.ui.sync_image);
@@ -1141,6 +1197,8 @@ TEST_CASE("lobby hud preview lines follow Sessao toggles") {
   CHECK(lobby_hud_preview_lines(true, true) > lobby_hud_preview_lines(true, false));
   CHECK(lobby_hud_preview_lines(true, false, true) == 11);  // + 5 Infos GPU/CPU lines
   CHECK(lobby_hud_preview_lines(true, true, true) == 13);
+  CHECK(lobby_hud_preview_lines(true, false, false, true) == 1);  // mini = single top line
+  CHECK(lobby_hud_preview_lines(true, true, true, true) == 1);
 }
 
 TEST_CASE("hw_info toggle persists and shows preview line") {
@@ -1581,16 +1639,16 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(1, 1, 5));
-  CHECK(std::string(kAppVersion) == "1.1.5");
-  CHECK(std::strstr(kAppNameWithVersion, "v1.1.5") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.5");
+  CHECK(app_version_is(1, 1, 6));
+  CHECK(std::string(kAppVersion) == "1.1.6");
+  CHECK(std::strstr(kAppNameWithVersion, "v1.1.6") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.6");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("1.1.5") != std::string::npos);
+  CHECK(lobby_t.find("1.1.6") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("1.1.5") != std::string::npos);
+  CHECK(sess_t.find("1.1.6") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 

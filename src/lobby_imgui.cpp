@@ -566,6 +566,32 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
   LobbyHudPreviewLines hud = make_lobby_hud_preview_lines(settings, preview.fps_ema);
   if (hud.count <= 0) return;
 
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+
+  // Mini overlay preview: metrics left + frametime sparkline right (same row).
+  if (settings.ui.mini_overlay) {
+    const float bar_h = 30.f;
+    ImVec2 p0(img_min.x, img_min.y);
+    ImVec2 p1(img_max.x, img_min.y + bar_h);
+    dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
+    const float graph_w = 160.f;
+    const float gx = (std::max)(p0.x + 8.f, p1.x - 8.f - graph_w);
+    const float gy = p0.y + 5.f;
+    const float gh = 20.f;
+    const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 16.f));
+    dl->AddText(ImVec2(p0.x + 8.f, p0.y + 7.f), IM_COL32(210, 230, 255, 255), hud.line[0]);
+    if (gw >= 48.f) {
+      dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + gw, gy + gh), IM_COL32(20, 24, 30, 220), 2.f);
+      const float fps = preview.fps_ema > 1.0 ? static_cast<float>(preview.fps_ema) : 0.f;
+      const float ft = fps > 1.f ? (1000.f / fps) : 0.f;
+      const float tgt = settings.fps > 0 ? static_cast<float>(1000.0 / settings.fps) : 16.67f;
+      const float t = ft > 0.f ? (std::min)(1.f, ft / (tgt * 2.5f)) : 0.2f;
+      dl->AddRectFilled(ImVec2(gx + 2, gy + 2), ImVec2(gx + 2 + (gw - 4) * t, gy + gh - 2),
+                        IM_COL32(100, 235, 255, 240), 2.f);
+    }
+    return;
+  }
+
   // HW placeholders come from make_lobby_hud_preview_lines — strip them and paint a
   // dedicated multi-line block below (CPU / GPU / RAM / VRAM / PWR each on its own line).
   char hw_lines[kSysMetricsLineCount][64]{};
@@ -588,7 +614,6 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
     hw_n = format_sys_metrics_lines(hw_lines, kSysMetricsLineCount, g_lobby_hw_sample);
   }
 
-  ImDrawList* dl = ImGui::GetWindowDrawList();
   const float pad = 8.f;
   const float line_h = settings.ui.advanced_metrics ? 16.f : 15.f;
   const int total_lines = hud.count + hw_n;
@@ -863,86 +888,25 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::EndChild();
     ImGui::Separator();
 
-    const float left_w = 360.f;
-    const float right_w = 320.f;
-    const float footer_h = 72.f;
-    const float body_h = (std::max)(320.f, ImGui::GetContentRegionAvail().y - footer_h);
-    // OBS-style: large preview band on top (not a small centered tile).
-    const float preview_band_h = (std::max)(280.f, body_h * 0.55f);
-    const float bottom_h = (std::max)(160.f, body_h - preview_band_h - 6.f);
+    const float footer_h = 92.f;
+    const float body_gap = ImGui::GetStyle().ItemSpacing.y;
+    const float body_h =
+        (std::max)(280.f, ImGui::GetContentRegionAvail().y - footer_h - body_gap);
+    const float body_w = ImGui::GetContentRegionAvail().x;
+    const float side_gap = ImGui::GetStyle().ItemSpacing.x;
+    // Leave room for two SameLine gaps so the right panel is not clipped.
+    const float usable_w = (std::max)(480.f, body_w - side_gap * 2.f);
+    const int sig_w = preview.tex_w > 0 ? preview.tex_w : settings.width;
+    const int sig_h = preview.tex_h > 0 ? preview.tex_h : settings.height;
+    const auto sides = lobby_side_panel_layout(usable_w, body_h, sig_w, sig_h, 375.f, 525.f, 280.f);
+    const float left_w = sides.left_w;
+    const float right_w = sides.right_w;
+    const float mid_w = sides.mid_w;
 
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.04f, 0.05f, 0.07f, 1.f));
-    ImGui::BeginChild("preview_band", ImVec2(0, preview_band_h), true);
-    {
-      ImGui::TextDisabled("PRE-VISUALIZACAO  ·  %dx%d @ %.0f", settings.width, settings.height, settings.fps);
-      ImGui::SameLine(ImGui::GetWindowWidth() - 160);
-      if (preview.live && preview.frames_seen > 0) {
-        ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.45f, 1.f), "AO VIVO");
-      } else if (preview.live) {
-        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.f), "AGUARDANDO");
-      } else {
-        ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.f), "OFF");
-      }
-
-      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-      ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.f, 0.f, 0.f, 1.f));
-      ImGui::BeginChild("preview_fill", ImVec2(0, 0), false, ImGuiWindowFlags_NoScrollbar);
-      ImVec2 band_min{}, band_max{}, img_min{}, img_max{};
-      bool hud_has_img = false;
-      const ImVec2 avail = ImGui::GetContentRegionAvail();
-      const ImVec2 origin = ImGui::GetCursorScreenPos();
-      band_min = origin;
-      band_max = ImVec2(origin.x + avail.x, origin.y + avail.y);
-      if (preview.srv && preview.tex_w > 0 && preview.tex_h > 0 && avail.x > 1.f && avail.y > 1.f) {
-        // Centered letterbox — black side bars, no stretch.
-        const auto box =
-            fit_letterbox(preview.tex_w, preview.tex_h, static_cast<int>(avail.x), static_cast<int>(avail.y));
-        img_min = ImVec2(origin.x + box.x, origin.y + box.y);
-        img_max = ImVec2(img_min.x + box.w, img_min.y + box.h);
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddImage(reinterpret_cast<ImTextureID>(preview.srv), img_min, img_max);
-        ImGui::Dummy(avail);
-        hud_has_img = true;
-      } else {
-        img_min = band_min;
-        img_max = band_max;
-        hud_has_img = true;
-        ImGui::SetCursorPos(ImVec2(16.f, avail.y * 0.35f));
-        if (!preview.err.empty()) {
-          ImGui::TextColored(ImVec4(1.f, 0.45f, 0.4f, 1.f), "Preview: %s", preview.err.c_str());
-        } else if (preview.live) {
-          ImGui::TextDisabled("Aguardando sinal da placa...");
-        } else {
-          ImGui::TextDisabled("Sem preview (escolha dispositivo / Recarregar)");
-        }
-        ImGui::Text("  %s", settings.device_name.empty() ? "auto" : settings.device_name.c_str());
-        ImGui::TextDisabled("  %s · %s · %s", video_fourcc_name(settings.video_fourcc),
-                            color_space_name(settings.color_space), color_range_name(settings.color_range));
-      }
-      if (hud_has_img) draw_hud_preview_overlay(settings, preview, band_min, band_max, img_min, img_max);
-      if (!settings.ui.show_fps) {
-        ImGui::SetCursorPos(ImVec2(12, 8));
-        ImGui::TextColored(ImVec4(0.75f, 0.9f, 1.f, 1.f), "HUD off (marque Exibir FPS para ver no preview)");
-      }
-      ImGui::EndChild();
-      ImGui::PopStyleColor();
-      ImGui::PopStyleVar();
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
-
-    ImGui::BeginChild("origem", ImVec2(left_w, bottom_h), true);
+    // Side menus aligned to letterbox black-bar widths; preview fills the center column.
+    ImGui::BeginChild("origem", ImVec2(left_w, body_h), true);
     ImGui::TextDisabled("ORIGEM");
-    ImGui::Spacing();
     ImGui::TextUnformatted("Fontes de video");
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.12f, 0.18f, 0.30f, 1.f));
-    ImGui::BeginChild("src_card", ImVec2(0, 64), true);
-    ImGui::TextColored(ImVec4(0.3f, 0.7f, 1.f, 1.f), "*");
-    ImGui::SameLine();
-    ImGui::TextUnformatted("Dispositivo de captura");
-    ImGui::TextDisabled("Webcam / HDMI");
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
     ImGui::Spacing();
 
     ImGui::TextDisabled("DISPOSITIVO");
@@ -962,10 +926,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       }
     }
 
-    ImGui::TextDisabled("MODO (resolucao / FPS da placa)");
+    ImGui::TextDisabled("MODO");
     ImGui::SetNextItemWidth(-1);
     if (modes.empty()) {
-      ImGui::TextDisabled("(sem caps — usa %dx%d @ %.0f)", settings.width, settings.height, settings.fps);
+      ImGui::TextDisabled("(sem caps — %dx%d @ %.0f)", settings.width, settings.height, settings.fps);
     } else {
       std::vector<const char*> mlabels;
       mlabels.reserve(modes.size());
@@ -982,9 +946,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     }
 
     ImGui::Spacing();
-    ImGui::TextDisabled("FORMATO / COR (estilo OBS — so o que a placa anuncia)");
-
-    refresh_fourccs();  // cached — only re-queries device when mode/device key changes
+    ImGui::TextDisabled("FORMATO / COR");
+    refresh_fourccs();
+    const float col_w = (std::max)(110.f, (ImGui::GetContentRegionAvail().x - 8.f) * 0.5f);
     {
       int fmt_idx = 0;
       std::vector<std::string> fmt_store;
@@ -995,8 +959,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (fourccs[i] == settings.video_fourcc) fmt_idx = static_cast<int>(i);
       }
       for (auto& s : fmt_store) fmt_labels.push_back(s.c_str());
-      ImGui::TextUnformatted("Formato de video");
-      ImGui::SetNextItemWidth(-1);
+      ImGui::BeginGroup();
+      ImGui::TextUnformatted("Formato");
+      ImGui::SetNextItemWidth(col_w);
       if (ImGui::Combo("##fmt", &fmt_idx, fmt_labels.data(), static_cast<int>(fmt_labels.size()))) {
         const int prev = settings.video_fourcc;
         settings.video_fourcc = fourccs[static_cast<size_t>(fmt_idx)];
@@ -1004,59 +969,65 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           settings.video_fourcc = prev;
           restart_preview();
         } else if (!preview.err.empty() && preview.err.find("falhou") != std::string::npos) {
-          // Fallback NV12 kept preview alive — snap UI to NV12.
           settings.video_fourcc = static_cast<int>(kDefaultVideoFourcc);
         }
       }
+      ImGui::EndGroup();
     }
+    ImGui::SameLine(0.f, 8.f);
     {
-      // OBS order: Padrao, Rec.709, Rec.601, PQ, HLG — values map to ColorSpace enum.
       const char* space_labels[kObsColorSpaceUiCount];
       int ui_idx = 0;
       for (int i = 0; i < kObsColorSpaceUiCount; ++i) {
         space_labels[i] = color_space_name(kObsColorSpaceUiOrder[i]);
         if (kObsColorSpaceUiOrder[i] == clamp_color_space(settings.color_space)) ui_idx = i;
       }
-      ImGui::TextUnformatted("Espaco de cores");
-      ImGui::SetNextItemWidth(-1);
+      ImGui::BeginGroup();
+      ImGui::TextUnformatted("Espaco");
+      ImGui::SetNextItemWidth(col_w);
       if (ImGui::Combo("##cspace", &ui_idx, space_labels, kObsColorSpaceUiCount)) {
         settings.color_space = kObsColorSpaceUiOrder[ui_idx];
-        preview.apply_color(settings.color_space, settings.color_range);  // no DShow restart
+        preview.apply_color(settings.color_space, settings.color_range);
       }
+      ImGui::EndGroup();
     }
     {
       const char* range_labels[] = {"Limitado", "Completo"};
       int rg = clamp_color_range(settings.color_range);
-      ImGui::TextUnformatted("Intervalo de cores");
-      ImGui::SetNextItemWidth(-1);
+      ImGui::BeginGroup();
+      ImGui::TextUnformatted("Intervalo");
+      ImGui::SetNextItemWidth(col_w);
       if (ImGui::Combo("##crange", &rg, range_labels, 2)) {
         settings.color_range = rg;
-        preview.apply_color(settings.color_space, settings.color_range);  // no DShow restart
+        preview.apply_color(settings.color_space, settings.color_range);
       }
+      ImGui::EndGroup();
     }
+    ImGui::SameLine(0.f, 8.f);
     {
       const char* buf_labels[] = {"Desativado", "Ativado"};
       int bf = clamp_capture_buffering(settings.capture_buffering);
+      ImGui::BeginGroup();
       ImGui::TextUnformatted("Buffering");
       ImGui::SameLine();
       ImGui::TextDisabled("(?)");
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Desativado = baixa latencia (padrao validado).\nAtivado = mais buffers na placa.");
       }
-      ImGui::SetNextItemWidth(-1);
+      ImGui::SetNextItemWidth(col_w);
       if (ImGui::Combo("##cbuf", &bf, buf_labels, 2)) {
         settings.capture_buffering = bf;
         restart_preview();
       }
+      ImGui::EndGroup();
     }
     if (!preview.err.empty()) {
       ImGui::TextColored(ImVec4(1.f, 0.55f, 0.2f, 1.f), "%s", preview.err.c_str());
     }
     if (is_validated_default_capture_format(settings.video_fourcc, settings.color_space, settings.color_range,
                                            settings.capture_buffering)) {
-      ImGui::TextColored(ImVec4(0.35f, 0.9f, 0.5f, 1.f), "Padrao validado (NV12 / limitado / buf off)");
+      ImGui::TextColored(ImVec4(0.35f, 0.9f, 0.5f, 1.f), "Padrao validado");
     }
-
     if (ImGui::Button("Recarregar entradas", ImVec2(-1, 0))) {
       devices = list_video_capture_devices();
       device_idx = 0;
@@ -1070,77 +1041,136 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::SameLine();
 
-    const float mid_w = (std::max)(220.f, ImGui::GetContentRegionAvail().x - right_w - 8.f);
-    ImGui::BeginChild("centro", ImVec2(mid_w, bottom_h), true);
-    ImGui::TextDisabled("METRICAS");
-    ImGui::Spacing();
-    const float card_w = (ImGui::GetContentRegionAvail().x - 16.f) / 3.f;
-    char fps_buf[32];
-    char ft_buf[32];
-    if (preview.fps_ema > 1.0) {
-      std::snprintf(fps_buf, sizeof(fps_buf), "%.0f fps", preview.fps_ema);
-      std::snprintf(ft_buf, sizeof(ft_buf), "%.1f ms", 1000.0 / preview.fps_ema);
-    } else {
-      std::snprintf(fps_buf, sizeof(fps_buf), "--- fps");
-      std::snprintf(ft_buf, sizeof(ft_buf), "--- ms");
-    }
-    auto metric_card = [&](const char* value, const char* label) {
-      ImGui::BeginChild(label, ImVec2(card_w, 78), true);
-      ImGui::SetWindowFontScale(1.1f);
-      ImGui::TextUnformatted(value);
-      ImGui::SetWindowFontScale(1.0f);
-      ImGui::TextDisabled("%s", label);
+    ImGui::BeginChild("centro", ImVec2(mid_w, body_h), false, ImGuiWindowFlags_NoScrollbar);
+    {
+      // Compact row: value | label side-by-side → less height, no scroll.
+      const float metrics_h = 72.f;
+      const float gap = ImGui::GetStyle().ItemSpacing.y;
+      const float preview_h =
+          (std::max)(120.f, ImGui::GetContentRegionAvail().y - metrics_h - gap);
+      ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.04f, 0.05f, 0.07f, 1.f));
+      ImGui::BeginChild("preview_band", ImVec2(0, preview_h), true,
+                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+      {
+        ImGui::TextDisabled("PRE-VISUALIZACAO  ·  %dx%d @ %.0f", settings.width, settings.height, settings.fps);
+        ImGui::SameLine(ImGui::GetWindowWidth() - 160);
+        if (preview.live && preview.frames_seen > 0) {
+          ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.45f, 1.f), "AO VIVO");
+        } else if (preview.live) {
+          ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.f), "AGUARDANDO");
+        } else {
+          ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.f), "OFF");
+        }
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.f, 0.f, 0.f, 1.f));
+        const float fill_h = (std::max)(40.f, ImGui::GetContentRegionAvail().y);
+        ImGui::BeginChild("preview_fill", ImVec2(0, fill_h), false,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        ImVec2 band_min{}, band_max{}, img_min{}, img_max{};
+        bool hud_has_img = false;
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        band_min = origin;
+        band_max = ImVec2(origin.x + avail.x, origin.y + avail.y);
+        if (preview.srv && preview.tex_w > 0 && preview.tex_h > 0 && avail.x > 1.f && avail.y > 1.f) {
+          // Fill center column — no letterbox black bars (side menus already own that space).
+          const auto box =
+              fit_fill(preview.tex_w, preview.tex_h, static_cast<int>(avail.x), static_cast<int>(avail.y));
+          img_min = ImVec2(origin.x + box.x, origin.y + box.y);
+          img_max = ImVec2(img_min.x + box.w, img_min.y + box.h);
+          ImDrawList* dl = ImGui::GetWindowDrawList();
+          dl->AddImage(reinterpret_cast<ImTextureID>(preview.srv), img_min, img_max);
+          ImGui::Dummy(avail);
+          hud_has_img = true;
+        } else {
+          img_min = band_min;
+          img_max = band_max;
+          hud_has_img = true;
+          ImGui::SetCursorPos(ImVec2(16.f, avail.y * 0.35f));
+          if (!preview.err.empty()) {
+            ImGui::TextColored(ImVec4(1.f, 0.45f, 0.4f, 1.f), "Preview: %s", preview.err.c_str());
+          } else if (preview.live) {
+            ImGui::TextDisabled("Aguardando sinal da placa...");
+          } else {
+            ImGui::TextDisabled("Sem preview (escolha dispositivo / Recarregar)");
+          }
+          ImGui::Text("  %s", settings.device_name.empty() ? "auto" : settings.device_name.c_str());
+          ImGui::TextDisabled("  %s · %s · %s", video_fourcc_name(settings.video_fourcc),
+                              color_space_name(settings.color_space), color_range_name(settings.color_range));
+        }
+        if (hud_has_img) draw_hud_preview_overlay(settings, preview, band_min, band_max, img_min, img_max);
+        if (!settings.ui.show_fps) {
+          ImGui::SetCursorPos(ImVec2(12, 8));
+          ImGui::TextColored(ImVec4(0.75f, 0.9f, 1.f, 1.f), "HUD off (marque Exibir FPS)");
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+      }
       ImGui::EndChild();
-    };
-    metric_card(fps_buf, "FPS captura");
-    ImGui::SameLine();
-    metric_card(ft_buf, "Frametime");
-    ImGui::SameLine();
-    char lat[64];
-    std::snprintf(lat, sizeof(lat), "FG %s", settings.fg_enabled ? "ON" : "off");
-    metric_card(lat, settings.fg_enabled ? "Frame Gen ON" : "Frame Gen off");
-    ImGui::Spacing();
-    ImGui::TextDisabled("Preview centrado (barras pretas L/R); HUD na borda esquerda.");
-    ImGui::TextWrapped(
-        "Captura em janela/fullscreen ainda preenche a tela — sem letterbox.");
+      ImGui::PopStyleColor();
+
+      ImGui::BeginChild("centro_metrics", ImVec2(0, metrics_h), true, ImGuiWindowFlags_NoScrollbar);
+      ImGui::TextDisabled("METRICAS");
+      const float card_w = (std::max)(90.f, (ImGui::GetContentRegionAvail().x - 16.f) / 3.f);
+      char fps_buf[32];
+      char ft_buf[32];
+      if (preview.fps_ema > 1.0) {
+        std::snprintf(fps_buf, sizeof(fps_buf), "%.0f fps", preview.fps_ema);
+        std::snprintf(ft_buf, sizeof(ft_buf), "%.1f ms", 1000.0 / preview.fps_ema);
+      } else {
+        std::snprintf(fps_buf, sizeof(fps_buf), "--- fps");
+        std::snprintf(ft_buf, sizeof(ft_buf), "--- ms");
+      }
+      auto metric_card = [&](const char* value, const char* label) {
+        ImGui::BeginChild(label, ImVec2(card_w, 36), true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::SetWindowFontScale(1.1f);
+        ImGui::TextUnformatted(value);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::SameLine(0.f, 8.f);
+        ImGui::TextDisabled("%s", label);
+        ImGui::EndChild();
+      };
+      metric_card(fps_buf, "captura");
+      ImGui::SameLine();
+      metric_card(ft_buf, "frametime");
+      ImGui::SameLine();
+      char lat[64];
+      std::snprintf(lat, sizeof(lat), "FG %s", settings.fg_enabled ? "ON" : "off");
+      metric_card(lat, settings.fg_enabled ? "frame gen" : "frame gen");
+      ImGui::EndChild();
+    }
     ImGui::EndChild();
 
     ImGui::SameLine();
 
-    ImGui::BeginChild("sessao", ImVec2(right_w, bottom_h), true);
+    ImGui::BeginChild("sessao", ImVec2(right_w, body_h), true);
     ImGui::TextDisabled("SESSAO");
-    ImGui::TextUnformatted("Configuracoes de captura");
+    ImGui::TextUnformatted("Configuracoes");
     ImGui::Spacing();
+    // Single column — two-up SameLine clipped labels on the right edge.
     ImGui::Checkbox("Exibir FPS (HUD)", &settings.ui.show_fps);
+    if (ImGui::Checkbox("Mini overlay (barra topo)", &settings.ui.mini_overlay)) {
+      if (settings.ui.mini_overlay) settings.ui.advanced_metrics = false;
+    }
+    ImGui::TextDisabled(settings.ui.mini_overlay ? "  -> barra topo + frametime"
+                                                 : "  -> HUD multi-linha");
+
+    ImGui::BeginDisabled(settings.ui.mini_overlay);
     ImGui::Checkbox("Metricas avancadas", &settings.ui.advanced_metrics);
-    ImGui::TextDisabled(settings.ui.advanced_metrics ? "  → preview: HUD completo"
-                                                     : "  → preview: HUD compacto");
     ImGui::Checkbox("Infos GPU / CPU", &settings.ui.hw_info);
-    ImGui::TextDisabled(settings.ui.hw_info ? "  → painel: CPU(+C), GPU(+C), RAM, VRAM, energia"
-                                            : "  → painel de hardware desligado");
+    ImGui::EndDisabled();
+
     ImGui::Checkbox("Tela cheia", &settings.ui.fullscreen);
-    ImGui::TextDisabled(settings.ui.fullscreen ? "  → Iniciar em tela cheia"
-                                               : "  → Iniciar em janela (preenche o monitor)");
     ImGui::Checkbox("Ocultar lobby na captura", &settings.ui.hide_panel_on_capture);
-    ImGui::TextDisabled(settings.ui.hide_panel_on_capture
-                            ? "  → captura limpa (sem faixa de sessao)"
-                            : "  → faixa de controle no topo da captura");
+    ImGui::TextDisabled(settings.ui.fullscreen ? "  -> Iniciar fullscreen" : "  -> Iniciar em janela");
+
     ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
-    ImGui::TextDisabled(settings.ui.sync_image
-                            ? "  → SYNC VSYNC: FPS trava no Hz; present_ms ~16ms@60"
-                            : "  → SYNC TEAR: FPS livre; present_ms baixo / pode tear");
-    ImGui::Spacing();
-    ImGui::TextDisabled("Dica: marque/desmarque e veja no preview ao vivo.");
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::TextDisabled("CONTEXTO");
-    ImGui::TextWrapped(
-        "Preview usa a placa so no lobby. Ao Iniciar o preview para. Esc na captura volta ao menu "
-        "(preview liga de novo).");
+    ImGui::TextDisabled(settings.ui.sync_image ? "  -> SYNC VSYNC" : "  -> SYNC TEAR");
     ImGui::EndChild();
 
-    ImGui::BeginChild("footer", ImVec2(0, footer_h), false);
+    ImGui::BeginChild("footer", ImVec2(0, footer_h), false, ImGuiWindowFlags_NoScrollbar);
     if (preview.live && preview.frames_seen > 0) {
       ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f), "* Preview ao vivo — Iniciar libera a placa");
     } else if (!preview.err.empty()) {

@@ -108,6 +108,7 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.exclusive_fullscreen = s.ui.fullscreen;
   cfg.show_overlay = s.ui.show_fps;
   cfg.advanced_metrics = s.ui.advanced_metrics;
+  cfg.mini_overlay = s.ui.mini_overlay;
   cfg.hw_info = s.ui.hw_info;
   cfg.hide_panel_on_capture = s.ui.hide_panel_on_capture;
   cfg.sync_image = s.ui.sync_image;

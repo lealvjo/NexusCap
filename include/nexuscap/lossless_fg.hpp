@@ -112,6 +112,42 @@ inline void format_session_hud_fps_line(char* out, size_t out_n, double fps_cap,
   }
 }
 
+// Steam Deck-style single top bar: FPS (±FG) · DLSS5 · ft · e2e · stall/cluster · in→work→out.
+inline void format_mini_overlay_line(char* out, size_t out_n, double fps_cap, double fps_fg_est, bool fg_on,
+                                    int fg_mult, bool dlss5_on, double frame_ms, double e2e_ms,
+                                    uint64_t stalls, uint64_t clusters, int capture_w, int capture_h,
+                                    int work_w = 0, int work_h = 0, int output_w = 0, int output_h = 0,
+                                    int scale_percent = 100) {
+  if (!out || out_n == 0) return;
+  char fps_part[96]{};
+  format_session_hud_fps_line(fps_part, sizeof(fps_part), fps_cap, fps_fg_est, fg_on, fg_mult, true);
+
+  char res_part[96]{};
+  if (capture_w > 0 && capture_h > 0) {
+    const int ww = work_w > 0 ? work_w : capture_w;
+    const int wh = work_h > 0 ? work_h : capture_h;
+    const int ow = output_w > 0 ? output_w : capture_w;
+    const int oh = output_h > 0 ? output_h : capture_h;
+    if (ww != capture_w || wh != capture_h || ow != capture_w || oh != capture_h || scale_percent < 100) {
+      std::snprintf(res_part, sizeof(res_part), "in %dx%d → work %dx%d → out %dx%d", capture_w, capture_h, ww,
+                    wh, ow, oh);
+    } else {
+      std::snprintf(res_part, sizeof(res_part), "in=work=out %dx%d", capture_w, capture_h);
+    }
+  }
+
+  if (res_part[0]) {
+    std::snprintf(out, out_n,
+                  "%s  ·  DLSS5 %s  ·  ft %.1f  ·  e2e %.1f  ·  stall %llu  ·  cl %llu  ·  %s", fps_part,
+                  dlss5_on ? "ON" : "off", frame_ms, e2e_ms, static_cast<unsigned long long>(stalls),
+                  static_cast<unsigned long long>(clusters), res_part);
+  } else {
+    std::snprintf(out, out_n, "%s  ·  DLSS5 %s  ·  ft %.1f  ·  e2e %.1f  ·  stall %llu  ·  cl %llu",
+                  fps_part, dlss5_on ? "ON" : "off", frame_ms, e2e_ms,
+                  static_cast<unsigned long long>(stalls), static_cast<unsigned long long>(clusters));
+  }
+}
+
 inline void format_session_hud_fg_status_line(char* out, size_t out_n, bool fg_on, int fg_mult,
                                              const char* backend, int flow_scale, const char* capture_api,
                                              const char* status, double fps_cap = 0, double fps_fg_est = 0) {

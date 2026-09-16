@@ -134,6 +134,7 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "capture_buffering=" << clamp_capture_buffering(s.capture_buffering) << "\n";
   o << "show_fps=" << (s.ui.show_fps ? 1 : 0) << "\n";
   o << "advanced_metrics=" << (s.ui.advanced_metrics ? 1 : 0) << "\n";
+  o << "mini_overlay=" << (s.ui.mini_overlay ? 1 : 0) << "\n";
   o << "hw_info=" << (s.ui.hw_info ? 1 : 0) << "\n";
   o << "fullscreen=" << (s.ui.fullscreen ? 1 : 0) << "\n";
   o << "hide_panel_on_capture=" << (s.ui.hide_panel_on_capture ? 1 : 0) << "\n";
@@ -194,6 +195,7 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "capture_buffering") s.capture_buffering = clamp_capture_buffering(std::atoi(val.c_str()));
       else if (key == "show_fps") s.ui.show_fps = (val == "1" || val == "true");
       else if (key == "advanced_metrics") s.ui.advanced_metrics = (val == "1" || val == "true");
+      else if (key == "mini_overlay") s.ui.mini_overlay = (val == "1" || val == "true");
       else if (key == "hw_info") s.ui.hw_info = (val == "1" || val == "true");
       else if (key == "fullscreen") s.ui.fullscreen = (val == "1" || val == "true");
       else if (key == "hide_panel_on_capture") s.ui.hide_panel_on_capture = (val == "1" || val == "true");

@@ -600,6 +600,20 @@ void MetricsHud::reposition() {
   if (!hwnd_ || !owner_) return;
   RECT r{};
   GetWindowRect(owner_, &r);
+  if (state_.mini_overlay) {
+    const int gap = 8;
+    const int owner_w = static_cast<int>(r.right - r.left);
+    const int ww = (std::max)(200, owner_w - gap * 2);
+    int hh = hud_mini_overlay_height();
+    if (!state_.session_notice.empty()) {
+      std::string t, d;
+      session_notice_split(state_.session_notice, t, d);
+      hh += d.empty() ? 22 : 40;
+    }
+    SetWindowPos(hwnd_, HWND_TOPMOST, r.left + gap, r.top + gap, ww, hh,
+                 SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    return;
+  }
   const int ww = (std::max)(hud_panel_width(state_.advanced_metrics),
                             state_.session_notice.empty() ? 0 : 720);
   int hh = hud_panel_height(state_.advanced_metrics, state_.hw_info);
@@ -630,12 +644,99 @@ void MetricsHud::paint(HDC hdc) const {
   DeleteObject(bg);
 
   SetBkMode(hdc, TRANSPARENT);
+  const auto& o = state_;
+
+  // Mini overlay: one horizontal top bar — metrics left, frametime sparkline right.
+  if (o.mini_overlay) {
+    HFONT mini_font = CreateFontW(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                  FIXED_PITCH | FF_MODERN, L"Consolas");
+    HFONT old = static_cast<HFONT>(SelectObject(hdc, mini_font));
+    char line[256]{};
+    const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
+    const bool dlss5_on =
+        o.renodx_on || (o.dlss_on && o.dlss_backend.find("renodx") != std::string::npos);
+    format_mini_overlay_line(line, sizeof(line), show_fps, o.fps_fg_est, o.fg_on, o.fg_multiplier, dlss5_on,
+                             o.frame_ms, o.e2e_ms, o.stalls_window, o.clusters, o.capture_w, o.capture_h,
+                             o.work_w, o.work_h, o.output_w, o.output_h, o.scale_percent);
+    const std::wstring wline = utf8_to_wide_hud(line);
+
+    const int pad = 10;
+    const int graph_w = 220;
+    const int gap = 12;
+    const int bar_w = static_cast<int>(rc.right - rc.left);
+    const int gx = (std::max)(pad, bar_w - pad - graph_w);
+    const int gy = 6;
+    const int gh = 24;
+    const int gw = (std::min)(graph_w, bar_w - pad * 2);
+
+    // Clip metrics text so it never overlaps the sparkline.
+    RECT text_rc{pad, 8, gx - gap, static_cast<LONG>(rc.bottom)};
+    SetTextColor(hdc, RGB(210, 230, 255));
+    DrawTextW(hdc, wline.c_str(), static_cast<int>(wline.size()), &text_rc,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    if (gw >= 64) {
+      RECT graph_rc{gx, gy, gx + gw, gy + gh};
+      HBRUSH gbg = CreateSolidBrush(RGB(8, 10, 14));
+      FillRect(hdc, &graph_rc, gbg);
+      DeleteObject(gbg);
+      HPEN border = CreatePen(PS_SOLID, 1, RGB(50, 56, 68));
+      HGDIOBJ old_pen = SelectObject(hdc, border);
+      HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+      Rectangle(hdc, gx, gy, gx + gw, gy + gh);
+
+      const double target_ms = o.target_fps > 0 ? 1000.0 / o.target_fps : (1000.0 / 60.0);
+      double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
+      if (!o.ft_hist.empty()) {
+        for (double v : o.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
+      }
+      ceil_ms = (std::min)(ceil_ms, 80.0);
+      auto y_for = [&](double ms) -> int {
+        const double t = (std::max)(0.0, (std::min)(1.0, ms / ceil_ms));
+        return gy + gh - 2 - static_cast<int>(t * (gh - 4));
+      };
+      HPEN target_pen = CreatePen(PS_DOT, 1, RGB(70, 160, 90));
+      SelectObject(hdc, target_pen);
+      const int y_tgt = y_for(target_ms);
+      MoveToEx(hdc, gx + 1, y_tgt, nullptr);
+      LineTo(hdc, gx + gw - 1, y_tgt);
+      DeleteObject(target_pen);
+      if (o.ft_hist.size() >= 2) {
+        const size_t hn = o.ft_hist.size();
+        std::vector<POINT> pts(hn);
+        for (size_t i = 0; i < hn; ++i) {
+          pts[i].x = gx + 2 + static_cast<LONG>((gw - 4) * i / (hn - 1));
+          pts[i].y = y_for(o.ft_hist[i]);
+        }
+        HPEN line_pen = CreatePen(PS_SOLID, 2, o.ft_stable ? RGB(90, 220, 255) : RGB(255, 140, 90));
+        SelectObject(hdc, line_pen);
+        Polyline(hdc, pts.data(), static_cast<int>(hn));
+        DeleteObject(line_pen);
+      }
+      SelectObject(hdc, old_pen);
+      SelectObject(hdc, old_brush);
+      DeleteObject(border);
+    }
+
+    if (!o.session_notice.empty()) {
+      std::string title, detail;
+      session_notice_split(o.session_notice, title, detail);
+      const std::wstring notice = utf8_to_wide_hud(title.empty() ? o.session_notice : title);
+      SetTextColor(hdc, RGB(255, 200, 120));
+      TextOutW(hdc, pad, 30, notice.c_str(), static_cast<int>(notice.size()));
+    }
+
+    SelectObject(hdc, old);
+    DeleteObject(mini_font);
+    return;
+  }
+
   HFONT font = CreateFontW(26, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                            FIXED_PITCH | FF_MODERN, L"Consolas");
   HFONT old = static_cast<HFONT>(SelectObject(hdc, font));
 
-  const auto& o = state_;
   const wchar_t* mode = o.fake_capture ? L"FAKE" : L"LIVE";
   const bool exact = o.capture_w == o.output_w && o.capture_h == o.output_h && o.capture_w > 0;
   const double target_ms = o.target_fps > 0 ? 1000.0 / o.target_fps : (1000.0 / 60.0);

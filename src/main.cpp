@@ -419,6 +419,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.target_fps = cfg.fps;
   overlay.fake_capture = cfg.fake_capture;
   overlay.advanced_metrics = cfg.advanced_metrics;
+  overlay.mini_overlay = cfg.mini_overlay;
   overlay.visible = cfg.show_overlay;
   overlay.scale_percent = cfg.scale_percent;
   overlay.work_w = scaled_extent(info.width > 0 ? info.width : cap_w, cfg.scale_percent);
@@ -725,6 +726,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     double present_ms = 0;
     overlay.visible = g_overlay;
     overlay.advanced_metrics = cfg.advanced_metrics;
+    overlay.mini_overlay = cfg.mini_overlay;
     overlay.analyze_on = analyze_on;
     overlay.frame_ms = interval;
     overlay.e2e_ms = now - frame.cap_qpc_ms;
@@ -972,6 +974,7 @@ int main(int argc, char** argv) {
     cfg.hotkeys = settings.hotkeys;
     cfg.show_overlay = settings.ui.show_fps;
     cfg.advanced_metrics = settings.ui.advanced_metrics;
+    cfg.mini_overlay = settings.ui.mini_overlay;
     cfg.hw_info = settings.ui.hw_info;
     cfg.hide_panel_on_capture = settings.ui.hide_panel_on_capture;
     cfg.sync_image = settings.ui.sync_image;

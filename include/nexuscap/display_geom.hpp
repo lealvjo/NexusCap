@@ -137,6 +137,54 @@ inline LobbyHudLeftBarLayout lobby_hud_left_bar_layout(const ViewportGeom& box, 
   return L;
 }
 
+// Lobby side panels sized like letterbox black bars (pillarbox), with usable min/max.
+struct LobbySidePanelLayout {
+  float left_w = 300.f;
+  float right_w = 300.f;
+  float mid_w = 600.f;
+};
+
+inline LobbySidePanelLayout lobby_side_panel_layout(float total_w, float total_h, int signal_w, int signal_h,
+                                                   float min_side = 375.f, float max_side = 525.f,
+                                                   float min_mid = 280.f) {
+  LobbySidePanelLayout out;
+  if (total_w < 1.f) total_w = 1.f;
+  if (total_h < 1.f) total_h = 1.f;
+  min_side = (std::max)(160.f, min_side);
+  max_side = (std::max)(min_side, max_side);
+  min_mid = (std::max)(160.f, min_mid);
+
+  const auto box = fit_letterbox(signal_w > 0 ? signal_w : 16, signal_h > 0 ? signal_h : 9,
+                                 static_cast<int>(total_w), static_cast<int>(total_h));
+  float left = box.x;
+  float right = total_w - (box.x + box.w);
+  // No/thin bars → still keep usable side menus; clamp to [min,max].
+  left = (std::max)(min_side, (std::min)(max_side, (std::max)(left, min_side)));
+  right = (std::max)(min_side, (std::min)(max_side, (std::max)(right, min_side)));
+
+  float mid = total_w - left - right;
+  if (mid < min_mid) {
+    const float need = min_mid - mid;
+    const float cut = need * 0.5f;
+    left = (std::max)(min_side, left - cut);
+    right = (std::max)(min_side, right - cut);
+    mid = total_w - left - right;
+    if (mid < min_mid) {
+      // Last resort: shrink sides evenly to free mid.
+      const float excess = left + right - (total_w - min_mid);
+      if (excess > 0.f) {
+        left = (std::max)(120.f, left - excess * 0.5f);
+        right = (std::max)(120.f, right - excess * 0.5f);
+        mid = total_w - left - right;
+      }
+    }
+  }
+  out.left_w = left;
+  out.right_w = right;
+  out.mid_w = (std::max)(1.f, mid);
+  return out;
+}
+
 // Relative luminance of an opaque RGB color (0..1). HUD-on-black needs high contrast.
 inline float rgb_relative_luminance(int r, int g, int b) {
   const float R = static_cast<float>(r) / 255.f;

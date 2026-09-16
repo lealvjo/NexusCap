@@ -16,6 +16,7 @@ namespace nexuscap {
 struct OverlayState {
   bool visible = true;
   bool advanced_metrics = false;  // lobby "Metricas avancadas" → full HUD
+  bool mini_overlay = false;      // lobby "Mini overlay" → single top bar
   bool analyze_on = false;
   bool fake_capture = false;
   bool dlss_on = false;

@@ -89,7 +89,7 @@ inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
   if (hw_info) h += 5 * 28;
   return h;
 }
-inline int hud_mini_overlay_height() { return 36; }  // single row: metrics + frametime sparkline side-by-side
+inline int hud_mini_overlay_height() { return 34; }  // one dense metric row + frametime sparkline
 
 // When mini overlay is on, multi-line compact/advanced HUD is suppressed.
 inline bool hud_uses_mini_overlay(bool show_fps, bool mini_overlay) { return show_fps && mini_overlay; }
@@ -124,7 +124,7 @@ inline constexpr int kAppIconResourceId = 101;
 inline int lobby_hud_preview_lines(bool show_fps, bool advanced_metrics, bool hw_info = false,
                                    bool mini_overlay = false) {
   if (!show_fps) return 0;
-  if (mini_overlay) return 1;
+  if (mini_overlay) return 1;  // one dense full-width bar
   int n = advanced_metrics ? 8 : 6;
   if (hw_info) n += kSysMetricsLineCount;
   return n;
@@ -133,7 +133,7 @@ inline int lobby_hud_preview_lines(bool show_fps, bool advanced_metrics, bool hw
 // Pure HUD text for live preview — gear/Sessão toggles must change these strings.
 struct LobbyHudPreviewLines {
   int count = 0;
-  char line[16][192]{};
+  char line[16][384]{};
 };
 
 inline bool lobby_hud_contains(const LobbyHudPreviewLines& h, const char* needle) {
@@ -156,10 +156,30 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
 
   if (s.ui.mini_overlay) {
     const bool dlss5 = s.enhance_renodx && s.neural_rendering;
-    format_mini_overlay_line(out.line[n++], 192, fps, fps * static_cast<double>((std::max)(fgx, 1)), false,
-                             fgx, dlss5, ft, ft, 0, 0, s.width, s.height, scaled_extent(s.width, scale),
-                             scaled_extent(s.height, scale), s.width, s.height, scale);
-    out.count = n;
+    SystemMetricsSample hw{};
+    // Mini always reserves HW strip in preview (live session fills real SKU/%).
+    hw.cpu_name = "i5-11400F";
+    hw.gpu_name = "RTX 5070";
+    hw.cpu_ok = hw.gpu_ok = hw.cpu_temp_ok = hw.gpu_temp_ok = true;
+    hw.vram_ok = hw.ram_ok = hw.power_ok = true;
+    hw.cpu_percent = 35;
+    hw.cpu_temp_c = 55;
+    hw.gpu_percent = 40;
+    hw.gpu_temp_c = 60;
+    hw.vram_used_mb = 2048;
+    hw.vram_budget_mb = 12288;
+    hw.ram_used_mb = 16384;
+    hw.ram_total_mb = 32768;
+    hw.power_w = 90;
+    char hw_compact[200]{};
+    format_sys_metrics_compact(hw_compact, sizeof(hw_compact), hw);
+    format_mini_overlay_lines(
+        out.line[0], 384, out.line[1], 384, fps, fps * static_cast<double>((std::max)(fgx, 1)), false, fgx,
+        dlss5, s.ui.sync_image, ft, ft, ft, ft, true, ft, /*present=*/ft * 0.15f, 0, 0, 0, s.width, s.height,
+        scaled_extent(s.width, scale), scaled_extent(s.height, scale), s.width, s.height, scale, false, 0, 0,
+        0, 0, renodx_visual_preset_name(s.renodx_preset), hw_compact, /*dlss_ms=*/0, /*frames=*/0,
+        /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps);
+    out.count = 1;
     return out;
   }
 

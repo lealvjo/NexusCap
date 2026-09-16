@@ -75,7 +75,87 @@ bool vram_from_adapter(IDXGIAdapter* adapter, SystemMetricsSample& out) {
   return true;
 }
 
+std::string wide_to_utf8(const wchar_t* w) {
+  if (!w || !*w) return {};
+  const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+  if (n <= 1) return {};
+  std::string out(static_cast<size_t>(n - 1), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), n, nullptr, nullptr);
+  return out;
+}
+
+std::string read_cpu_name_registry() {
+  HKEY key = nullptr;
+  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0,
+                    KEY_READ, &key) != ERROR_SUCCESS) {
+    return {};
+  }
+  wchar_t buf[256]{};
+  DWORD type = 0;
+  DWORD bytes = sizeof(buf);
+  const LONG st = RegQueryValueExW(key, L"ProcessorNameString", nullptr, &type, reinterpret_cast<LPBYTE>(buf),
+                                   &bytes);
+  RegCloseKey(key);
+  if (st != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) return {};
+  return wide_to_utf8(buf);
+}
+
+bool is_software_adapter(const DXGI_ADAPTER_DESC& desc) {
+  return desc.VendorId == 0x1414 && desc.DeviceId == 0x8c;  // Microsoft Basic Render
+}
+
+std::string gpu_name_from_adapter(IDXGIAdapter* adapter) {
+  if (!adapter) return {};
+  DXGI_ADAPTER_DESC desc{};
+  if (FAILED(adapter->GetDesc(&desc))) return {};
+  if (is_software_adapter(desc)) return {};
+  return wide_to_utf8(desc.Description);
+}
+
+std::string resolve_gpu_name(ID3D11Device* device) {
+  if (device) {
+    IDXGIDevice* dxgi_dev = nullptr;
+    if (SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgi_dev))) &&
+        dxgi_dev) {
+      IDXGIAdapter* adapter = nullptr;
+      if (SUCCEEDED(dxgi_dev->GetAdapter(&adapter)) && adapter) {
+        std::string name = gpu_name_from_adapter(adapter);
+        adapter->Release();
+        dxgi_dev->Release();
+        if (!name.empty()) return name;
+      } else {
+        dxgi_dev->Release();
+      }
+    }
+  }
+  IDXGIFactory1* factory = nullptr;
+  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory))) || !factory) {
+    return {};
+  }
+  std::string name;
+  for (UINT i = 0;; ++i) {
+    IDXGIAdapter* adapter = nullptr;
+    if (factory->EnumAdapters(i, &adapter) == DXGI_ERROR_NOT_FOUND) break;
+    name = gpu_name_from_adapter(adapter);
+    adapter->Release();
+    if (!name.empty()) break;
+  }
+  factory->Release();
+  return name;
+}
+
 }  // namespace
+
+void SystemMetricsSampler::resolve_hw_names(ID3D11Device* device, SystemMetricsSample& out) {
+  if (names_resolved_ && !out.cpu_name.empty() && !out.gpu_name.empty()) return;
+  if (out.cpu_name.empty()) {
+    out.cpu_name = shorten_cpu_display_name(read_cpu_name_registry());
+  }
+  if (out.gpu_name.empty()) {
+    out.gpu_name = shorten_gpu_display_name(resolve_gpu_name(device));
+  }
+  names_resolved_ = !out.cpu_name.empty() || !out.gpu_name.empty();
+}
 
 SystemMetricsSampler::SystemMetricsSampler() {
   // Prime CPU baselines so the first real sample (~0.5s later) already has a delta.
@@ -277,7 +357,7 @@ bool SystemMetricsSampler::sample_vram(ID3D11Device* device, SystemMetricsSample
     if (factory->EnumAdapters(i, &adapter) == DXGI_ERROR_NOT_FOUND) break;
     DXGI_ADAPTER_DESC desc{};
     adapter->GetDesc(&desc);
-    const bool is_soft = (desc.VendorId == 0x1414 && desc.DeviceId == 0x8c);  // Microsoft Basic Render
+    const bool is_soft = is_software_adapter(desc);
     if (!is_soft && vram_from_adapter(adapter, out)) {
       ok = true;
       adapter->Release();
@@ -390,6 +470,7 @@ void SystemMetricsSampler::sample(ID3D11Device* device, SystemMetricsSample& out
 
   // Keep last good values; only overwrite fields that succeed this tick.
   SystemMetricsSample s = last_;
+  resolve_hw_names(device, s);
   sample_cpu(s);
   sample_cpu_temp_pdh(s);
   sample_ram(s);

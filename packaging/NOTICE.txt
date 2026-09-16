@@ -5,6 +5,9 @@ O instalador NAO inclui o Lossless Scaling (Steam).
 Frame Gen e opcional: instale o Lossless Scaling a parte; o NexusCap tenta
 encontrar o LosslessScaling.exe automaticamente ou via Ajustes → Pasta.
 
+Tudo o mais da linha 2.x (RenoDX / Neural Rendering / mini overlay / VSYNC /
+metricas / Feed escala) ja vem no setup — so instalar e usar.
+
 Pasta de instalacao (importante):
   O padrao e %LOCALAPPDATA%\NexusCap — pasta do usuario, gravavel.
   RenoDX/ReShade precisam gravar ReShade.ini, dlss5-feed.cfg e cache.
@@ -19,5 +22,5 @@ Incluidos (quando presentes no build):
 Settings do usuario ficam em %LOCALAPPDATA%\NexusCap\ — nao sao removidos
 na desinstalacao (preserve suas preferencias).
 
-v2.0: com RenoDX, escala do CFG afeta so o Feed (Present nativo).
-Botao "Abrir logs" no CFG aponta para %LOCALAPPDATA%\NexusCap\logs.
+v2.1: mini overlay colorida (ADV+HW dinamico) · Present nativo com RenoDX ·
+VSYNC default · warmup 120f. Botao "Abrir logs" no CFG → logs locais.

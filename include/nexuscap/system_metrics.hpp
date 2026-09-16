@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -26,7 +27,100 @@ struct SystemMetricsSample {
   double ram_total_mb = 0;
   bool power_ok = false;
   double power_w = 0;
+  // Short dynamic labels for HUD (e.g. "i5-11400F", "RTX 5070") — empty if unknown.
+  std::string cpu_name;
+  std::string gpu_name;
 };
+
+// "Intel(R) Core(TM) i5-11400F CPU @ 2.60GHz" → "i5-11400F"
+// "AMD Ryzen 7 5800X 8-Core Processor" → "R7 5800X"
+inline std::string shorten_cpu_display_name(std::string full) {
+  if (full.empty()) return {};
+  for (char& c : full) {
+    if (c == '\t') c = ' ';
+  }
+  // Intel Core iX-##### variants
+  for (const char* tag : {"i9-", "i7-", "i5-", "i3-"}) {
+    const auto pos = full.find(tag);
+    if (pos == std::string::npos) continue;
+    std::string out = tag;  // includes trailing '-'
+    size_t i = pos + std::strlen(tag);
+    while (i < full.size()) {
+      const unsigned char ch = static_cast<unsigned char>(full[i]);
+      if (!(std::isalnum(ch))) break;
+      out.push_back(full[i]);
+      ++i;
+      if (out.size() >= 12) break;
+    }
+    if (out.size() > 3) return out;
+  }
+  // AMD Ryzen N MODEL
+  {
+    const auto r = full.find("Ryzen");
+    if (r != std::string::npos) {
+      size_t k = r + 5;
+      while (k < full.size() && full[k] == ' ') ++k;
+      char series = 0;
+      if (k < full.size() && full[k] >= '3' && full[k] <= '9') {
+        series = full[k];
+        ++k;
+        while (k < full.size() && full[k] == ' ') ++k;
+      }
+      std::string model;
+      while (k < full.size() && (std::isalnum(static_cast<unsigned char>(full[k])) || full[k] == 'X' ||
+                                 full[k] == 'x')) {
+        model.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(full[k]))));
+        ++k;
+        if (model.size() >= 8) break;
+      }
+      if (!model.empty()) {
+        if (series) return std::string("R") + series + " " + model;
+        return model;
+      }
+    }
+  }
+  if (full.size() > 20) full.resize(20);
+  return full;
+}
+
+// "NVIDIA GeForce RTX 5070" → "RTX 5070"; "AMD Radeon RX 7800 XT" → "RX 7800 XT"
+inline std::string shorten_gpu_display_name(std::string full) {
+  if (full.empty()) return {};
+  // Normalize "Arc(TM)" → "Arc " so the key match below works.
+  {
+    const auto arc_tm = full.find("Arc(TM)");
+    if (arc_tm != std::string::npos) {
+      full.replace(arc_tm, 7, "Arc");
+      if (arc_tm + 3 < full.size() && full[arc_tm + 3] != ' ') {
+        full.insert(arc_tm + 3, " ");
+      }
+    }
+  }
+  const char* keys[] = {"RTX ", "GTX ", "RX ", "Arc "};
+  for (const char* k : keys) {
+    const auto pos = full.find(k);
+    if (pos == std::string::npos) continue;
+    std::string out = full.substr(pos);
+    // Trim " Laptop GPU" / " with Max-Q..."
+    const auto cut = out.find(" Laptop");
+    if (cut != std::string::npos) out.resize(cut);
+    const auto cut2 = out.find(" with ");
+    if (cut2 != std::string::npos) out.resize(cut2);
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    if (out.size() > 18) out.resize(18);
+    return out;
+  }
+  // Last resort: strip vendor prefixes
+  const char* strip[] = {"NVIDIA GeForce ", "NVIDIA ", "AMD Radeon ", "AMD ", "Intel(R) ", "Intel "};
+  for (const char* p : strip) {
+    if (full.rfind(p, 0) == 0) {
+      full = full.substr(std::strlen(p));
+      break;
+    }
+  }
+  if (full.size() > 18) full.resize(18);
+  return full;
+}
 
 // Pure: FILETIME 64-bit idle/kernel/user deltas → CPU % (0–100).
 inline double cpu_percent_from_idle_deltas(unsigned long long idle_d, unsigned long long kernel_d,
@@ -63,12 +157,15 @@ inline const char* sync_image_how_to_see(bool sync_image) {
 
 inline void format_sys_cpu_line(char* out, size_t n, const SystemMetricsSample& s) {
   if (!out || n == 0) return;
+  const char* tag = s.cpu_name.empty() ? "CPU" : s.cpu_name.c_str();
   if (s.cpu_ok && s.cpu_temp_ok) {
-    std::snprintf(out, n, "CPU  %.0f%%  %.0fC", s.cpu_percent, s.cpu_temp_c);
+    std::snprintf(out, n, "%s  %.0f%%  %.0fC", tag, s.cpu_percent, s.cpu_temp_c);
   } else if (s.cpu_ok) {
-    std::snprintf(out, n, "CPU  %.0f%%", s.cpu_percent);
+    std::snprintf(out, n, "%s  %.0f%%", tag, s.cpu_percent);
   } else if (s.cpu_temp_ok) {
-    std::snprintf(out, n, "CPU  --  %.0fC", s.cpu_temp_c);
+    std::snprintf(out, n, "%s  --  %.0fC", tag, s.cpu_temp_c);
+  } else if (!s.cpu_name.empty()) {
+    std::snprintf(out, n, "%s", tag);
   } else {
     std::snprintf(out, n, "CPU  --");
   }
@@ -76,12 +173,15 @@ inline void format_sys_cpu_line(char* out, size_t n, const SystemMetricsSample& 
 
 inline void format_sys_gpu_line(char* out, size_t n, const SystemMetricsSample& s) {
   if (!out || n == 0) return;
+  const char* tag = s.gpu_name.empty() ? "GPU" : s.gpu_name.c_str();
   if (s.gpu_ok && s.gpu_temp_ok) {
-    std::snprintf(out, n, "GPU  %.0f%%  %.0fC", s.gpu_percent, s.gpu_temp_c);
+    std::snprintf(out, n, "%s  %.0f%%  %.0fC", tag, s.gpu_percent, s.gpu_temp_c);
   } else if (s.gpu_ok) {
-    std::snprintf(out, n, "GPU  %.0f%%", s.gpu_percent);
+    std::snprintf(out, n, "%s  %.0f%%", tag, s.gpu_percent);
   } else if (s.gpu_temp_ok) {
-    std::snprintf(out, n, "GPU  --  %.0fC", s.gpu_temp_c);
+    std::snprintf(out, n, "%s  --  %.0fC", tag, s.gpu_temp_c);
+  } else if (!s.gpu_name.empty()) {
+    std::snprintf(out, n, "%s", tag);
   } else {
     std::snprintf(out, n, "GPU  --");
   }
@@ -115,6 +215,66 @@ inline void format_sys_power_line(char* out, size_t n, const SystemMetricsSample
     std::snprintf(out, n, "PWR  %.0f W", s.power_w);
   } else {
     std::snprintf(out, n, "PWR  --");
+  }
+}
+
+// Compact single-token HW strip for mini overlay (empty if nothing known).
+inline void format_sys_metrics_compact(char* out, size_t n, const SystemMetricsSample& s) {
+  if (!out || n == 0) return;
+  out[0] = '\0';
+  char cpu[40]{}, gpu[40]{}, vram[28]{}, ram[28]{}, pwr[16]{};
+  if (!s.cpu_name.empty() || s.cpu_ok || s.cpu_temp_ok) {
+    const char* tag = s.cpu_name.empty() ? "CPU" : s.cpu_name.c_str();
+    if (s.cpu_ok && s.cpu_temp_ok) {
+      std::snprintf(cpu, sizeof(cpu), "%s %0.0f%%/%0.0fC", tag, s.cpu_percent, s.cpu_temp_c);
+    } else if (s.cpu_ok) {
+      std::snprintf(cpu, sizeof(cpu), "%s %0.0f%%", tag, s.cpu_percent);
+    } else if (s.cpu_temp_ok) {
+      std::snprintf(cpu, sizeof(cpu), "%s --/%0.0fC", tag, s.cpu_temp_c);
+    } else {
+      std::snprintf(cpu, sizeof(cpu), "%s", tag);
+    }
+  }
+  if (!s.gpu_name.empty() || s.gpu_ok || s.gpu_temp_ok) {
+    const char* tag = s.gpu_name.empty() ? "GPU" : s.gpu_name.c_str();
+    if (s.gpu_ok && s.gpu_temp_ok) {
+      std::snprintf(gpu, sizeof(gpu), "%s %0.0f%%/%0.0fC", tag, s.gpu_percent, s.gpu_temp_c);
+    } else if (s.gpu_ok) {
+      std::snprintf(gpu, sizeof(gpu), "%s %0.0f%%", tag, s.gpu_percent);
+    } else if (s.gpu_temp_ok) {
+      std::snprintf(gpu, sizeof(gpu), "%s --/%0.0fC", tag, s.gpu_temp_c);
+    } else {
+      std::snprintf(gpu, sizeof(gpu), "%s", tag);
+    }
+  }
+  if (s.vram_ok && s.vram_budget_mb > 0.5) {
+    std::snprintf(vram, sizeof(vram), "V%.1f/%.1fG", s.vram_used_mb / 1024.0, s.vram_budget_mb / 1024.0);
+  } else if (s.vram_ok) {
+    std::snprintf(vram, sizeof(vram), "V%.0fM", s.vram_used_mb);
+  }
+  if (s.ram_ok && s.ram_total_mb > 0.5) {
+    std::snprintf(ram, sizeof(ram), "R%.0f/%.0fG", s.ram_used_mb / 1024.0, s.ram_total_mb / 1024.0);
+  }
+  if (s.power_ok) {
+    std::snprintf(pwr, sizeof(pwr), "%.0fW", s.power_w);
+  }
+  // Join non-empty tokens with " | " (ASCII — fits any code page in GDI HUD).
+  const char* parts[] = {cpu, gpu, vram, ram, pwr};
+  size_t used = 0;
+  for (const char* tok : parts) {
+    if (!tok[0]) continue;
+    if (used > 0) {
+      if (used + 4 >= n) break;
+      out[used++] = ' ';
+      out[used++] = '|';
+      out[used++] = ' ';
+      out[used] = '\0';
+    }
+    const size_t len = std::strlen(tok);
+    if (used + len + 1 > n) break;
+    std::memcpy(out + used, tok, len);
+    used += len;
+    out[used] = '\0';
   }
 }
 
@@ -164,8 +324,10 @@ private:
   bool sample_vram(ID3D11Device* device, SystemMetricsSample& out);
   bool sample_ram(SystemMetricsSample& out);
   bool sample_nvml(SystemMetricsSample& out);
+  void resolve_hw_names(ID3D11Device* device, SystemMetricsSample& out);
 
   SystemMetricsSample last_{};
+  bool names_resolved_ = false;
   unsigned long long prev_idle_ = 0;
   unsigned long long prev_kernel_ = 0;
   unsigned long long prev_user_ = 0;

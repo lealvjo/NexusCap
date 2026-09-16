@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `2.0.1` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `2.1.0` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -18,24 +18,32 @@
 
 ## Para a comunidade (download)
 
-Distribua só o instalador — **não** precisa mandar pasta `manual` nem o código:
+Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-2.0.1.exe](https://github.com/lealvjo/NexusCap/releases)** (gere com `tools\make_installer.ps1`)
+**[NexusCap-Setup-2.1.0.exe](https://github.com/lealvjo/NexusCap/releases)**
 
-O `.exe` do setup **não fica no git** (é grande demais); fica na **Release** do GitHub.
+O setup **não fica no git**; sobe na **Release** do GitHub.
+
+**O que o usuário final faz:**
+
+1. Instalar `NexusCap-Setup-2.1.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
+2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
+3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
+
+Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 ### Requisitos do usuário final
 
 | Precisa | Detalhe |
 |---------|---------|
 | **Placa de captura** | HDMI via DirectShow (ex.: VEDO / Elgato / similar) |
-| **GPU NVIDIA** | Para RenoDX / Neural Rendering (ReShade + DLSS NR) |
+| **GPU NVIDIA** | Para RenoDX / Neural Rendering (já embutido no setup) |
 | **Windows 64-bit** | Build nativo |
-| **Frame Gen (opcional)** | Instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam — **não** vem no instalador |
+| **Frame Gen (opcional)** | [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam — **única** instalação extra |
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-2.0.1.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-2.1.0.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -44,7 +52,7 @@ O `.exe` do setup **não fica no git** (é grande demais); fica na **Release** d
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
 
-### Qualidade e latência (2.0.1)
+### Qualidade e latência (2.1.0)
 
 - Stack enhance: **Krish `renodx-dlss5` + Feed + Bridge** (não usar builds ShortFuse / “super-anus”).
 - Guardrail: mudanças de enhance não devem piorar nitidez nem `present_ms` vs 1.1.7.
@@ -52,6 +60,7 @@ O `.exe` do setup **não fica no git** (é grande demais); fica na **Release** d
 - **VSYNC default** (`Sincronizar imagem`) — TEAR+ALLOW_TEARING ficou mais “tremido” no A/B; Present(1) no Hz do monitor.
 - NR no boot confia **NeuralUplift** (sem enable-pulse que invertia OFF).
 - Métricas smoke: **120 frames de warmup** (hitch NGX ~2,5 s) fora da janela de 600; regime steady ~**59,9 fps**, `p95_present` ~2,1–2,4 ms.
+- **Mini overlay definitiva**: 1 linha full-width colorida com ADV + CPU/GPU dinâmicos (ex. `i5-11400F` / `RTX 5070`) + VRAM/RAM/PWR + sparkline.
 
 ---
 
@@ -106,7 +115,7 @@ flowchart TB
     CAP["DShowCapture<br/>NV12 scratch + FrameSlot recycle"]
     SLOT["FrameSlot<br/>latest-wins · ping-pong"]
     REND["Renderer D3D11<br/>YUV→RGB · Present nativo se RenoDX<br/>scale app so sem RenoDX"]
-    HUD["HUD ~30 Hz<br/>warmup stats 120f"]
+    HUD["Mini overlay 1 linha<br/>ADV+HW dinamico · sparkline"]
     LOBBY -.->|Iniciar · MGF chain ON| CAP
     CARD --> CAP --> SLOT --> REND
     REND --> HUD
@@ -282,9 +291,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 2.0.1
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 2.1.0
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 2.0.1
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 2.1.0
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

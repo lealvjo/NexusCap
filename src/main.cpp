@@ -465,7 +465,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   hud.update(overlay);  // size + show advanced panel immediately on Iniciar
 
   SystemMetricsSampler hw_sampler;
-  if (cfg.hw_info) {
+  const bool sample_hw = cfg.hw_info || cfg.mini_overlay;
+  if (sample_hw) {
     SystemMetricsSample hw{};
     hw_sampler.sample(renderer.device(), hw);
     overlay.cpu_ok = hw.cpu_ok;
@@ -484,9 +485,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.ram_total_mb = hw.ram_total_mb;
     overlay.power_ok = hw.power_ok;
     overlay.power_w = hw.power_w;
-    overlay.hw_info = true;
+    overlay.cpu_name = hw.cpu_name;
+    overlay.gpu_name = hw.gpu_name;
+    overlay.hw_info = cfg.hw_info;
     hud.update(overlay);
-    std::printf("hw info: ON (inside HUD)\n");
+    std::printf("hw sample: ON%s", cfg.hw_info ? " (painel)" : " (mini)");
+    if (!hw.cpu_name.empty() || !hw.gpu_name.empty()) {
+      std::printf(" [%s / %s]", hw.cpu_name.empty() ? "CPU" : hw.cpu_name.c_str(),
+                  hw.gpu_name.empty() ? "GPU" : hw.gpu_name.c_str());
+    }
+    std::printf("\n");
   } else {
     std::printf("hw info: off\n");
   }
@@ -912,7 +920,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     overlay.sync_image = renderer.vsync();
     overlay.hw_info = cfg.hw_info;
-    if (cfg.hw_info) {
+    if (cfg.hw_info || cfg.mini_overlay) {
       SystemMetricsSample hw{};
       hw_sampler.sample(renderer.device(), hw);
       overlay.cpu_ok = hw.cpu_ok;
@@ -931,6 +939,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       overlay.ram_total_mb = hw.ram_total_mb;
       overlay.power_ok = hw.power_ok;
       overlay.power_w = hw.power_w;
+      overlay.cpu_name = hw.cpu_name;
+      overlay.gpu_name = hw.gpu_name;
     }
     hud.update(overlay);
     if (session_panel.visible()) session_panel.reposition();

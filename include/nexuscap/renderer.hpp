@@ -45,6 +45,8 @@ struct OverlayState {
   bool vram_ok = false;
   bool ram_ok = false;
   bool power_ok = false;
+  std::string cpu_name;  // short HUD label, e.g. i5-11400F
+  std::string gpu_name;  // short HUD label, e.g. RTX 5070
   std::string device;
   int capture_w = 0;
   int capture_h = 0;

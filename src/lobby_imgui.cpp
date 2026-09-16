@@ -568,22 +568,70 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
 
-  // Mini overlay preview: metrics left + frametime sparkline right (same row).
+  // Mini overlay preview: colored ADV+HW segments + sparkline (matches session HUD).
   if (settings.ui.mini_overlay) {
-    const float bar_h = 30.f;
+    const float bar_h = 32.f;
     ImVec2 p0(img_min.x, img_min.y);
     ImVec2 p1(img_max.x, img_min.y + bar_h);
     dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
-    const float graph_w = 160.f;
-    const float gx = (std::max)(p0.x + 8.f, p1.x - 8.f - graph_w);
-    const float gy = p0.y + 5.f;
-    const float gh = 20.f;
-    const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 16.f));
-    dl->AddText(ImVec2(p0.x + 8.f, p0.y + 7.f), IM_COL32(210, 230, 255, 255), hud.line[0]);
+    const float graph_w = 120.f;
+    const float gx = (std::max)(p0.x + 6.f, p1.x - 6.f - graph_w);
+    const float gy = p0.y + 4.f;
+    const float gh = 24.f;
+    const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 12.f));
+
+    const float fps = preview.fps_ema > 1.0 ? static_cast<float>(preview.fps_ema) : 0.f;
+    const float ft = fps > 1.f ? (1000.f / fps) : 0.f;
+    const int fgx = settings.fg_enabled ? (settings.fg_multiplier >= 2 ? settings.fg_multiplier : 2) : 1;
+    const int scale = clamp_scale_percent(settings.scale_percent);
+    const bool dlss5 = settings.enhance_renodx && settings.neural_rendering;
+    SystemMetricsSample hw{};
+    hw.cpu_name = "i5-11400F";
+    hw.gpu_name = "RTX 5070";
+    hw.cpu_ok = hw.gpu_ok = hw.cpu_temp_ok = hw.gpu_temp_ok = true;
+    hw.vram_ok = hw.ram_ok = hw.power_ok = true;
+    hw.cpu_percent = 35;
+    hw.cpu_temp_c = 55;
+    hw.gpu_percent = 40;
+    hw.gpu_temp_c = 60;
+    hw.vram_used_mb = 2048;
+    hw.vram_budget_mb = 12288;
+    hw.ram_used_mb = 16384;
+    hw.ram_total_mb = 32768;
+    hw.power_w = 90;
+    char hw_compact[200]{};
+    format_sys_metrics_compact(hw_compact, sizeof(hw_compact), hw);
+    MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+    char line0[8]{}, line1[8]{};
+    const int nseg = format_mini_overlay_segments(
+        segs, kMiniOverlayMaxSegs, line0, sizeof(line0), line1, sizeof(line1), fps,
+        fps * static_cast<double>((std::max)(fgx, 1)), false, fgx, dlss5, settings.ui.sync_image, ft, ft, ft, ft,
+        true, ft, ft * 0.15f, 0, 0, 0, settings.width, settings.height, scaled_extent(settings.width, scale),
+        scaled_extent(settings.height, scale), settings.width, settings.height, scale, false, 0, 0, 0, 0,
+        renodx_visual_preset_name(settings.renodx_preset), hw_compact[0] ? hw_compact : nullptr, 0, 0, 0,
+        nullptr, settings.fps);
+
+    float x = p0.x + 6.f;
+    const float y = p0.y + 7.f;
+    const float text_max_x = gx - 6.f;
+    for (int i = 0; i < nseg; ++i) {
+      if (!segs[i].text[0]) continue;
+      const ImU32 col = IM_COL32(segs[i].r, segs[i].g, segs[i].b, 255);
+      const ImVec2 sz = ImGui::CalcTextSize(segs[i].text);
+      if (x >= text_max_x) break;
+      if (x + sz.x > text_max_x) {
+        // Clip remaining with a truncated draw in available space.
+        dl->PushClipRect(ImVec2(x, p0.y), ImVec2(text_max_x, p1.y), true);
+        dl->AddText(ImVec2(x, y), col, segs[i].text);
+        dl->PopClipRect();
+        break;
+      }
+      dl->AddText(ImVec2(x, y), col, segs[i].text);
+      x += sz.x;
+    }
+
     if (gw >= 48.f) {
       dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + gw, gy + gh), IM_COL32(20, 24, 30, 220), 2.f);
-      const float fps = preview.fps_ema > 1.0 ? static_cast<float>(preview.fps_ema) : 0.f;
-      const float ft = fps > 1.f ? (1000.f / fps) : 0.f;
       const float tgt = settings.fps > 0 ? static_cast<float>(1000.0 / settings.fps) : 16.67f;
       const float t = ft > 0.f ? (std::min)(1.f, ft / (tgt * 2.5f)) : 0.2f;
       dl->AddRectFilled(ImVec2(gx + 2, gy + 2), ImVec2(gx + 2 + (gw - 4) * t, gy + gh - 2),
@@ -876,7 +924,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::SetNextWindowSize(vp->WorkSize);
     ImGui::Begin("##lobby_root", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     ImGui::BeginChild("header", ImVec2(0, 72), false, ImGuiWindowFlags_NoScrollbar);
     {
@@ -900,10 +949,12 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::EndChild();
     ImGui::Separator();
 
-    const float footer_h = 92.f;
-    const float body_gap = ImGui::GetStyle().ItemSpacing.y;
-    const float body_h =
-        (std::max)(280.f, ImGui::GetContentRegionAvail().y - footer_h - body_gap);
+    // Pixel-tight vertical budget: body + ItemSpacing + footer == ContentRegionAvail
+    // (ImGui inserts ItemSpacing between the body row and the footer child — do NOT add Dummy).
+    const float item_sp_y = ImGui::GetStyle().ItemSpacing.y;
+    const float footer_h = 72.f;
+    const float avail_y = ImGui::GetContentRegionAvail().y;
+    const float body_h = (std::max)(200.f, avail_y - footer_h - item_sp_y);
     const float body_w = ImGui::GetContentRegionAvail().x;
     const float side_gap = ImGui::GetStyle().ItemSpacing.x;
     // Leave room for two SameLine gaps so the right panel is not clipped.
@@ -1055,11 +1106,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::BeginChild("centro", ImVec2(mid_w, body_h), false, ImGuiWindowFlags_NoScrollbar);
     {
-      // Compact row: value | label side-by-side → less height, no scroll.
-      const float metrics_h = 72.f;
-      const float gap = ImGui::GetStyle().ItemSpacing.y;
-      const float preview_h =
-          (std::max)(120.f, ImGui::GetContentRegionAvail().y - metrics_h - gap);
+      // Preview takes the full center column (no metrics strip under it).
+      const float preview_h = (std::max)(120.f, ImGui::GetContentRegionAvail().y);
       ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.04f, 0.05f, 0.07f, 1.f));
       ImGui::BeginChild("preview_band", ImVec2(0, preview_h), true,
                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -1122,36 +1170,6 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       }
       ImGui::EndChild();
       ImGui::PopStyleColor();
-
-      ImGui::BeginChild("centro_metrics", ImVec2(0, metrics_h), true, ImGuiWindowFlags_NoScrollbar);
-      ImGui::TextDisabled("METRICAS");
-      const float card_w = (std::max)(90.f, (ImGui::GetContentRegionAvail().x - 16.f) / 3.f);
-      char fps_buf[32];
-      char ft_buf[32];
-      if (preview.fps_ema > 1.0) {
-        std::snprintf(fps_buf, sizeof(fps_buf), "%.0f fps", preview.fps_ema);
-        std::snprintf(ft_buf, sizeof(ft_buf), "%.1f ms", 1000.0 / preview.fps_ema);
-      } else {
-        std::snprintf(fps_buf, sizeof(fps_buf), "--- fps");
-        std::snprintf(ft_buf, sizeof(ft_buf), "--- ms");
-      }
-      auto metric_card = [&](const char* value, const char* label) {
-        ImGui::BeginChild(label, ImVec2(card_w, 36), true, ImGuiWindowFlags_NoScrollbar);
-        ImGui::SetWindowFontScale(1.1f);
-        ImGui::TextUnformatted(value);
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::SameLine(0.f, 8.f);
-        ImGui::TextDisabled("%s", label);
-        ImGui::EndChild();
-      };
-      metric_card(fps_buf, "captura");
-      ImGui::SameLine();
-      metric_card(ft_buf, "frametime");
-      ImGui::SameLine();
-      char lat[64];
-      std::snprintf(lat, sizeof(lat), "FG %s", settings.fg_enabled ? "ON" : "off");
-      metric_card(lat, settings.fg_enabled ? "frame gen" : "frame gen");
-      ImGui::EndChild();
     }
     ImGui::EndChild();
 
@@ -1166,7 +1184,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     if (ImGui::Checkbox("Mini overlay (barra topo)", &settings.ui.mini_overlay)) {
       if (settings.ui.mini_overlay) settings.ui.advanced_metrics = false;
     }
-    ImGui::TextDisabled(settings.ui.mini_overlay ? "  -> barra topo + frametime"
+    ImGui::TextDisabled(settings.ui.mini_overlay ? "  -> 1 linha completa (ADV+HW+graph)"
                                                  : "  -> HUD multi-linha");
 
     ImGui::BeginDisabled(settings.ui.mini_overlay);
@@ -1182,35 +1200,46 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::TextDisabled(settings.ui.sync_image ? "  -> SYNC VSYNC" : "  -> SYNC TEAR");
     ImGui::EndChild();
 
+    // Footer sits directly under body; natural ItemSpacing.y is the only gap (already reserved).
     ImGui::BeginChild("footer", ImVec2(0, footer_h), false, ImGuiWindowFlags_NoScrollbar);
-    if (preview.live && preview.frames_seen > 0) {
-      ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f), "* Preview ao vivo — Iniciar libera a placa");
-    } else if (!preview.err.empty()) {
-      ImGui::TextColored(ImVec4(1.f, 0.5f, 0.35f, 1.f), "! %s", preview.err.c_str());
-    } else {
-      ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f), "* Pronto — Esc na captura volta ao menu");
-    }
-    ImGui::SameLine(ImGui::GetWindowWidth() - 420);
-    if (ImGui::Button("Sair", ImVec2(100, 48))) {
-      g_start_requested = false;
-      g_lobby_running = false;
-    }
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.95f, 1.f));
-    if (ImGui::Button("Iniciar processamento", ImVec2(280, 48))) {
-      if (!devices.empty() && device_idx >= 0 && device_idx < static_cast<int>(devices.size())) {
-        settings.device_name = devices[static_cast<size_t>(device_idx)];
+    {
+      const float row_h = 48.f;
+      // Center the button row inside footer_h — slight air above without growing the layout.
+      const float pad_y = (std::max)(0.f, (footer_h - row_h) * 0.5f - 2.f);
+      if (pad_y > 0.5f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + pad_y);
+
+      if (preview.live && preview.frames_seen > 0) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f), "* Preview ao vivo — Iniciar libera a placa");
+      } else if (!preview.err.empty()) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImVec4(1.f, 0.5f, 0.35f, 1.f), "! %s", preview.err.c_str());
+      } else {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f), "* Pronto — Esc na captura volta ao menu");
       }
-      if (!modes.empty() && mode_idx >= 0 && mode_idx < static_cast<int>(modes.size())) {
-        settings.width = modes[static_cast<size_t>(mode_idx)].width;
-        settings.height = modes[static_cast<size_t>(mode_idx)].height;
-        settings.fps = modes[static_cast<size_t>(mode_idx)].fps;
+      ImGui::SameLine(ImGui::GetWindowWidth() - 420);
+      if (ImGui::Button("Sair", ImVec2(100, row_h))) {
+        g_start_requested = false;
+        g_lobby_running = false;
       }
-      settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
-      g_start_requested = true;
-      g_lobby_running = false;
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.95f, 1.f));
+      if (ImGui::Button("Iniciar processamento", ImVec2(280, row_h))) {
+        if (!devices.empty() && device_idx >= 0 && device_idx < static_cast<int>(devices.size())) {
+          settings.device_name = devices[static_cast<size_t>(device_idx)];
+        }
+        if (!modes.empty() && mode_idx >= 0 && mode_idx < static_cast<int>(modes.size())) {
+          settings.width = modes[static_cast<size_t>(mode_idx)].width;
+          settings.height = modes[static_cast<size_t>(mode_idx)].height;
+          settings.fps = modes[static_cast<size_t>(mode_idx)].fps;
+        }
+        settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
+        g_start_requested = true;
+        g_lobby_running = false;
+      }
+      ImGui::PopStyleColor();
     }
-    ImGui::PopStyleColor();
     ImGui::EndChild();
 
     ImGui::End();

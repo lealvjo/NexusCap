@@ -572,6 +572,8 @@ SystemMetricsSample metrics_from_overlay(const OverlayState& o) {
   s.ram_total_mb = o.ram_total_mb;
   s.power_ok = o.power_ok;
   s.power_w = o.power_w;
+  s.cpu_name = o.cpu_name;
+  s.gpu_name = o.gpu_name;
   return s;
 }
 
@@ -677,34 +679,59 @@ void MetricsHud::paint(HDC hdc) const {
   SetBkMode(hdc, TRANSPARENT);
   const auto& o = state_;
 
-  // Mini overlay: one horizontal top bar — metrics left, frametime sparkline right.
+  // Mini overlay: one dense ADV+HW row left (colored segments), frametime sparkline right.
   if (o.mini_overlay) {
-    HFONT mini_font = CreateFontW(16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    HFONT mini_font = CreateFontW(12, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                                   OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                   FIXED_PITCH | FF_MODERN, L"Consolas");
     HFONT old = static_cast<HFONT>(SelectObject(hdc, mini_font));
-    char line[256]{};
+    char line0[768]{};
+    char line1[8]{};
+    char hw_compact[200]{};
+    format_sys_metrics_compact(hw_compact, sizeof(hw_compact), metrics_from_overlay(o));
     const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
     const bool dlss5_on = o.renodx_on;
-    format_mini_overlay_line(line, sizeof(line), show_fps, o.fps_fg_est, o.fg_on, o.fg_multiplier, dlss5_on,
-                             o.frame_ms, o.e2e_ms, o.stalls_window, o.clusters, o.capture_w, o.capture_h,
-                             o.work_w, o.work_h, o.output_w, o.output_h, o.scale_percent);
-    const std::wstring wline = utf8_to_wide_hud(line);
+    MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+    const int nseg = format_mini_overlay_segments(
+        segs, kMiniOverlayMaxSegs, line0, sizeof(line0), line1, sizeof(line1), show_fps, o.fps_fg_est, o.fg_on,
+        o.fg_multiplier, dlss5_on, o.sync_image, o.frame_ms, o.ft_avg_ms, o.ft_p95_ms, o.ft_max_ms, o.ft_stable,
+        o.e2e_ms, o.present_ms, o.stalls_window, o.clusters, o.dropped, o.capture_w, o.capture_h, o.work_w,
+        o.work_h, o.output_w, o.output_h, o.scale_percent, o.has_stats600, o.s600_fps, o.s600_p95_e2e,
+        o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
+        o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps);
+    (void)line0;
 
-    const int pad = 10;
-    const int graph_w = 220;
-    const int gap = 12;
+    const int pad = 6;
+    const int graph_w = 140;
+    const int gap = 6;
     const int bar_w = static_cast<int>(rc.right - rc.left);
+    const int bar_h = static_cast<int>(rc.bottom - rc.top);
     const int gx = (std::max)(pad, bar_w - pad - graph_w);
-    const int gy = 6;
-    const int gh = 24;
+    const int gy = 4;
+    const int gh = (std::max)(22, bar_h - 8);
     const int gw = (std::min)(graph_w, bar_w - pad * 2);
+    const int text_max_x = gx - gap;
+    const int text_y = (std::max)(2, (bar_h - 14) / 2);
 
-    // Clip metrics text so it never overlaps the sparkline.
-    RECT text_rc{pad, 8, gx - gap, static_cast<LONG>(rc.bottom)};
-    SetTextColor(hdc, RGB(210, 230, 255));
-    DrawTextW(hdc, wline.c_str(), static_cast<int>(wline.size()), &text_rc,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    int x = pad;
+    for (int i = 0; i < nseg; ++i) {
+      const std::wstring w = utf8_to_wide_hud(segs[i].text);
+      if (w.empty()) continue;
+      SIZE sz{};
+      GetTextExtentPoint32W(hdc, w.c_str(), static_cast<int>(w.size()), &sz);
+      if (x >= text_max_x) break;
+      if (x + sz.cx > text_max_x) {
+        // Ellipsis clip for overflow of last visible chunk.
+        RECT clip{x, 2, text_max_x, bar_h - 2};
+        SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
+        DrawTextW(hdc, w.c_str(), static_cast<int>(w.size()), &clip,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        break;
+      }
+      SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
+      TextOutW(hdc, x, text_y, w.c_str(), static_cast<int>(w.size()));
+      x += sz.cx;
+    }
 
     if (gw >= 64) {
       RECT graph_rc{gx, gy, gx + gw, gy + gh};
@@ -741,24 +768,30 @@ void MetricsHud::paint(HDC hdc) const {
         }
         HPEN line_pen = CreatePen(PS_SOLID, 2, o.ft_stable ? RGB(90, 220, 255) : RGB(255, 140, 90));
         SelectObject(hdc, line_pen);
-        Polyline(hdc, pts.data(), static_cast<int>(hn));
+        Polyline(hdc, pts.data(), static_cast<int>(pts.size()));
         DeleteObject(line_pen);
       }
-      SelectObject(hdc, old_pen);
       SelectObject(hdc, old_brush);
+      SelectObject(hdc, old_pen);
       DeleteObject(border);
-    }
-
-    if (!o.session_notice.empty()) {
-      std::string title, detail;
-      session_notice_split(o.session_notice, title, detail);
-      const std::wstring notice = utf8_to_wide_hud(title.empty() ? o.session_notice : title);
-      SetTextColor(hdc, RGB(255, 200, 120));
-      TextOutW(hdc, pad, 30, notice.c_str(), static_cast<int>(notice.size()));
     }
 
     SelectObject(hdc, old);
     DeleteObject(mini_font);
+
+    if (!o.session_notice.empty()) {
+      std::string title, detail;
+      session_notice_split(o.session_notice, title, detail);
+      HFONT notice_font = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                      DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+      HFONT oldn = static_cast<HFONT>(SelectObject(hdc, notice_font));
+      SetTextColor(hdc, RGB(255, 200, 90));
+      const std::wstring wt = utf8_to_wide_hud(title);
+      TextOutW(hdc, pad, bar_h > 40 ? bar_h - 22 : 36, wt.c_str(), static_cast<int>(wt.size()));
+      SelectObject(hdc, oldn);
+      DeleteObject(notice_font);
+    }
     return;
   }
 

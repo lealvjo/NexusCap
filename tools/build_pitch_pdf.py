@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gera assets/pitch/NexusCap_Pitch.pdf (v2.0.1)."""
+"""Gera assets/pitch/NexusCap_Pitch.pdf (v2.1.0)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -107,7 +107,7 @@ def footer(canvas, doc):
     canvas.saveState()
     canvas.setFillColor(MUTED)
     canvas.setFont("Helvetica", 8)
-    canvas.drawString(18 * mm, 10 * mm, "Nexus Cap v2.0.1")
+    canvas.drawString(18 * mm, 10 * mm, "Nexus Cap v2.1.0")
     canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"{doc.page}")
     canvas.restoreState()
 
@@ -121,7 +121,7 @@ def main():
         rightMargin=18 * mm,
         topMargin=16 * mm,
         bottomMargin=16 * mm,
-        title="Nexus Cap 2.0.1",
+        title="Nexus Cap 2.1.0",
         author="NexusCap",
     )
     story = []
@@ -132,7 +132,7 @@ def main():
 
     story.append(Paragraph("Nexus Cap", st["title"]))
     story.append(Paragraph("Viewer HDMI nativo · RenoDX / Neural Rendering · Frame Gen opcional", st["sub"]))
-    story.append(Paragraph("<b>Versão 2.0.1</b> — C++17 · D3D11 · DirectShow · Windows", st["sub"]))
+    story.append(Paragraph("<b>Versão 2.1.0</b> — C++17 · D3D11 · DirectShow · Windows", st["sub"]))
 
     story.append(Paragraph("O que é", st["h1"]))
     story.append(
@@ -147,10 +147,10 @@ def main():
     story.append(Paragraph("Instalação (comunidade)", st["h1"]))
     for i, line in enumerate(
         [
-            "Baixe <b>NexusCap-Setup-2.0.1.exe</b> na Release do GitHub.",
+            "Baixe <b>NexusCap-Setup-2.1.0.exe</b> na Release do GitHub.",
             "Instale em <b>%LOCALAPPDATA%\\NexusCap</b> (gravável — evite Program Files).",
             "Abra o app, escolha a placa, marque RenoDX se quiser NR (Delete na captura).",
-            "Frame Gen opcional: Lossless Scaling na Steam · Page Down no CFG.",
+            "Frame Gen opcional: Lossless Scaling na Steam · Page Down no CFG — única instalação extra.",
             "<b>Sincronizar imagem</b> vem ON (VSYNC) — menos tearing percebido.",
         ],
         start=1,
@@ -181,21 +181,21 @@ def main():
         story.append(Paragraph("Diagrama de referência (pipeline Present + FX)", st["footer"]))
 
     story.append(PageBreak())
-    story.append(Paragraph("O que mudou no 2.0.1", st["h1"]))
+    story.append(Paragraph("O que mudou no 2.1.0", st["h1"]))
     bullets = [
-        "Escala só no Feed com RenoDX · Present nativo (imagem mais nítida).",
+        "Mini overlay definitiva: 1 linha colorida ADV + CPU/GPU dinamicos + sparkline.",
+        "Escala so no Feed com RenoDX · Present nativo (imagem mais nitida).",
         "NR no boot confia NeuralUplift (sem pulse que desligava o enhance).",
-        "VSYNC default após A/B (TEAR + ALLOW_TEARING sentia mais ‘tremido’).",
-        "Warmup de 120 frames nas métricas (hitch NGX ~2,5 s fora do fps médio).",
-        "NV12 ping-pong / Map fast-path · HUD ~30 Hz · health + Abrir logs.",
-        "Stack estável Krish+Feed+Bridge (ShortFuse / super-anus = NO-GO).",
+        "VSYNC default apos A/B (TEAR + ALLOW_TEARING sentia mais tremido).",
+        "Warmup de 120 frames nas metricas (hitch NGX ~2,5 s fora do fps medio).",
+        "Setup completo para a comunidade — so Lossless Scaling e extra (FG opcional).",
     ]
     for b in bullets:
         story.append(Paragraph(f"• {b}", st["body"]))
 
     story.append(Paragraph("Métricas (HDMI real VEDO 1440p60)", st["h1"]))
     data = [
-        [Paragraph("<b>Métrica</b>", st["body"]), Paragraph("<b>2.0.1 sessão longa</b>", st["body"])],
+        [Paragraph("<b>Métrica</b>", st["body"]), Paragraph("<b>2.1.0 (base 2.0.1)</b>", st["body"])],
         ["fps steady (janela 600)", "~59,94"],
         ["p95 present / e2e", "~2,1–2,4 / ~1,9–2,0 ms"],
         ["stalls / clusters", "~0 / 0 no regime"],
@@ -222,9 +222,9 @@ def main():
     story.append(
         Paragraph(
             "X2: caminho curto Sobrepor + feeder ~1,07 ms, FPS ~58–60, VSync off — excelente feeling. "
-            "NexusCap 2.0.1: Present medido estável com VSYNC, NR boot confiável, sem double-scale, "
-            "lobby/CFG/FG/logs e telemetria 600f. No pacote produto + estabilidade de sessão longa, "
-            "o Cap leva; feeder ms cru ainda pode favorecer o X2.",
+            "NexusCap 2.1.0: Present medido estável com VSYNC, NR boot confiável, sem double-scale, "
+            "mini overlay completa, lobby/CFG/FG/logs e telemetria 600f. No pacote produto + "
+            "estabilidade de sessão longa, o Cap leva; feeder ms cru ainda pode favorecer o X2.",
             st["body"],
         )
     )

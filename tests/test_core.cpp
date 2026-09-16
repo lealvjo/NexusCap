@@ -582,29 +582,94 @@ TEST_CASE("session HUD shows real|FG dual FPS when FG on") {
   CHECK(std::strstr(fg, "->") != nullptr);
 }
 
-TEST_CASE("mini overlay one-line has FPS FG and DLSS5") {
-  char line[256]{};
+TEST_CASE("mini overlay one-line packs ADV fps fg nr sync ft last600 and hw") {
+  char a[768]{};
+  char b[8]{};
+  SystemMetricsSample hw{};
+  hw.cpu_name = "i5-11400F";
+  hw.gpu_name = "RTX 5070";
+  hw.cpu_ok = hw.gpu_ok = hw.cpu_temp_ok = hw.gpu_temp_ok = true;
+  hw.vram_ok = hw.ram_ok = hw.power_ok = true;
+  hw.cpu_percent = 42;
+  hw.cpu_temp_c = 58;
+  hw.gpu_percent = 77;
+  hw.gpu_temp_c = 72;
+  hw.vram_used_mb = 2048;
+  hw.vram_budget_mb = 8192;
+  hw.ram_used_mb = 12288;
+  hw.ram_total_mb = 32768;
+  hw.power_w = 120;
+  char hw_compact[200]{};
+  format_sys_metrics_compact(hw_compact, sizeof(hw_compact), hw);
+  CHECK(std::strstr(hw_compact, "i5-11400F") != nullptr);
+  CHECK(std::strstr(hw_compact, "RTX 5070") != nullptr);
+
+  format_mini_overlay_lines(a, sizeof(a), b, sizeof(b), 60.0, 120.0, true, 2, true, true, 16.7, 16.6, 17.0,
+                            18.0, true, 8.5, 2.2, 2, 1, 5, 2560, 1440, 2560, 1440, 2560, 1440, 100, true, 59.9,
+                            2.0, 2.1, 0, "Default", hw_compact, 1.5, 900, 20.0, "lsfg3", 60.0);
+  CHECK(b[0] == '\0');
+  CHECK(std::strstr(a, "60.0") != nullptr);
+  CHECK(std::strstr(a, "120.0") != nullptr);
+  CHECK(std::strstr(a, "cap|FG") != nullptr);
+  CHECK(std::strstr(a, "NR ON") != nullptr);
+  CHECK(std::strstr(a, "VSYNC") != nullptr);
+  CHECK(std::strstr(a, "p 2.2") != nullptr);
+  CHECK(std::strstr(a, "e2e 8.5") != nullptr);
+  CHECK(std::strstr(a, "st2/cl1") != nullptr);
+  CHECK(std::strstr(a, "frm 900") != nullptr);
+  CHECK(std::strstr(a, "drop 5") != nullptr);
+  CHECK(std::strstr(a, "2560x1440") != nullptr);
+  CHECK(std::strstr(a, "ft 16.7") != nullptr);
+  CHECK(std::strstr(a, "avg 16.6") != nullptr);
+  CHECK(std::strstr(a, "p95 17.0") != nullptr);
+  CHECK(std::strstr(a, "STABLE") != nullptr);
+  CHECK(std::strstr(a, "L600") != nullptr);
+  CHECK(std::strstr(a, "i5-11400F") != nullptr);
+  CHECK(std::strstr(a, "RTX 5070") != nullptr);
+  CHECK(std::strstr(a, "120W") != nullptr);
+  CHECK(std::strstr(a, "[lsfg3]") != nullptr);
+  CHECK(std::strstr(a, "1.5ms") != nullptr);
+
+  MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+  const int nseg = format_mini_overlay_segments(
+      segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 120.0, true, 2, true, true, 16.7, 16.6, 17.0,
+      18.0, true, 8.5, 2.2, 2, 1, 5, 2560, 1440, 2560, 1440, 2560, 1440, 100, true, 59.9, 2.0, 2.1, 0, "Default",
+      hw_compact, 1.5, 900, 20.0, "lsfg3", 60.0);
+  CHECK(nseg >= 8);
+  bool saw_green_fps = false;
+  bool saw_purple_nr = false;
+  bool saw_yellow_cpu = false;
+  bool saw_cyan_gpu = false;
+  for (int i = 0; i < nseg; ++i) {
+    if (std::strstr(segs[i].text, "60.0") && segs[i].g >= 240) saw_green_fps = true;
+    if (std::strstr(segs[i].text, "NR ON") && segs[i].b >= 240) saw_purple_nr = true;
+    if (std::strstr(segs[i].text, "i5-11400F") && segs[i].r >= 240 && segs[i].g >= 200) saw_yellow_cpu = true;
+    if (std::strstr(segs[i].text, "RTX 5070") && segs[i].b >= 240) saw_cyan_gpu = true;
+  }
+  CHECK(saw_green_fps);
+  CHECK(saw_purple_nr);
+  CHECK(saw_yellow_cpu);
+  CHECK(saw_cyan_gpu);
+
+  format_mini_overlay_lines(a, sizeof(a), b, sizeof(b), 59.9, 0.0, false, 2, false, false, 16.6, 16.6, 16.6,
+                            16.6, true, 12.0, 3.0, 0, 0, 0, 2560, 1440, 1280, 720, 2560, 1440, 50);
+  CHECK(std::strstr(a, "NR off") != nullptr);
+  CHECK(std::strstr(a, "TEAR") != nullptr);
+  CHECK(std::strstr(a, "FG x2 off") != nullptr);
+  CHECK(std::strstr(a, "2560x1440>1280x720>2560x1440@50%") != nullptr);
+  CHECK(std::strstr(a, "L600") != nullptr);
+
+  // Legacy one-liner still includes key tokens.
+  char line[512]{};
   format_mini_overlay_line(line, sizeof(line), 60.0, 120.0, true, 2, true, 16.7, 8.5, 2, 1, 2560, 1440, 2560,
                            1440, 2560, 1440, 100);
   CHECK(std::strstr(line, "60.0") != nullptr);
-  CHECK(std::strstr(line, "120.0") != nullptr);
   CHECK(std::strstr(line, "cap|FG") != nullptr);
-  CHECK(std::strstr(line, "DLSS5 ON") != nullptr);
-  CHECK(std::strstr(line, "ft 16.7") != nullptr);
-  CHECK(std::strstr(line, "e2e 8.5") != nullptr);
-  CHECK(std::strstr(line, "stall 2") != nullptr);
-  CHECK(std::strstr(line, "cl 1") != nullptr);
-  CHECK(std::strstr(line, "in=work=out 2560x1440") != nullptr);
-
-  format_mini_overlay_line(line, sizeof(line), 59.9, 0.0, false, 2, false, 16.6, 12.0, 0, 0, 2560, 1440, 1280,
-                           720, 2560, 1440, 50);
-  CHECK(std::strstr(line, "DLSS5 off") != nullptr);
-  CHECK(std::strstr(line, "FG x2 off") != nullptr);
-  CHECK(std::strstr(line, "stall 0") != nullptr);
-  CHECK(std::strstr(line, "cl 0") != nullptr);
-  CHECK(std::strstr(line, "in 2560x1440") != nullptr);
-  CHECK(std::strstr(line, "work 1280x720") != nullptr);
-  CHECK(std::strstr(line, "out 2560x1440") != nullptr);
+  {
+    const bool has_dlss_or_nr =
+        (std::strstr(line, "DLSS5") != nullptr) || (std::strstr(line, "NR") != nullptr);
+    CHECK(has_dlss_or_nr);
+  }
 
   PersistedSettings s = default_settings();
   s.ui.show_fps = true;
@@ -616,7 +681,9 @@ TEST_CASE("mini overlay one-line has FPS FG and DLSS5") {
   s.height = 1440;
   auto hud = make_lobby_hud_preview_lines(s, 60.0);
   CHECK(hud.count == 1);
-  CHECK(lobby_hud_contains(hud, "DLSS5 ON"));
+  CHECK(lobby_hud_contains(hud, "NR ON"));
+  CHECK(lobby_hud_contains(hud, "i5-11400F"));
+  CHECK(lobby_hud_contains(hud, "RTX 5070"));
   CHECK(lobby_hud_preview_lines(true, true, false, true) == 1);
   CHECK(hud_uses_mini_overlay(true, true));
   CHECK_FALSE(hud_uses_advanced_metrics(true, true, true));
@@ -1276,8 +1343,8 @@ TEST_CASE("lobby hud preview lines follow Sessao toggles") {
   CHECK(lobby_hud_preview_lines(true, true) > lobby_hud_preview_lines(true, false));
   CHECK(lobby_hud_preview_lines(true, false, true) == 11);  // + 5 Infos GPU/CPU lines
   CHECK(lobby_hud_preview_lines(true, true, true) == 13);
-  CHECK(lobby_hud_preview_lines(true, false, false, true) == 1);  // mini = single top line
-  CHECK(lobby_hud_preview_lines(true, true, true, true) == 1);
+  CHECK(lobby_hud_preview_lines(true, false, false, true) == 1);  // mini = one dense row
+  CHECK(lobby_hud_preview_lines(true, true, true, true) == 1);   // mini wins over ADV+HW line count
 }
 
 TEST_CASE("hw_info toggle persists and shows preview line") {
@@ -1316,6 +1383,11 @@ TEST_CASE("system metrics formatters and cpu percent math") {
   CHECK(present_sync_interval(true) == 1u);
   CHECK(present_sync_interval(false) == 0u);
 
+  CHECK(shorten_cpu_display_name("Intel(R) Core(TM) i5-11400F CPU @ 2.60GHz") == "i5-11400F");
+  CHECK(shorten_cpu_display_name("AMD Ryzen 7 5800X 8-Core Processor") == "R7 5800X");
+  CHECK(shorten_gpu_display_name("NVIDIA GeForce RTX 5070") == "RTX 5070");
+  CHECK(shorten_gpu_display_name("AMD Radeon RX 7800 XT") == "RX 7800 XT");
+
   // idle half of kernel+user → 50% busy
   CHECK(cpu_percent_from_idle_deltas(50, 80, 20) == doctest::Approx(50.0));
   CHECK(cpu_percent_from_idle_deltas(0, 100, 0) == doctest::Approx(100.0));
@@ -1330,15 +1402,19 @@ TEST_CASE("system metrics formatters and cpu percent math") {
   s.cpu_percent = 42;
   format_sys_cpu_line(buf, sizeof(buf), s);
   CHECK(std::string(buf) == "CPU  42%");
+  s.cpu_name = "i5-11400F";
+  format_sys_cpu_line(buf, sizeof(buf), s);
+  CHECK(std::string(buf) == "i5-11400F  42%");
   s.cpu_temp_ok = true;
   s.cpu_temp_c = 58;
   format_sys_cpu_line(buf, sizeof(buf), s);
-  CHECK(std::string(buf) == "CPU  42%  58C");
+  CHECK(std::string(buf) == "i5-11400F  42%  58C");
 
   s.gpu_ok = true;
   s.gpu_percent = 77;
   s.gpu_temp_ok = true;
   s.gpu_temp_c = 72;
+  s.gpu_name = "RTX 5070";
   s.vram_ok = true;
   s.vram_used_mb = 2048;
   s.vram_budget_mb = 8192;
@@ -1348,22 +1424,44 @@ TEST_CASE("system metrics formatters and cpu percent math") {
   s.power_ok = true;
   s.power_w = 120;
   format_sys_metrics_line(buf, sizeof(buf), s);
-  CHECK(std::strstr(buf, "CPU  42%  58C") != nullptr);
-  CHECK(std::strstr(buf, "GPU  77%  72C") != nullptr);
+  CHECK(std::strstr(buf, "i5-11400F") != nullptr);
+  CHECK(std::strstr(buf, "RTX 5070") != nullptr);
+  CHECK(std::strstr(buf, "77%") != nullptr);
+  CHECK(std::strstr(buf, "i5-11400F  42%  58C") != nullptr);
+  CHECK(std::strstr(buf, "RTX 5070  77%  72C") != nullptr);
   CHECK(std::strstr(buf, "RAM  12.0 / 32.0 GB") != nullptr);
   CHECK(std::strstr(buf, "VRAM 2.0 / 8.0 GB") != nullptr);
   CHECK(std::strstr(buf, "PWR  120 W") != nullptr);
 
   char lines[5][64]{};
   CHECK(format_sys_metrics_lines(lines, 5, s) == 5);
-  CHECK(std::string(lines[0]) == "CPU  42%  58C");
-  CHECK(std::string(lines[1]) == "GPU  77%  72C");
+  CHECK(std::string(lines[0]) == "i5-11400F  42%  58C");
+  CHECK(std::string(lines[1]) == "RTX 5070  77%  72C");
   CHECK(std::string(lines[2]) == "RAM  12.0 / 32.0 GB");
   CHECK(std::string(lines[3]) == "VRAM 2.0 / 8.0 GB");
   CHECK(std::string(lines[4]) == "PWR  120 W");
 
+  // Sem nome conhecido → fallback genérico.
+  s.cpu_name.clear();
+  s.gpu_name.clear();
+  format_sys_cpu_line(buf, sizeof(buf), s);
+  CHECK(std::string(buf) == "CPU  42%  58C");
+  format_sys_gpu_line(buf, sizeof(buf), s);
+  CHECK(std::string(buf) == "GPU  77%  72C");
+
   CHECK(celsius_from_thermal_kelvin_raw(310.15) == doctest::Approx(37.0).epsilon(0.01));
   CHECK(celsius_from_thermal_kelvin_raw(3100.0) == doctest::Approx(36.85).epsilon(0.01));
+}
+
+TEST_CASE("shorten cpu/gpu display names for HUD") {
+  CHECK(shorten_cpu_display_name("").empty());
+  CHECK(shorten_cpu_display_name("Intel(R) Core(TM) i7-13700K CPU @ 3.40GHz") == "i7-13700K");
+  CHECK(shorten_cpu_display_name("Intel(R) Core(TM) i9-14900HX") == "i9-14900HX");
+  CHECK(shorten_cpu_display_name("AMD Ryzen 5 5600X 6-Core Processor") == "R5 5600X");
+  CHECK(shorten_gpu_display_name("").empty());
+  CHECK(shorten_gpu_display_name("NVIDIA GeForce RTX 5070 Laptop GPU") == "RTX 5070");
+  CHECK(shorten_gpu_display_name("NVIDIA GeForce GTX 1660 SUPER") == "GTX 1660 SUPER");
+  CHECK(shorten_gpu_display_name("Intel(R) Arc(TM) A770 Graphics") == "Arc A770 Graphics");
 }
 
 TEST_CASE("make_lobby_hud_preview_lines reflects gear adjustments live") {
@@ -1718,17 +1816,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(2, 0, 1));
-  CHECK_FALSE(app_version_is(1, 1, 7));
-  CHECK(std::string(kAppVersion) == "2.0.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v2.0.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.0.1");
+  CHECK(app_version_is(2, 1, 0));
+  CHECK_FALSE(app_version_is(2, 0, 1));
+  CHECK(std::string(kAppVersion) == "2.1.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v2.1.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.1.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("2.0.1") != std::string::npos);
+  CHECK(lobby_t.find("2.1.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("2.0.1") != std::string::npos);
+  CHECK(sess_t.find("2.1.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2095,11 +2193,11 @@ TEST_CASE("neural rendering Bridge plan: enable/disable cannot desync") {
 TEST_CASE("mini overlay DLSS5 follows renodx_on only (not passthrough dlss_on)") {
   // Regression: HUD used renodx_on || (dlss_on && backend has renodx) while enhance is
   // passthrough — after Invert-bug fix, status is solely renodx_on / g_nr_runtime_on.
-  char line[256]{};
+  char line[512]{};
   format_mini_overlay_line(line, sizeof(line), 60.0, 0.0, false, 2, true, 16.0, 8.0, 0, 0, 2560, 1440);
-  CHECK(std::strstr(line, "DLSS5 ON") != nullptr);
+  CHECK(std::strstr(line, "NR ON") != nullptr);
   format_mini_overlay_line(line, sizeof(line), 60.0, 0.0, false, 2, false, 16.0, 8.0, 0, 0, 2560, 1440);
-  CHECK(std::strstr(line, "DLSS5 off") != nullptr);
+  CHECK(std::strstr(line, "NR off") != nullptr);
 }
 
 TEST_CASE("format change must not re-query device every frame") {

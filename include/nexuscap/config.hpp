@@ -32,7 +32,7 @@ struct AppConfig {
   bool mini_overlay = false;    // Steam Deck-style top bar
   bool hw_info = false;  // painel Infos GPU/CPU
   bool hide_panel_on_capture = true;
-  bool sync_image = false;  // vsync Present
+  bool sync_image = true;  // vsync Present — default after 2.0.1 A/B (TEAR felt shakier)
   int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // Default / Natural / Cinematic
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
@@ -287,10 +287,19 @@ inline std::string session_notice_fg_missing() {
   return "Frame Gen — Lossless Scaling nao encontrado (CFG → Pasta)";
 }
 inline std::string session_notice_nr_on() {
-  return "Neural Rendering ON — imagem mais bonita; mais GPU";
+  return "Neural Rendering ON — Confirmado; imagem mais bonita; mais GPU";
 }
 inline std::string session_notice_nr_off() {
-  return "Neural Rendering OFF — imagem limpa; menos GPU";
+  return "Neural Rendering OFF — Confirmado; imagem limpa; menos GPU";
+}
+inline std::string session_notice_nr_applying() {
+  return "Neural Rendering — Aplicando…";
+}
+inline std::string session_notice_fg_applying() {
+  return "Frame Gen — Aplicando…";
+}
+inline std::string session_notice_fg_confirmed_on(int mult) {
+  return std::string("Frame Gen ON — Confirmado x") + std::to_string(clamp_fg_multiplier(mult));
 }
 
 // Split "titulo — detalhe" so HUD/toast never clip the second half.

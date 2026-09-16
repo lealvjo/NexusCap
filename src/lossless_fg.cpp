@@ -445,9 +445,19 @@ bool LosslessFgController::ensure_process(std::string& err, bool allow_adopt) {
 }
 
 unsigned LosslessFgController::count_running_lossless_processes() {
+  // Throttle Toolhelp — overlay + reconcile called every Present otherwise.
+  static unsigned cached = 0;
+  static DWORD last_tick = 0;
+  const DWORD now = GetTickCount();
+  if (last_tick != 0 && (now - last_tick) < 200) return cached;
+  last_tick = now;
+
   unsigned n = 0;
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  if (snap == INVALID_HANDLE_VALUE) return 0;
+  if (snap == INVALID_HANDLE_VALUE) {
+    cached = 0;
+    return 0;
+  }
   PROCESSENTRY32W pe{};
   pe.dwSize = sizeof(pe);
   if (Process32FirstW(snap, &pe)) {
@@ -456,6 +466,7 @@ unsigned LosslessFgController::count_running_lossless_processes() {
     } while (Process32NextW(snap, &pe));
   }
   CloseHandle(snap);
+  cached = n;
   return n;
 }
 

@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `1.1.7` (`v1.1`) · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `2.0.1` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,9 +20,9 @@
 
 Distribua só o instalador — **não** precisa mandar pasta `manual` nem o código:
 
-**[NexusCap-Setup-1.1.4.exe](https://github.com/lealvjo/NexusCap/releases/tag/v1.1.4)** (~142 MB)
+**[NexusCap-Setup-2.0.1.exe](https://github.com/lealvjo/NexusCap/releases)** (gere com `tools\make_installer.ps1`)
 
-O `.exe` do setup **não fica no git** (é grande demais); fica na **Release** do GitHub. O pitch PDF (`assets/pitch/NexusCap_Pitch.pdf`) fica no repo e aponta para o mesmo download.
+O `.exe` do setup **não fica no git** (é grande demais); fica na **Release** do GitHub.
 
 ### Requisitos do usuário final
 
@@ -35,14 +35,20 @@ O `.exe` do setup **não fica no git** (é grande demais); fica na **Release** d
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-1.1.4.exe` na [Release v1.1.4](https://github.com/lealvjo/NexusCap/releases/tag/v1.1.4).
+1. Baixe `NexusCap-Setup-2.0.1.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo).
-4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura).
+4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
 5. **Frame Gen (opcional):** instale Lossless Scaling na Steam; no CFG, Page Down liga/desliga. Se o exe não for achado, use **Pasta** e aponte `LosslessScaling.exe`.
-6. **Iniciar** — Esc volta ao lobby.
+6. **Iniciar** — Esc volta ao lobby. Use **Abrir logs** no CFG se precisar de suporte.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
+
+### Qualidade e latência (2.0)
+
+- Stack enhance: **Krish `renodx-dlss5` + Feed + Bridge** (não usar builds ShortFuse / “super-anus”).
+- Guardrail: mudanças de enhance não devem piorar nitidez nem `present_ms` vs 1.1.7.
+- Com RenoDX ligado, escala UI → `work_resolution` do Feed apenas (sem double-downsample no app).
 
 ---
 

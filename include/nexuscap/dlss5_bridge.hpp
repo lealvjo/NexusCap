@@ -53,8 +53,8 @@ inline bool bridge_command_is_valid_nr_pulse(const Dlss5BridgeCommand& cmd) {
   return reinterpret_cast<const uint8_t*>(&cmd)[0x48] != 0;
 }
 
-// Fresh process / first ReShade attach: NR starts OFF. In-process lobby↔session often keeps
-// the same RenoDX runtime ON — never assume OFF without cfg.nr_runtime_on carry.
+// Fresh process / first ReShade attach: often OFF, but some RenoDX builds honor NeuralUplift=1
+// and boot already ON — never assume without cfg.nr_runtime_on / log confirm.
 inline constexpr bool kRenodxRuntimeStartsOff = true;
 
 struct NeuralRuntimePlan {
@@ -193,8 +193,11 @@ struct NrConfirmPending {
   bool active = false;
   std::string exe_dir;
   std::streamoff log_size_before = 0;
+  std::streamoff log_origin = 0;  // first marker — deadline reads full pulse window
   bool want_on = false;
   double deadline_ms = 0;
+  // RenoDX may boot already ON when NeuralUplift=1; first enable-pulse then lands OFF.
+  int recover_pulses = 0;
 };
 
 enum class NrConfirmPoll { Pending, Confirmed, Failed };

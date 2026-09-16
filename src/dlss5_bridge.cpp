@@ -71,19 +71,29 @@ std::string read_file_from_off(const std::string& path, std::streamoff start) {
 bool confirm_nr_after_pulse_blocking(const std::string& exe_dir, bool want_on, std::streamoff log_size_before,
                                      bool* out_on, uint32_t timeout_ms) {
   if (!out_on) return false;
-  const DWORD t0 = GetTickCount();
   const std::string log_path = exe_dir + "\\ReShade.log";
+  int recover = 0;
+  std::streamoff from = log_size_before;
   for (;;) {
-    const int logged_new = parse_reshade_nr_last_toggled(read_file_from_off(log_path, log_size_before));
-    if (logged_new >= 0) {
-      *out_on = logged_new == 1;
-      return true;
+    const DWORD t0 = GetTickCount();
+    for (;;) {
+      const int logged_new = parse_reshade_nr_last_toggled(read_file_from_off(log_path, from));
+      if (logged_new >= 0) {
+        *out_on = logged_new == 1;
+        if (*out_on != want_on && recover < 1 && resolve_bridge()) {
+          ++recover;
+          from = file_size_off(log_path);
+          const Dlss5BridgeCommand cmd = make_nr_pulse_command();
+          if (bridge_command_is_valid_nr_pulse(cmd) && api().submit(&cmd) != 0) break;
+        }
+        return true;
+      }
+      if (GetTickCount() - t0 >= timeout_ms) {
+        *out_on = want_on;
+        return true;  // pulse already sent — prefer want over stuck HUD
+      }
+      Sleep(8);
     }
-    if (GetTickCount() - t0 >= timeout_ms) {
-      *out_on = want_on;
-      return true;  // pulse already sent — prefer want over stuck HUD
-    }
-    Sleep(8);
   }
 }
 
@@ -136,12 +146,25 @@ NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_o
   const int logged = peek_reshade_nr_toggled_since(pending.exe_dir, pending.log_size_before);
   if (logged >= 0) {
     *runtime_on = logged == 1;
+    // Enable pulse flipped an already-ON boot → OFF: recover pulse(s) to match want.
+    if (*runtime_on != pending.want_on && pending.recover_pulses < 2) {
+      if (!dlss5_bridge_ready_for_nr()) return NrConfirmPoll::Pending;
+      ++pending.recover_pulses;
+      pending.log_size_before = file_size_off(pending.exe_dir + "\\ReShade.log");
+      Sleep(120);  // RenoDX needs a beat between Bridge edges
+      if (dlss5_bridge_pulse_nr()) {
+        pending.deadline_ms = now_ms + 2500.0;
+        return NrConfirmPoll::Pending;
+      }
+    }
     pending.active = false;
     return NrConfirmPoll::Confirmed;
   }
   if (now_ms >= pending.deadline_ms) {
-    // Pulse was sent; adopt requested state so HUD is not stuck forever.
-    *runtime_on = pending.want_on;
+    // Prefer last toggle in this pulse window over wishful want_on.
+    const int last = peek_reshade_nr_toggled_since(pending.exe_dir, pending.log_origin);
+    if (last >= 0) *runtime_on = last == 1;
+    else *runtime_on = pending.want_on;
     pending.active = false;
     return NrConfirmPoll::Confirmed;
   }
@@ -162,8 +185,10 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
       async_out->active = true;
       async_out->exe_dir = exe_dir;
       async_out->log_size_before = log_sz;
+      async_out->log_origin = log_sz;
       async_out->want_on = plan.resulting_runtime_on;
       async_out->deadline_ms = now_ms + 2000.0;
+      async_out->recover_pulses = 0;
       // runtime_on unchanged until poll — Present keeps running (no 2s freeze).
       return files_ok;
     }

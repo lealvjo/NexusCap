@@ -9,6 +9,7 @@
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <dxgi1_5.h>
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 
@@ -178,8 +179,18 @@ bool RendererD3D11::init(HWND hwnd, int width, int height, std::string& err) {
   sc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
   sc.Scaling = DXGI_SCALING_STRETCH;
   sc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-  // Explicitly NO FRAME_LATENCY_WAITABLE_OBJECT
+  // Explicitly NO FRAME_LATENCY_WAITABLE_OBJECT; ALLOW_TEARING when supported (uncapped Present).
   sc.Flags = 0;
+  {
+    ComPtr<IDXGIFactory5> factory5;
+    if (SUCCEEDED(factory.As(&factory5))) {
+      BOOL allow = FALSE;
+      if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof(allow))) &&
+          allow) {
+        sc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+      }
+    }
+  }
   swap_flags_ = sc.Flags;
 
   hr = factory->CreateSwapChainForHwnd(dev.Get(), hwnd, &sc, nullptr, nullptr, &impl_->swap);
@@ -375,19 +386,29 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   D3D11_MAPPED_SUBRESOURCE map{};
   if (SUCCEEDED(impl_->ctx->Map(impl_->texY.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
     const uint8_t* src = frame.nv12.data();
-    for (int y = 0; y < frame.height; ++y) {
-      std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
-                  src + static_cast<size_t>(y) * static_cast<size_t>(frame.width),
-                  static_cast<size_t>(frame.width));
+    if (map.RowPitch == static_cast<UINT>(frame.width)) {
+      std::memcpy(map.pData, src, y_size);
+    } else {
+      for (int y = 0; y < frame.height; ++y) {
+        std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
+                    src + static_cast<size_t>(y) * static_cast<size_t>(frame.width),
+                    static_cast<size_t>(frame.width));
+      }
     }
     impl_->ctx->Unmap(impl_->texY.Get(), 0);
   }
   if (SUCCEEDED(impl_->ctx->Map(impl_->texUV.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
     const uint8_t* src = frame.nv12.data() + y_size;
-    for (int y = 0; y < frame.height / 2; ++y) {
-      std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
-                  src + static_cast<size_t>(y) * static_cast<size_t>(frame.width),
-                  static_cast<size_t>(frame.width));
+    const int uv_h = frame.height / 2;
+    // UV is R8G8 packed: each row is `width` bytes for width/2 texels.
+    if (map.RowPitch == static_cast<UINT>(frame.width)) {
+      std::memcpy(map.pData, src, y_size / 2);
+    } else {
+      for (int y = 0; y < uv_h; ++y) {
+        std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
+                    src + static_cast<size_t>(y) * static_cast<size_t>(frame.width),
+                    static_cast<size_t>(frame.width));
+      }
     }
     impl_->ctx->Unmap(impl_->texUV.Get(), 0);
   }
@@ -501,7 +522,11 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   ID3D11ShaderResourceView* null_srv[] = {nullptr};
   impl_->ctx->PSSetShaderResources(0, 1, null_srv);
 
-  impl_->swap->Present(present_sync_interval(vsync_), 0);
+  UINT present_flags = 0;
+  if (!vsync_ && (swap_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)) {
+    present_flags = DXGI_PRESENT_ALLOW_TEARING;
+  }
+  impl_->swap->Present(present_sync_interval(vsync_), present_flags);
   present_ms = clk.now_ms() - t0;
   (void)err;
   return true;
@@ -627,11 +652,17 @@ void MetricsHud::reposition() {
 }
 
 void MetricsHud::update(const OverlayState& state) {
+  const bool notice_changed = (state.session_notice != last_notice_);
   state_ = state;
+  last_notice_ = state.session_notice;
   if (!hwnd_) return;
   set_visible(state.visible);
   if (!state.visible) return;
   reposition();
+  // Throttle GDI paint ~30 Hz — Invalidate+UpdateWindow every Present contended with D3D.
+  const DWORD now = GetTickCount();
+  if (!notice_changed && last_paint_tick_ != 0 && (now - last_paint_tick_) < 33) return;
+  last_paint_tick_ = now;
   InvalidateRect(hwnd_, nullptr, FALSE);
   UpdateWindow(hwnd_);
 }

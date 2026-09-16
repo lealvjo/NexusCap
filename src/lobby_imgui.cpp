@@ -696,6 +696,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     if (std::filesystem::exists(feed_cfg)) {
       sync_feed_work_resolution_file(feed_cfg.string(), feed_work_resolution_for_lobby());
     }
+    // Idle lobby: drop Techniques when RenoDX off; keep full chain for live preview.
+    sync_mgf_techniques_for_phase(exe_dir.string(), settings.enhance_renodx);
     const bool want_nr = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
     sync_neural_rendering_enabled_files(exe_dir.string(), want_nr,
                                         feed_pipeline_on_for_renodx(settings.enhance_renodx));
@@ -817,6 +819,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   };
   if (!renodx_dir_ok) {
     push_lobby_toast(renodx_write_denied_notice());
+  } else {
+    wchar_t exe_path_h[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe_path_h, MAX_PATH);
+    const auto health = check_runtime_health(std::filesystem::path(exe_path_h).parent_path().string());
+    if (!health.writable) {
+      push_lobby_toast(renodx_write_denied_notice());
+    } else if (!health.renodx_complete()) {
+      push_lobby_toast("RenoDX incompleto (dxgi/addon/feed). Reinstale o Nexus Cap ou use Abrir logs.");
+    }
   }
 
   while (g_lobby_running) {
@@ -1273,9 +1284,16 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         const int work_w = scaled_extent(settings.width, settings.scale_percent);
         const int work_h = scaled_extent(settings.height, settings.scale_percent);
         const int pct_pix = static_cast<int>(scale_pixel_ratio(settings.scale_percent) * 100.0 + 0.5);
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.f, 1.f), "Trabalho: %dx%d", work_w, work_h);
-        ImGui::TextDisabled("Sinal %dx%d  ·  pixels RGB ~%d%%  ·  min %d%%", settings.width, settings.height,
-                            pct_pix, kMinScalePercent);
+        ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.f, 1.f), "Trabalho Feed/NR: %dx%d", work_w, work_h);
+        if (settings.enhance_renodx) {
+          ImGui::TextDisabled("Com RenoDX: Present nativo; escala so no Feed (sem double-downsample).");
+        } else {
+          ImGui::TextDisabled("Sinal %dx%d  ·  pixels RGB ~%d%%  ·  min %d%%", settings.width, settings.height,
+                              pct_pix, kMinScalePercent);
+        }
+        if (ImGui::Button("Abrir logs")) {
+          if (!open_app_logs_folder()) push_lobby_toast("Nao foi possivel abrir a pasta de logs.");
+        }
 
         ImGui::Separator();
         if (ImGui::Checkbox("RenoDX / Neural Rendering (preview ao vivo)", &settings.enhance_renodx)) {
@@ -1284,6 +1302,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+          sync_mgf_techniques_for_phase(exe_dir, settings.enhance_renodx);
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
                                             feed_pipeline_on_for_renodx(settings.enhance_renodx)) &&
@@ -1297,8 +1316,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                                                              : "  → RenoDX armado · NR off (Delete na captura)")
                                 : "  → preview limpo — sem RenoDX (Delete nao funciona ate marcar)");
         if (settings.enhance_renodx) {
-          ImGui::TextDisabled(nr_runtime_on ? "  runtime NR: ON (filtros no preview)"
-                                            : "  runtime NR: OFF (aguardando Bridge / Delete)");
+          ImGui::TextDisabled(nr_runtime_on ? "  runtime NR: Confirmado ON (filtros no preview)"
+                                            : "  runtime NR: Aplicando / aguardando Bridge");
         }
         ImGui::BeginDisabled(!settings.enhance_renodx);
         ImGui::TextUnformatted("Preset visual (ao vivo no preview)");
@@ -1442,6 +1461,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   UnregisterClassW(wc.lpszClassName, wc.hInstance);
 
   if (!g_start_requested) return false;
+  {
+    wchar_t exe_path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+    // Session always needs Kernel→Feed→Sharpen on disk (ReShade may reload on next Present).
+    sync_mgf_techniques_for_phase(exe_dir, /*session_or_live_preview=*/true);
+  }
   apply_settings_to_cfg(settings, cfg);
   cfg.nr_runtime_on = nr_runtime_on;
   return true;

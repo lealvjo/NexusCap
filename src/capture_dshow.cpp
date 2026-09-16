@@ -164,12 +164,17 @@ void DShowCapture::push_buffer(const uint8_t* data, size_t len) {
   const int h = impl_->height;
   const size_t need = static_cast<size_t>(w) * static_cast<size_t>(h) * 3 / 2;
   if (len < need) return;
+  if (nv12_scratch_.size() != need) {
+    slot_->take_recycle_nv12(nv12_scratch_);
+    if (nv12_scratch_.size() != need) nv12_scratch_.resize(need);
+  }
+  std::memcpy(nv12_scratch_.data(), data, need);
   FramePayload p;
-  p.nv12.assign(data, data + need);
   p.width = w;
   p.height = h;
   p.cap_qpc_ms = clock_->now_ms();
   p.frame_index = frames_.fetch_add(1);
+  p.nv12.swap(nv12_scratch_);  // publish owns buffer; scratch empty until recycle/resize
   slot_->publish(std::move(p));
 }
 

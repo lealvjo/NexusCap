@@ -19,11 +19,20 @@ public:
   void publish(FramePayload&& frame) {
     std::lock_guard<std::mutex> lock(mu_);
     if (has_) {
+      // Keep dropped buffer capacity for the capture thread (ping-pong).
+      recycle_.nv12.swap(slot_.nv12);
       ++dropped_;
     }
     slot_ = std::move(frame);
     has_ = true;
     ++published_;
+  }
+
+  // Steal recycled NV12 capacity after a drop (or empty if none). Capture uses this to avoid realloc.
+  void take_recycle_nv12(std::vector<uint8_t>& out) {
+    std::lock_guard<std::mutex> lock(mu_);
+    out.swap(recycle_.nv12);
+    recycle_.nv12.clear();
   }
 
   bool consume(FramePayload& out) {
@@ -53,6 +62,7 @@ public:
 private:
   mutable std::mutex mu_;
   FramePayload slot_;
+  FramePayload recycle_;  // last overwritten buffer (capacity reuse)
   bool has_ = false;
   uint64_t dropped_ = 0;
   uint64_t published_ = 0;

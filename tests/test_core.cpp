@@ -49,6 +49,40 @@ TEST_CASE("FrameSlot latest-wins and drop count") {
   CHECK_FALSE(slot.consume(out));
 }
 
+TEST_CASE("FrameSlot recycles dropped NV12 capacity") {
+  FrameSlot slot;
+  FramePayload a;
+  a.nv12.assign(6, 1);
+  a.frame_index = 1;
+  slot.publish(std::move(a));
+  FramePayload b;
+  b.nv12.assign(6, 2);
+  b.frame_index = 2;
+  slot.publish(std::move(b));
+  std::vector<uint8_t> recycled;
+  slot.take_recycle_nv12(recycled);
+  CHECK(recycled.size() == 6);
+  CHECK(recycled[0] == 1);
+}
+
+TEST_CASE("MGF techniques idle lobby vs session chain") {
+  const std::string base =
+      "Techniques=Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx\n"
+      "TechniqueSorting=Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx\n";
+  CHECK(renodx_mgf_chain_order_ok(base));
+  auto idle = apply_mgf_techniques_for_phase(base, false);
+  CHECK_FALSE(renodx_mgf_chain_order_ok(idle));
+  {
+    const auto pos = idle.find("Techniques=");
+    REQUIRE(pos != std::string::npos);
+    const auto end = idle.find('\n', pos);
+    const std::string line = idle.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+    CHECK(line == "Techniques=");
+  }
+  auto sess = apply_mgf_techniques_for_phase(idle, true);
+  CHECK(renodx_mgf_chain_order_ok(sess));
+}
+
 TEST_CASE("HitchDetector threshold and log cap") {
   HitchDetector d(25.0, 8);
   int logged = 0;
@@ -93,6 +127,29 @@ TEST_CASE("StatsWindow600 fps") {
   CHECK(out->frames == 600);
   CHECK(out->fps > 59.0);
   CHECK(out->fps < 61.0);
+  CHECK(out->stalls == 0);
+}
+
+TEST_CASE("stats warmup excludes boot frames from window") {
+  CHECK_FALSE(stats_frame_counts_toward_window(1));
+  CHECK_FALSE(stats_frame_counts_toward_window(kStatsWarmupFrames));
+  CHECK(stats_frame_counts_toward_window(kStatsWarmupFrames + 1));
+  CHECK(kStatsWarmupFrames == 120);
+
+  // Boot hitch + steady: only steady samples enter the window → ~60 fps.
+  StatsWindow600 w(600);
+  std::optional<Stats600> out;
+  uint64_t presented = 0;
+  for (uint64_t i = 0; i < kStatsWarmupFrames + 600; ++i) {
+    ++presented;
+    const double interval = (presented == 6) ? 2500.0 : 16.666;
+    if (!stats_frame_counts_toward_window(presented)) continue;
+    out = w.push(interval, 8.0, 1.0, interval >= 25.0);
+  }
+  REQUIRE(out.has_value());
+  CHECK(out->fps > 59.0);
+  CHECK(out->fps < 61.0);
+  CHECK(out->max_interval_ms < 100.0);
   CHECK(out->stalls == 0);
 }
 
@@ -670,8 +727,10 @@ TEST_CASE("session notices for FG enable/up and NR on/off") {
   CHECK(session_notice_fg_on().find("Frame Gen ON") != std::string::npos);
   CHECK(session_notice_fg_multiplier_up(3).find("x3") != std::string::npos);
   CHECK(session_notice_nr_on().find("ON") != std::string::npos);
+  CHECK(session_notice_nr_on().find("Confirmado") != std::string::npos);
   CHECK(session_notice_nr_on().find("imagem mais bonita") != std::string::npos);
   CHECK(session_notice_nr_off().find("OFF") != std::string::npos);
+  CHECK(session_notice_nr_applying().find("Aplicando") != std::string::npos);
   {
     std::string t, d;
     session_notice_split(session_notice_nr_on(), t, d);
@@ -708,6 +767,22 @@ TEST_CASE("session_start records fg fields") {
   const std::string sum = a.summary_text(2.0);
   CHECK(sum.find("fg:") != std::string::npos);
   CHECK(sum.find("lsfg3") != std::string::npos);
+}
+
+TEST_CASE("app_present_scale native under RenoDX (v2.0 no double-downsample)") {
+  CHECK(app_present_scale_percent(true, 50) == 100);
+  CHECK(app_present_scale_percent(true, 25) == 100);
+  CHECK(app_present_scale_percent(true, 100) == 100);
+  CHECK(app_present_scale_percent(false, 50) == 50);
+  CHECK(app_present_scale_percent(false, 75) == 75);
+  // Feed still follows UI scale; app RT stays native when RenoDX on.
+  CHECK(feed_work_resolution_for_session(50) == 50);
+  CHECK(app_present_scale_percent(true, 50) != feed_work_resolution_for_session(50));
+}
+
+TEST_CASE("runtime health detects missing renodx files") {
+  const auto empty = check_runtime_health("");
+  CHECK_FALSE(empty.renodx_complete());
 }
 
 TEST_CASE("clamp_scale_percent and defaults") {
@@ -1643,16 +1718,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(1, 1, 7));
-  CHECK(std::string(kAppVersion) == "1.1.7");
-  CHECK(std::strstr(kAppNameWithVersion, "v1.1.7") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-1.1.7");
+  CHECK(app_version_is(2, 0, 1));
+  CHECK_FALSE(app_version_is(1, 1, 7));
+  CHECK(std::string(kAppVersion) == "2.0.1");
+  CHECK(std::strstr(kAppNameWithVersion, "v2.0.1") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.0.1");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("1.1.7") != std::string::npos);
+  CHECK(lobby_t.find("2.0.1") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("1.1.7") != std::string::npos);
+  CHECK(sess_t.find("2.0.1") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 

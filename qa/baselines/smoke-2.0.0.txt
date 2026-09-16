@@ -1,0 +1,11 @@
+﻿neural rendering files: OFF
+enhance: backend=off
+capture format: NV12  color Padrao/Limitado  buf Desativado
+capture: fake  signal 2560x1440 (requested 2560x1440)
+fg: off (use --fg-x 2|3|4, PageDn toggle, PageUp cycle)
+hw info: off
+session panel: off (captura limpa)
+present sync: SYNC TEAR Present(0) ÔÇö Present(0): FPS livre / tearing possivel; present_ms baixo
+600 frames: fps=31.98 mean=31.27ms p95_e2e=14.99 p95_present=2.37 stalls=599 max=32.5 dlss=off dlss_ms=0.00
+PASS smoke frames=600
+

@@ -94,6 +94,8 @@ private:
   int opened_fourcc_ = static_cast<int>(kDefaultVideoFourcc);
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> frames_{0};
+  // Reused NV12 scratch — avoids per-frame heap churn when resolution is stable.
+  std::vector<uint8_t> nv12_scratch_;
 };
 
 std::vector<std::string> list_video_capture_devices();

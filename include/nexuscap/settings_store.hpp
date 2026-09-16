@@ -26,7 +26,7 @@ struct SessionUiFlags {
   bool hw_info = false;  // painel CPU(+C) / GPU(+C) / RAM / VRAM / PWR (abaixo de métricas)
   bool fullscreen = true;
   bool hide_panel_on_capture = true;
-  bool sync_image = false;
+  bool sync_image = true;  // VSYNC default — TEAR+ALLOW_TEARING felt shakier in A/B vs 2.0.1
 };
 
 struct PersistedSettings {
@@ -237,6 +237,14 @@ inline int scaled_extent(int dim, int scale_percent) {
   return out;
 }
 
+// v2.0: with RenoDX stack, the app presents native capture; UI scale drives ONLY
+// Feed work_resolution. Applying scale in both app RT and Feed double-downsamples
+// (soft image) without saving NV12 upload cost.
+inline int app_present_scale_percent(bool renodx_stack, int ui_scale_percent) {
+  if (renodx_stack) return 100;
+  return clamp_scale_percent(ui_scale_percent);
+}
+
 // Approximate pixel ratio vs native (for perf messaging / tests). 50% → 0.25; 25% → ~0.0625.
 inline double scale_pixel_ratio(int scale_percent) {
   const double s = clamp_scale_percent(scale_percent) / 100.0;
@@ -286,6 +294,25 @@ inline bool renodx_mgf_technique_chain_ok(const std::string& chain) {
   const auto s = chain.find("DLSS5_Sharpen@DLSS5_Sharpen.fx");
   if (k == std::string::npos || f == std::string::npos || s == std::string::npos) return false;
   return k < f && f < s;
+}
+
+inline constexpr const char* kRenodxSessionTechniqueChain =
+    "Lumenite_Kernel@lumenite_Kernel.fx,DLSS5_Feed@DLSS5_Feed.fx,DLSS5_Sharpen@DLSS5_Sharpen.fx";
+
+// Lobby with RenoDX off: empty Techniques so Present stays light until Iniciar / preview ON.
+inline constexpr const char* kRenodxLobbyIdleTechniqueChain = "";
+
+inline std::string apply_mgf_techniques(std::string text, const char* chain) {
+  const char* c = chain ? chain : kRenodxSessionTechniqueChain;
+  text = apply_keyed_value(std::move(text), "Techniques=", c);
+  text = apply_keyed_value(std::move(text), "TechniqueSorting=", c);
+  return text;
+}
+
+inline std::string apply_mgf_techniques_for_phase(std::string text, bool session_or_live_preview) {
+  return apply_mgf_techniques(std::move(text),
+                              session_or_live_preview ? kRenodxSessionTechniqueChain
+                                                      : kRenodxLobbyIdleTechniqueChain);
 }
 
 inline bool renodx_mgf_chain_order_ok(const std::string& mgf_ini_or_script) {
@@ -377,6 +404,18 @@ inline int feed_work_resolution_for_session(int scale_percent) {
 
 inline int feed_work_resolution_for_lobby() { return kLobbyFeedWorkResolution; }
 
+// Quick health for lobby first-run / Iniciar (exe_dir = folder next to NexusCap.exe).
+struct RuntimeHealth {
+  bool writable = false;
+  bool has_dxgi = false;
+  bool has_renodx = false;
+  bool has_feed = false;
+  bool renodx_complete() const { return has_dxgi && has_renodx && has_feed; }
+};
+
+RuntimeHealth check_runtime_health(const std::string& exe_dir);
+bool open_app_logs_folder();  // ShellExecute logs dir
+
 // Esc from a 50% session leaves feed@50 on disk — rewrite before lobby Present.
 inline std::string apply_lobby_feed_work_resolution(std::string text) {
   return apply_feed_work_resolution(std::move(text), feed_work_resolution_for_lobby());
@@ -410,6 +449,9 @@ bool load_settings(PersistedSettings& s, const std::string& path, std::string& e
 
 // Rewrite dlss5-feed.cfg work_resolution on disk. false if missing/unreadable.
 bool sync_feed_work_resolution_file(const std::string& path, int scale_percent);
+
+// DLSS5MGF.ini Techniques: full chain for session/live preview, empty for idle lobby.
+bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_live_preview);
 
 // Write renodx_preset into dlss5-feed.cfg + ReShade.ini next to the exe.
 bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset);

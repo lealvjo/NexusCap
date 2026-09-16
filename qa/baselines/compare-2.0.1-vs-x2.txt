@@ -1,0 +1,14 @@
+﻿NexusCap 2.0.1 vs best known DLSS5 MGF X2 (same VEDO 2560x1440@60 HDMI path)
+==============================================================================
+Source X2 (prior Leo session / feed log): Feeder ~1.07 ms, FPS mostly 58-60,
+  VSync OFF, work_resolution 70-77%, Sobrepor, high priority. No instrumented
+  p95_present window like NexusCap analyze.
+
+NexusCap 2.0.1 long session 2026-09-16 (~19.5 min, sync VSYNC ON, RenoDX ON):
+  dozens of 600-frame windows at fps=59.93-59.95, mean=16.68ms
+  p95_e2e ~1.9-2.0 ms, p95_present ~2.1-2.4 ms, stalls=0, clusters=0
+  hitch_count=19 over ~20 min (no cluster storms)
+
+Edge: X2 may show slightly lower raw feeder GPU time; NexusCap wins on
+  measured end-to-end Present stability, NR boot reliability, no double-
+  downsample, lobby/FG/health UX, and long-session consistency with VSYNC.

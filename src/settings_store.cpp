@@ -12,6 +12,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shellapi.h>
 
 namespace nexuscap {
 namespace {
@@ -93,6 +94,32 @@ bool directory_is_writable(const std::string& dir) {
   CloseHandle(h);
   DeleteFileW(probe.c_str());
   return true;
+}
+
+static bool file_exists_utf8(const std::string& path) {
+  const std::wstring w = utf8_to_wide(path);
+  const DWORD a = GetFileAttributesW(w.c_str());
+  return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+RuntimeHealth check_runtime_health(const std::string& exe_dir) {
+  RuntimeHealth h;
+  h.writable = directory_is_writable(exe_dir);
+  if (!exe_dir.empty()) {
+    const std::string base = exe_dir.back() == '\\' || exe_dir.back() == '/' ? exe_dir : exe_dir + "\\";
+    h.has_dxgi = file_exists_utf8(base + "dxgi.dll");
+    h.has_renodx = file_exists_utf8(base + "renodx-dlss5.addon64");
+    h.has_feed = file_exists_utf8(base + "dlss5-feed.addon64");
+  }
+  return h;
+}
+
+bool open_app_logs_folder() {
+  const std::string logs = app_logs_dir();
+  if (logs.empty()) return false;
+  const std::wstring w = utf8_to_wide(logs);
+  const HINSTANCE r = ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  return reinterpret_cast<intptr_t>(r) > 32;
 }
 
 bool prepare_renodx_runtime_dirs(const std::string& exe_dir) {
@@ -284,6 +311,19 @@ bool sync_feed_work_resolution_file(const std::string& path, int scale_percent) 
   std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   in.close();
   text = apply_feed_work_resolution(std::move(text), scale_percent);
+  std::ofstream out(path, std::ios::trunc);
+  if (!out) return false;
+  out << text;
+  return true;
+}
+
+bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_live_preview) {
+  const std::string path = exe_dir + "\\DLSS5MGF.ini";
+  std::ifstream in(path);
+  if (!in) return false;
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  text = apply_mgf_techniques_for_phase(std::move(text), session_or_live_preview);
   std::ofstream out(path, std::ios::trunc);
   if (!out) return false;
   out << text;

@@ -7,6 +7,14 @@
 
 namespace nexuscap {
 
+// Skip RenoDX/NGX first-init hitch (~2.5s) before feeding StatsWindow600 / --frames.
+inline constexpr uint64_t kStatsWarmupFrames = 120;
+
+// presented is 1-based after ++presented in the session loop.
+inline bool stats_frame_counts_toward_window(uint64_t presented, uint64_t warmup = kStatsWarmupFrames) {
+  return presented > warmup;
+}
+
 struct Stats600 {
   uint64_t frames = 0;
   double fps = 0;

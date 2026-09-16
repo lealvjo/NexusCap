@@ -162,27 +162,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     // Lobby preview may already have NR ON in this process — never force false then pulse.
     g_nr_runtime_on = cfg.nr_runtime_on;
     g_nr_toggle_last_ms = 0;
-    // Resync from last RenoDX log line (fixes HUD vs image after prior inverted session).
-    if (cfg.enhance == EnhanceBackend::Renodx) {
-      std::ifstream lin(exe_dir / "ReShade.log", std::ios::binary);
-      if (lin) {
-        lin.seekg(0, std::ios::end);
-        const auto end = static_cast<std::streamoff>(lin.tellg());
-        const auto start = end > 65536 ? end - 65536 : std::streamoff{0};
-        lin.seekg(start);
-        const std::string tail((std::istreambuf_iterator<char>(lin)), std::istreambuf_iterator<char>());
-        const int logged = parse_reshade_nr_last_toggled(tail);
-        if (logged >= 0) {
-          g_nr_runtime_on = logged == 1;
-          cfg.nr_runtime_on = g_nr_runtime_on;
-          append_log(cfg.log_dir, std::string("nr runtime resync from ReShade.log → ") +
-                                      (g_nr_runtime_on ? "ON" : "OFF"));
-        }
-      }
-    }
+    // Do NOT resync from ReShade.log here: a prior process leaves "NR toggled OFF" on disk and
+    // a boot enable-pulse would flip NeuralUplift's already-ON runtime back to OFF.
     {
       const NeuralRuntimePlan boot = plan_neural_runtime(want_nr, g_nr_runtime_on);
-      g_nr_boot_retries = boot.need_bridge_pulse ? 180 : 0;  // ~3s @60fps for Bridge nr_ready
+      if (want_nr && !g_nr_runtime_on) {
+        // Fresh session + NeuralUplift=1: RenoDX boots NR ON. Skip Bridge pulse.
+        g_nr_boot_retries = 0;
+        g_nr_runtime_on = true;
+        cfg.nr_runtime_on = true;
+        append_log(cfg.log_dir, "nr boot: trust NeuralUplift ON (no enable-pulse)");
+      } else {
+        g_nr_boot_retries = boot.need_bridge_pulse ? 180 : 0;  // e.g. turn OFF after lobby
+      }
     }
 
     if (cfg.enhance == EnhanceBackend::Renodx) {
@@ -215,7 +207,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         append_log(cfg.log_dir, std::string("neural rendering files NR=") + (want_nr ? "ON" : "OFF") +
                                     " feed=ON (runtime pulse pending=" +
                                     std::to_string(g_nr_boot_retries > 0) + ")");
-        std::printf("neural rendering: NR=%s feed=ON (runtime starts OFF; Bridge will pulse)\n",
+        std::printf("neural rendering: NR=%s feed=ON (runtime trusts NeuralUplift; Delete=Bridge pulse)\n",
                     want_nr ? "ON" : "OFF");
       }
     } else if (sync_neural_rendering_enabled_files(exe_dir.string(), false, false)) {
@@ -260,7 +252,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     return 2;
   }
   renderer.set_vsync(cfg.sync_image);
-  renderer.set_scale_percent(cfg.scale_percent);
+  // v2.0: RenoDX → Present native; UI scale only drives Feed work_resolution.
+  const bool renodx_stack = (cfg.enhance == EnhanceBackend::Renodx);
+  renderer.set_scale_percent(app_present_scale_percent(renodx_stack, cfg.scale_percent));
   renderer.set_color_format(cfg.color_space, cfg.color_range);
 
   std::unique_ptr<IFrameEnhance> enhance;
@@ -448,6 +442,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.mini_overlay = cfg.mini_overlay;
   overlay.visible = cfg.show_overlay;
   overlay.scale_percent = cfg.scale_percent;
+  // HUD work size = Feed contract (UI scale), not app RT (native under RenoDX).
   overlay.work_w = scaled_extent(info.width > 0 ? info.width : cap_w, cfg.scale_percent);
   overlay.work_h = scaled_extent(info.height > 0 ? info.height : cap_h, cfg.scale_percent);
   overlay.renodx_on = g_nr_runtime_on;
@@ -546,7 +541,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   uint64_t stalls_since_600 = 0;
   uint64_t stalls_after_warmup = 0;
   uint64_t clusters_after_warmup = 0;
+  uint64_t steady_presented = 0;  // frames after stats warmup (drives --frames / smoke)
   bool past_warmup = false;
+  bool warmup_logged = false;
+  double max_boot_interval_ms = 0;
   double fps_smooth = 0;
   double last_dlss_ms = 0;
   bool analyze_was = false;
@@ -627,7 +625,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         if (apply_neural_rendering_state(exe_dir.string(), plan.resulting_runtime_on, &g_nr_runtime_on,
                                          /*feed_on=*/true, &g_nr_confirm, now_nr)) {
           if (g_nr_confirm.active) {
-            session_notice.push("Neural Rendering — aplicando…", clock.now_ms());
+            session_notice.push(session_notice_nr_applying(), clock.now_ms());
             append_log(cfg.log_dir, "neural rendering pulse sent (await log confirm)");
           } else {
             overlay.renodx_on = g_nr_runtime_on;
@@ -853,6 +851,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.frames = presented;
 
     const bool is_stall = interval >= cfg.hitch_threshold_ms;
+    if (!stats_frame_counts_toward_window(presented)) {
+      max_boot_interval_ms = (std::max)(max_boot_interval_ms, interval);
+    } else if (!warmup_logged) {
+      warmup_logged = true;
+      past_warmup = true;
+      char wbuf[192];
+      std::snprintf(wbuf, sizeof(wbuf),
+                    "stats warmup done frames=%llu max_boot_interval=%.1f (excluded from 600-window)",
+                    static_cast<unsigned long long>(kStatsWarmupFrames), max_boot_interval_ms);
+      append_log(cfg.log_dir, wbuf);
+      std::printf("%s\n", wbuf);
+    }
+
     if (is_stall) {
       ++stalls_since_600;
       if (past_warmup) ++stalls_after_warmup;
@@ -875,26 +886,28 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     analyze.frame_sample(now, presented, 0, 0, present_ms, overlay.e2e_ms, interval, slot.dropped(),
                          overlay.e2e_ms);
 
-    if (auto s = stats600.push(interval, overlay.e2e_ms, present_ms, is_stall)) {
-      hitch.reset_window_log_cap();
-      analyze.stats_600(*s, now, last_dlss_ms, enhance->enabled());
-      past_warmup = true;
-      overlay.has_stats600 = true;
-      overlay.s600_fps = s->fps;
-      overlay.s600_p95_e2e = s->p95_e2e_ms;
-      overlay.s600_p95_present = s->p95_present_ms;
-      overlay.s600_max_interval = s->max_interval_ms;
-      overlay.s600_stalls = s->stalls;
-      stalls_since_600 = 0;
-      char buf[320];
-      std::snprintf(buf, sizeof(buf),
-                    "600 frames: fps=%.2f mean=%.2fms p95_e2e=%.2f p95_present=%.2f stalls=%llu max=%.1f dlss=%s "
-                    "dlss_ms=%.2f",
-                    s->fps, s->mean_interval_ms, s->p95_e2e_ms, s->p95_present_ms,
-                    static_cast<unsigned long long>(s->stalls), s->max_interval_ms,
-                    enhance->enabled() ? "on" : "off", last_dlss_ms);
-      append_log(cfg.log_dir, buf);
-      std::printf("%s\n", buf);
+    if (stats_frame_counts_toward_window(presented)) {
+      ++steady_presented;
+      if (auto s = stats600.push(interval, overlay.e2e_ms, present_ms, is_stall)) {
+        hitch.reset_window_log_cap();
+        analyze.stats_600(*s, now, last_dlss_ms, enhance->enabled());
+        overlay.has_stats600 = true;
+        overlay.s600_fps = s->fps;
+        overlay.s600_p95_e2e = s->p95_e2e_ms;
+        overlay.s600_p95_present = s->p95_present_ms;
+        overlay.s600_max_interval = s->max_interval_ms;
+        overlay.s600_stalls = s->stalls;
+        stalls_since_600 = 0;
+        char buf[320];
+        std::snprintf(buf, sizeof(buf),
+                      "600 frames: fps=%.2f mean=%.2fms p95_e2e=%.2f p95_present=%.2f stalls=%llu max=%.1f dlss=%s "
+                      "dlss_ms=%.2f",
+                      s->fps, s->mean_interval_ms, s->p95_e2e_ms, s->p95_present_ms,
+                      static_cast<unsigned long long>(s->stalls), s->max_interval_ms,
+                      enhance->enabled() ? "on" : "off", last_dlss_ms);
+        append_log(cfg.log_dir, buf);
+        std::printf("%s\n", buf);
+      }
     }
 
     overlay.sync_image = renderer.vsync();
@@ -923,7 +936,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (session_panel.visible()) session_panel.reposition();
 
     if ((cfg.smoke || cfg.frames_limited || cfg.selftest_dlss) &&
-        static_cast<int>(presented) >= cfg.smoke_frames) {
+        static_cast<int>(steady_presented) >= cfg.smoke_frames) {
       g_running = false;
     }
     if (cfg.selftest_cap && presented >= 180) {
@@ -974,11 +987,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     {
       wchar_t exe_path[MAX_PATH]{};
       GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-      const fs::path feed_cfg = fs::path(exe_path).parent_path() / "dlss5-feed.cfg";
+      const fs::path exe_dir = fs::path(exe_path).parent_path();
+      const fs::path feed_cfg = exe_dir / "dlss5-feed.cfg";
       if (fs::exists(feed_cfg)) {
         sync_feed_work_resolution_file(feed_cfg.string(), feed_work_resolution_for_lobby());
         append_log(cfg.log_dir, "lobby feed work_resolution → 100 (isolate from session scale)");
       }
+      sync_mgf_techniques_for_phase(exe_dir.string(), cfg.enhance == EnhanceBackend::Renodx);
     }
     append_log(cfg.log_dir, "session end → lobby (Esc)");
     std::printf("back to lobby\n");

@@ -102,6 +102,8 @@ private:
   HWND owner_ = nullptr;
   OverlayState state_{};
   bool visible_ = true;
+  DWORD last_paint_tick_ = 0;
+  std::string last_notice_;
 };
 
 // Thin topmost strip when "Ocultar lobby na captura" is OFF — proves the toggle does something.

@@ -1,19 +1,23 @@
-NexusCap — avisos de distribuição
+NexusCap — avisos de distribuicao
 =================================
 
-O instalador NÃO inclui o Lossless Scaling (Steam).
-Frame Gen é opcional: instale o Lossless Scaling à parte; o NexusCap tenta
+O instalador NAO inclui o Lossless Scaling (Steam).
+Frame Gen e opcional: instale o Lossless Scaling a parte; o NexusCap tenta
 encontrar o LosslessScaling.exe automaticamente ou via Ajustes → Pasta.
 
-Pasta de instalação (importante):
-  O padrão é %LOCALAPPDATA%\NexusCap — pasta do usuário, gravável.
+Pasta de instalacao (importante):
+  O padrao e %LOCALAPPDATA%\NexusCap — pasta do usuario, gravavel.
   RenoDX/ReShade precisam gravar ReShade.ini, dlss5-feed.cfg e cache.
-  NÃO instale em Program Files: o Windows bloqueia a gravação, presets
-  falham e o app pode fechar ao iniciar a sessão.
+  NAO instale em Program Files: o Windows bloqueia a gravacao, presets
+  falham e o app pode fechar ao iniciar a sessao.
 
-Incluídos (quando presentes no build):
-  - ReShade / RenoDX / dlss5-feed / dlss5-bridge (enhance Neural Rendering)
+Incluidos (quando presentes no build):
+  - ReShade / RenoDX Krish (renodx-dlss5) / dlss5-feed / dlss5-bridge
   - NVIDIA Streamline / nvngx (caminho Streamline opcional)
+  - NAO inclui ShortFuse / renodx-dlss "Neural Resolution" alternativo
 
-Settings do usuário ficam em %LOCALAPPDATA%\NexusCap\ — não são removidos
-na desinstalação (preserve suas preferências).
+Settings do usuario ficam em %LOCALAPPDATA%\NexusCap\ — nao sao removidos
+na desinstalacao (preserve suas preferencias).
+
+v2.0: com RenoDX, escala do CFG afeta so o Feed (Present nativo).
+Botao "Abrir logs" no CFG aponta para %LOCALAPPDATA%\NexusCap\logs.

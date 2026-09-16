@@ -44,11 +44,14 @@ O `.exe` do setup **não fica no git** (é grande demais); fica na **Release** d
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
 
-### Qualidade e latência (2.0)
+### Qualidade e latência (2.0.1)
 
 - Stack enhance: **Krish `renodx-dlss5` + Feed + Bridge** (não usar builds ShortFuse / “super-anus”).
 - Guardrail: mudanças de enhance não devem piorar nitidez nem `present_ms` vs 1.1.7.
 - Com RenoDX ligado, escala UI → `work_resolution` do Feed apenas (sem double-downsample no app).
+- **VSYNC default** (`Sincronizar imagem`) — TEAR+ALLOW_TEARING ficou mais “tremido” no A/B; Present(1) no Hz do monitor.
+- NR no boot confia **NeuralUplift** (sem enable-pulse que invertia OFF).
+- Métricas smoke: **120 frames de warmup** (hitch NGX ~2,5 s) fora da janela de 600; regime steady ~**59,9 fps**, `p95_present` ~2,1–2,4 ms.
 
 ---
 
@@ -87,7 +90,7 @@ ImGui é só UI do lobby; o caminho quente (captura → Present) é C++ + D3D11.
 
 ---
 
-## Arquitetura
+## Arquitetura (2.0)
 
 ```mermaid
 flowchart TB
@@ -97,26 +100,27 @@ flowchart TB
     HDMI --> CARD
   end
 
-  subgraph APP["NexusCap · C++17"]
+  subgraph APP["NexusCap · C++17 · v2.0"]
     direction TB
-    LOBBY["Lobby ImGui<br/>preview CPU letterbox<br/>CFG / escala / presets"]
-    CAP["DShowCapture<br/>NV12 · modo · fourcc · cor"]
-    SLOT["FrameSlot<br/>fila de frames"]
-    REND["Renderer D3D11<br/>decode · scale 25–100% · Present"]
-    HUD["HUD métricas<br/>avisos FG / NR"]
-    LOBBY -.->|Iniciar| CAP
+    LOBBY["Lobby ImGui<br/>preview CPU · CFG<br/>MGF Techniques idle se RenoDX off"]
+    CAP["DShowCapture<br/>NV12 scratch + FrameSlot recycle"]
+    SLOT["FrameSlot<br/>latest-wins · ping-pong"]
+    REND["Renderer D3D11<br/>YUV→RGB · Present nativo se RenoDX<br/>scale app so sem RenoDX"]
+    HUD["HUD ~30 Hz<br/>warmup stats 120f"]
+    LOBBY -.->|Iniciar · MGF chain ON| CAP
     CARD --> CAP --> SLOT --> REND
     REND --> HUD
   end
 
-  subgraph FX["Enhance / FG · pós-Present"]
-    RENO["ReShade + RenoDX<br/>Neural Rendering · Bridge"]
-    FG["Lossless Scaling<br/>LSFG3 mira-lock flow 100"]
+  subgraph FX["Enhance / FG · no Present"]
+    FEED["dlss5-feed<br/>work_resolution = escala UI"]
+    RENO["ReShade + RenoDX NR<br/>NeuralUplift boot · Bridge Delete"]
+    FG["Lossless Scaling<br/>LSFG3 mira-lock"]
   end
 
-  REND --> RENO
+  REND --> FEED --> RENO
   REND --> FG
-  RENO --> OUT["Monitor"]
+  RENO --> OUT["Monitor · VSYNC default"]
   FG --> OUT
 
   style IN fill:#0d1b2a,stroke:#1b9aaa,color:#e8f1f2
@@ -128,15 +132,16 @@ flowchart TB
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│  LOBBY          UI · preview · settings.ini · logo          │
+│  LOBBY          UI · preview · settings.ini · health/logs   │
 ├─────────────────────────────────────────────────────────────┤
 │  SESSION        hotkeys · Esc→lobby · analyze · avisos      │
 ├─────────────────────────────────────────────────────────────┤
-│  CAPTURE        DirectShow · modos 1080p/1440p/4K · NV12    │
+│  CAPTURE        DirectShow · NV12 · FrameSlot recycle       │
 ├─────────────────────────────────────────────────────────────┤
-│  RENDER         D3D11 decode + scale · Present DXGI         │
+│  RENDER         D3D11 decode · Present DXGI (VSYNC default) │
+│                 Com RenoDX: Present nativo (sem scale app)  │
 ├─────────────────────────────────────────────────────────────┤
-│  ENHANCE        RenoDX/NR  XOR  Streamline DLAA             │
+│  FEED / ENHANCE escala so no Feed · RenoDX/NR · Bridge      │
 ├─────────────────────────────────────────────────────────────┤
 │  FRAME GEN      Lossless Scaling (Steam) · perfil mira-lock │
 └─────────────────────────────────────────────────────────────┘
@@ -144,25 +149,28 @@ flowchart TB
 
 **Regra de ouro:** a captura **nunca** olha para o framebuffer já filtrado. Por isso o hitch de “capturar a própria tela” não aparece aqui.
 
+**Contrato de escala (2.0):** com RenoDX, o slider de escala **não** reduz o RT do app (evita double-downsample). Só o Feed recebe `work_resolution`. Sem RenoDX, o scale GPU do renderer continua valendo.
+
 ### Comparativo rápido
 
 | Abordagem | Caminho | Risco de hitch |
 |-----------|---------|----------------|
 | Recapturar tela/janela + filtro | sinal → app A → tela → capturador → app B | alto |
-| **NexusCap** | sinal → placa → **um** Present D3D11 (+ FX) | baixo |
+| **DLSS5 MGF X2** | VEDO → app Sobrepor + Feed/NR | baixo (bom), menos telemetria |
+| **NexusCap 2.0** | sinal → placa → **um** Present D3D11 (+ Feed/NR/FG) | baixo + métricas 600f / analyze |
 
 ---
 
 ## O que o programa faz
 
-1. **Lobby** — dispositivo HDMI/webcam, modo (resolução/FPS), formato (NV12…), cor/range, escala, RenoDX/FG na engrenagem (CFG). Preview ao vivo (decode CPU letterbox).
-2. **Iniciar processamento** — sessão: captura → decode NV12 → scale GPU → Present. RenoDX no Present; Lossless Scaling se FG ligado.
-3. **Esc** na sessão volta ao lobby. Esc no lobby **não** fecha o app (só X / Sair).
+1. **Lobby** — dispositivo HDMI/webcam, modo (resolução/FPS), formato (NV12…), cor/range, escala, RenoDX/FG na engrenagem (CFG). Preview ao vivo (decode CPU letterbox). Com RenoDX off, Techniques MGF ficam vazias (lobby leve).
+2. **Iniciar processamento** — sessão: captura → decode NV12 → Present. Com RenoDX: Present nativo + escala no Feed; sem RenoDX: scale GPU no renderer. Lossless Scaling se FG ligado.
+3. **Esc** na sessão volta ao lobby (feed volta a 100%; MGF conforme RenoDX). Esc no lobby **não** fecha o app (só X / Sair).
 
 ### O que *não* é
 
 - Não embute Lossless Scaling.
-- Preview do lobby **não** passa por RenoDX/NR (só CPU → ImGui). NR roda no Present.
+- Preview do lobby **não** passa por RenoDX/NR no ImGui (CPU → textura); o Present do lobby ainda carrega dxgi se o stack estiver ao lado do exe.
 - Com RenoDX ligado, Streamline fica off (sem processar duas vezes).
 
 ---
@@ -171,15 +179,17 @@ flowchart TB
 
 ```
 Placa HDMI (DShow)
-    → FrameSlot (NV12)
-        → Renderer D3D11 (YUV→RGB, scale 25–100%)
-            → Present (DXGI)
-                → ReShade/RenoDX (+ Neural Rendering)   [opcional]
-                → Lossless Scaling LSFG3 (mira-lock)    [opcional]
+    → FrameSlot (NV12 recycle / latest-wins)
+        → Renderer D3D11 (YUV→RGB)
+            → Present DXGI  [VSYNC default · TEAR opcional no CFG]
+                → dlss5-feed (work_resolution = escala UI)   [se RenoDX]
+                → ReShade/RenoDX Neural Rendering            [opcional]
+                → Lossless Scaling LSFG3 (mira-lock)         [opcional]
 ```
 
-- **Escala 100%** = trabalho = sinal.
-- **4K @ 50%** = captura 3840×2160, work ~1920×1080 (menos GPU). Mínimo **25%**.
+- **Com RenoDX:** Present = resolução do sinal; escala só no Feed (`work_resolution`).
+- **Sem RenoDX:** escala 25–100% no renderer (trabalho GPU).
+- **4K @ 50%** (sem RenoDX) = captura 3840×2160, work ~1920×1080. Mínimo **25%**.
 - **4K** ok se a placa listar o modo — sem teto artificial no app.
 
 ---
@@ -190,9 +200,11 @@ Placa HDMI (DShow)
 |------|--------|
 | **Dispositivo / Modo** | Combos DirectShow reais (é aqui que se escolhe a placa). |
 | **Formato / Cor / Range / Buffer** | Estilo OBS; NV12 + BT.709 + Limitado por default. |
-| **Escala** | 25–100% — resolução de *trabalho* GPU. |
+| **Escala** | 25–100% — com RenoDX: só Feed; sem RenoDX: trabalho GPU do app. |
 | **Frame Gen** | x2/x3/x4; **Pasta** se o Steam não achar o exe; **Auto** limpa override. |
 | **RenoDX / Neural Rendering** | Checkbox + presets Default / Natural / Cinematic; Delete liga/desliga NR. |
+| **Sincronizar imagem** | Default **ON** (VSYNC). Off = TEAR / Present livre. |
+| **Abrir logs** | Pasta `%LOCALAPPDATA%\NexusCap\logs`. |
 | **Atalhos** | Remapeáveis. |
 
 Avisos leves (lobby toast + HUD na sessão): ao **ligar FG**, ao **subir** o multiplicador (2→3→4), e ao **ligar/desligar** Neural Rendering. Na sessão o tip aparece mesmo se o HUD estiver oculto.
@@ -270,9 +282,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 1.1.4
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 2.0.1
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.4
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 2.0.1
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

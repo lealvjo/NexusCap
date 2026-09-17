@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gera assets/pitch/NexusCap_Pitch.pdf (v2.1.0)."""
+"""Gera assets/pitch/NexusCap_Pitch.pdf (v2.4.0)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -107,7 +107,7 @@ def footer(canvas, doc):
     canvas.saveState()
     canvas.setFillColor(MUTED)
     canvas.setFont("Helvetica", 8)
-    canvas.drawString(18 * mm, 10 * mm, "Nexus Cap v2.1.0")
+    canvas.drawString(18 * mm, 10 * mm, "Nexus Cap v2.4.0")
     canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"{doc.page}")
     canvas.restoreState()
 
@@ -121,7 +121,7 @@ def main():
         rightMargin=18 * mm,
         topMargin=16 * mm,
         bottomMargin=16 * mm,
-        title="Nexus Cap 2.1.0",
+        title="Nexus Cap 2.4.0",
         author="NexusCap",
     )
     story = []
@@ -132,7 +132,7 @@ def main():
 
     story.append(Paragraph("Nexus Cap", st["title"]))
     story.append(Paragraph("Viewer HDMI nativo · RenoDX / Neural Rendering · Frame Gen opcional", st["sub"]))
-    story.append(Paragraph("<b>Versão 2.1.0</b> — C++17 · D3D11 · DirectShow · Windows", st["sub"]))
+    story.append(Paragraph("<b>Versão 2.4.0</b> — C++17 · D3D11 · DirectShow · Windows", st["sub"]))
 
     story.append(Paragraph("O que é", st["h1"]))
     story.append(
@@ -147,29 +147,31 @@ def main():
     story.append(Paragraph("Instalação (comunidade)", st["h1"]))
     for i, line in enumerate(
         [
-            "Baixe <b>NexusCap-Setup-2.1.0.exe</b> na Release do GitHub.",
+            "Baixe <b>NexusCap-Setup-2.4.0.exe</b> na Release do GitHub.",
             "Instale em <b>%LOCALAPPDATA%\\NexusCap</b> (gravável — evite Program Files).",
             "Abra o app, escolha a placa, marque RenoDX se quiser NR (Delete na captura).",
             "Frame Gen opcional: Lossless Scaling na Steam · Page Down no CFG — única instalação extra.",
             "<b>Sincronizar imagem</b> vem ON (VSYNC) — menos tearing percebido.",
+            "<b>Ctrl+Espaço</b> mostra/esconde o HUD · reports bug/perf no CFG.",
         ],
         start=1,
     ):
         story.append(Paragraph(f"{i}. {line}", st["body"]))
 
-    story.append(Paragraph("Arquitetura 2.0", st["h1"]))
+    story.append(Paragraph("Arquitetura", st["h1"]))
     story.append(
         Paragraph(
-            "Contrato novo: com RenoDX, o Present fica <b>nativo</b> (resolução do sinal). "
+            "Com RenoDX, o Present fica <b>nativo</b> (resolução do sinal). "
             "A escala do CFG vai só para o <b>Feed</b> (<font face='Courier'>work_resolution</font>) — "
-            "sem double-downsample. FrameSlot faz recycle NV12; lobby desliga Techniques MGF se RenoDX off.",
+            "sem double-downsample. Captura <b>NV12-first</b>; lobby só lista modos com NV12; "
+            "sem fake/tela branca se o open falhar.",
             st["body"],
         )
     )
     story.append(
         Paragraph(
-            "HDMI → DirectShow → FrameSlot (recycle) → D3D11 Present (VSYNC)<br/>"
-            "&nbsp;&nbsp;&nbsp;&nbsp;→ dlss5-feed (escala) → RenoDX NR (NeuralUplift) → Lossless FG (opc.)",
+            "HDMI → DirectShow (NV12) → FrameSlot → D3D11 Present (VSYNC)<br/>"
+            "&nbsp;&nbsp;&nbsp;&nbsp;→ dlss5-feed (escala) → RenoDX NR → Lossless FG (opc.)",
             st["mono"],
         )
     )
@@ -181,27 +183,47 @@ def main():
         story.append(Paragraph("Diagrama de referência (pipeline Present + FX)", st["footer"]))
 
     story.append(PageBreak())
-    story.append(Paragraph("O que mudou no 2.1.0", st["h1"]))
+    story.append(Paragraph("O que mudou no 2.4.0", st["h1"]))
     bullets = [
-        "Mini overlay definitiva: 1 linha colorida ADV + CPU/GPU dinamicos + sparkline.",
-        "Escala so no Feed com RenoDX · Present nativo (imagem mais nitida).",
-        "NR no boot confia NeuralUplift (sem pulse que desligava o enhance).",
-        "VSYNC default apos A/B (TEAR + ALLOW_TEARING sentia mais tremido).",
-        "Warmup de 120 frames nas metricas (hitch NGX ~2,5 s fora do fps medio).",
-        "Setup completo para a comunidade — so Lossless Scaling e extra (FG opcional).",
+        "Captura NV12-first · rejeita downscale silencioso · sem fake no lobby.",
+        "Hitch / STABLE do overlay escalam com o FPS da captura.",
+        "Latencia clara: present+NR ≈ processamento c/ DLSS5 (~2 ms) · cap = captura pura.",
+        "Mini overlay / HUD / reports · Ctrl+Espaco · Setup completo (FG via Steam).",
     ]
     for b in bullets:
         story.append(Paragraph(f"• {b}", st["body"]))
 
-    story.append(Paragraph("Métricas (HDMI real VEDO 1440p60)", st["h1"]))
+    story.append(Paragraph("Latencia (qualquer modo · escala 100%)", st["h1"]))
+    story.append(
+        Paragraph(
+            "Com <b>DLSS5/NR ativo</b>, o <b>present</b> (todo o processamento no Present) fica tipicamente em "
+            "<b>~2 ms</b>. <b>cap</b> e so a captura pura no app (~1–2 ms). Sem jargao e2e.",
+            st["body"],
+        )
+    )
     data = [
-        [Paragraph("<b>Métrica</b>", st["body"]), Paragraph("<b>2.1.0 (base 2.0.1)</b>", st["body"])],
-        ["fps steady (janela 600)", "~59,94"],
-        ["p95 present / e2e", "~2,1–2,4 / ~1,9–2,0 ms"],
-        ["stalls / clusters", "~0 / 0 no regime"],
-        ["duração validada", "~19,5 min · hitch baixo"],
+        [
+            Paragraph("<b>Metrica</b>", st["body"]),
+            Paragraph("<b>O que e</b>", st["body"]),
+            Paragraph("<b>Tipico</b>", st["body"]),
+        ],
+        [
+            Paragraph("<b>present + NR</b>", st["body"]),
+            "Processamento no Present com DLSS5/RenoDX ligado",
+            "~2 ms (2–4 ms)",
+        ],
+        [
+            Paragraph("<b>cap</b>", st["body"]),
+            "Captura pura no app (sem o hook NR)",
+            "~1–2 ms",
+        ],
+        [
+            "Budget do sinal",
+            "Intervalo HDMI (~16 ms @60 / ~33 ms @30)",
+            "cabe folgado",
+        ],
     ]
-    t = Table(data, colWidths=[70 * mm, 90 * mm])
+    t = Table(data, colWidths=[32 * mm, 85 * mm, 48 * mm])
     t.setStyle(
         TableStyle(
             [
@@ -216,15 +238,22 @@ def main():
         )
     )
     story.append(t)
-    story.append(Spacer(1, 4 * mm))
-
-    story.append(Paragraph("vs DLSS5 MGF X2 (melhor sessão conhecida)", st["h2"]))
+    story.append(Spacer(1, 3 * mm))
     story.append(
         Paragraph(
-            "X2: caminho curto Sobrepor + feeder ~1,07 ms, FPS ~58–60, VSync off — excelente feeling. "
-            "NexusCap 2.1.0: Present medido estável com VSYNC, NR boot confiável, sem double-scale, "
-            "mini overlay completa, lobby/CFG/FG/logs e telemetria 600f. No pacote produto + "
-            "estabilidade de sessão longa, o Cap leva; feeder ms cru ainda pode favorecer o X2.",
+            "Mini overlay: <font face='Courier'>p 2.1ms+NR · e2e 1.2</font> · "
+            "HUD F3: <font face='Courier'>present … (+RenoDX/NR)</font>",
+            st["body"],
+        )
+    )
+
+    story.append(Paragraph("vs DLSS5 MGF X2", st["h2"]))
+    story.append(
+        Paragraph(
+            "X2: caminho curto Sobrepor + feeder — feeling forte, mas Present/swapchain e "
+            "metrônomo do Feeder geravam stalls em lote. NexusCap: mesmo enhance no Present, "
+            "Present mais limpo (VSYNC nosso), telemetria, hitch dinâmico e latência explícita "
+            "no HUD — produto + sessão estável.",
             st["body"],
         )
     )

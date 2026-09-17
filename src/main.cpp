@@ -10,6 +10,7 @@
 #include "nexuscap/enhance.hpp"
 #include "nexuscap/frametime.hpp"
 #include "nexuscap/hitch.hpp"
+#include "nexuscap/live_mode.hpp"
 #include "nexuscap/lobby.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/renderer.hpp"
@@ -499,6 +500,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset);
   overlay.sync_image = cfg.sync_image;
   overlay.hw_info = cfg.hw_info;
+  const bool live_unlocked = live_mode_unlocked();
+  const bool live_active = live_overlay_active(live_unlocked, cfg.live_overlay);
+  overlay.live_overlay = live_active;
+  overlay.live_console = cfg.live_console;
+  if (live_active) {
+    // Live owns the HUD surface — suppress mini burn + ADV twin.
+    overlay.mini_overlay = false;
+  }
   g_overlay = cfg.show_overlay;
   SessionNotice session_notice;
   // Soft tip on enter only when CFG asked to start with FG on.
@@ -512,7 +521,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
   MetricsHud hud;
   hud.create(hwnd, hi);
-  hud.update(overlay);  // size + show advanced panel immediately on Iniciar
+  LiveOverlay live;
+  if (live_active) {
+    live.create(hwnd, hi);
+    live.set_console(cfg.live_console);
+    live.update(overlay);
+  } else {
+    hud.update(overlay);  // size + show advanced panel immediately on Iniciar
+  }
 
   SystemMetricsSampler hw_sampler;
   const bool sample_hw = cfg.hw_info || cfg.mini_overlay;
@@ -538,7 +554,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.cpu_name = hw.cpu_name;
     overlay.gpu_name = hw.gpu_name;
     overlay.hw_info = cfg.hw_info;
-    hud.update(overlay);
+    if (live_active) live.update(overlay);
+    else hud.update(overlay);
     std::printf("hw sample: ON%s", cfg.hw_info ? " (painel)" : " (mini)");
     if (!hw.cpu_name.empty() || !hw.gpu_name.empty()) {
       std::printf(" [%s / %s]", hw.cpu_name.empty() ? "CPU" : hw.cpu_name.c_str(),
@@ -633,6 +650,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (fg.state().status == FgStatus::Missing || fg.state().exe_path.empty()) {
       std::printf("SKIP selftest-fg: LosslessScaling.exe not found\n");
       session_panel.destroy();
+      live.destroy();
       hud.destroy();
       renderer.set_enhance(nullptr);
       enhance->shutdown();
@@ -644,6 +662,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       std::printf("FAIL selftest-fg: ensure_process %s\n", ferr.c_str());
       fg.shutdown();
       session_panel.destroy();
+      live.destroy();
       hud.destroy();
       return 7;
     }
@@ -652,6 +671,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     fg.shutdown();
     std::printf("PASS selftest-fg\n");
     session_panel.destroy();
+    live.destroy();
     hud.destroy();
     renderer.set_enhance(nullptr);
     enhance->shutdown();
@@ -932,7 +952,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     double present_ms = 0;
     overlay.visible = g_overlay;
     overlay.advanced_metrics = cfg.advanced_metrics;
-    overlay.mini_overlay = cfg.mini_overlay;
+    overlay.mini_overlay = live_active ? false : cfg.mini_overlay;
+    overlay.live_overlay = live_active;
+    overlay.live_console = cfg.live_console;
     overlay.analyze_on = analyze_on;
     overlay.frame_ms = interval;
     overlay.e2e_ms = now - frame.cap_qpc_ms;
@@ -1075,7 +1097,21 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       overlay.cpu_name = hw.cpu_name;
       overlay.gpu_name = hw.gpu_name;
     }
-    hud.update(overlay);
+    if (live_active) {
+      live.update(overlay);
+      if (live.take_console_changed()) {
+        cfg.live_console = live.console();
+        overlay.live_console = cfg.live_console;
+        PersistedSettings ps = default_settings();
+        std::string serr;
+        load_settings(ps, settings_default_path(), serr);
+        ps.ui.live_overlay = true;
+        ps.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
+        save_settings(ps, settings_default_path(), serr);
+      }
+    } else {
+      hud.update(overlay);
+    }
     if (session_panel.visible()) session_panel.reposition();
 
     {
@@ -1116,6 +1152,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   }
 
   session_panel.destroy();
+  live.destroy();
   hud.destroy();
   fg.shutdown();
   if (analyze_was || analyze.line_count() > 1) {
@@ -1251,6 +1288,8 @@ int main(int argc, char** argv) {
     cfg.hw_info = settings.ui.hw_info;
     cfg.hide_panel_on_capture = settings.ui.hide_panel_on_capture;
     cfg.sync_image = settings.ui.sync_image;
+    cfg.live_overlay = settings.ui.live_overlay;
+    cfg.live_console = static_cast<int>(nexuscap::parse_live_console(settings.ui.live_console));
     cfg.exclusive_fullscreen = settings.ui.fullscreen;
     if (settings.fg_enabled) {
       cfg.fg_multiplier = nexuscap::armed_fg_multiplier(true, settings.fg_multiplier);
@@ -1293,6 +1332,9 @@ int main(int argc, char** argv) {
     // Delete mid-session must stick after Esc → lobby (NR flag), but keep RenoDX loaded.
     apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == nexuscap::EnhanceBackend::Renodx,
                                   settings);
+    settings.ui.live_overlay = cfg.live_overlay;
+    settings.ui.live_console =
+        nexuscap::live_console_key(nexuscap::clamp_live_console(cfg.live_console));
     {
       std::string err;
       nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);

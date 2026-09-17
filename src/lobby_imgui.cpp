@@ -1,3 +1,4 @@
+#include "nexuscap/live_mode.hpp"
 #include "nexuscap/lobby.hpp"
 #include "nexuscap/audio.hpp"
 #include "nexuscap/audio_select.hpp"
@@ -588,6 +589,8 @@ void draw_preview_mute_button(PersistedSettings& settings, ImVec2 img_min, ImVec
 void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPreview& preview,
                               ImVec2 band_min, ImVec2 band_max, ImVec2 img_min, ImVec2 img_max) {
   if (!settings.ui.show_fps) return;
+  // Live overlay owns session HUD — keep lobby preview clear of mini/ADV twin.
+  if (live_mode_unlocked() && settings.ui.live_overlay) return;
 
   LobbyHudPreviewLines hud = make_lobby_hud_preview_lines(settings, preview.fps_ema);
   if (hud.count <= 0) return;
@@ -1274,8 +1277,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     if (ImGui::Checkbox("Mini overlay (barra topo)", &settings.ui.mini_overlay)) {
       if (settings.ui.mini_overlay) settings.ui.advanced_metrics = false;
     }
-    ImGui::TextDisabled(settings.ui.mini_overlay ? "  -> 2 linhas (ADV + FT/HW/graph)"
-                                                 : "  -> HUD multi-linha");
+    ImGui::TextDisabled(settings.ui.mini_overlay ? "  -> 2 linhas · lat cap/present(+NR) · FT/L600/HW"
+                                                 : "  -> HUD multi-linha · latencia cap + present");
+    if (settings.ui.mini_overlay) {
+      ImGui::TextDisabled("  present+NR ≈ processamento c/ DLSS5 (~2ms) · cap = captura pura");
+    }
 
     ImGui::BeginDisabled(settings.ui.mini_overlay);
     ImGui::Checkbox("Metricas avancadas", &settings.ui.advanced_metrics);
@@ -1288,6 +1294,33 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
     ImGui::TextDisabled(settings.ui.sync_image ? "  -> SYNC VSYNC" : "  -> SYNC TEAR");
+    if (live_mode_unlocked()) {
+      ImGui::Checkbox("Overlay live", &settings.ui.live_overlay);
+      if (settings.ui.live_overlay) {
+        LiveConsole cur = parse_live_console(settings.ui.live_console);
+        const char* preview = live_console_label(cur);
+        auto console_imcol = [](LiveConsole c) -> ImVec4 {
+          const COLORREF rgb = live_console_color(c);
+          return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
+        };
+        ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
+        const bool open = ImGui::BeginCombo("Console##live", preview);
+        ImGui::PopStyleColor();
+        if (open) {
+          const LiveConsole opts[] = {LiveConsole::Ps5, LiveConsole::XboxSs, LiveConsole::Switch2};
+          for (LiveConsole o : opts) {
+            const bool selected = (o == cur);
+            ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
+            if (ImGui::Selectable(live_console_label(o), selected)) {
+              settings.ui.live_console = live_console_key(o);
+            }
+            ImGui::PopStyleColor();
+            if (selected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+      }
+    }
     ImGui::Checkbox("Reportar bug", &settings.ui.bug_report);
     ImGui::TextDisabled(settings.ui.bug_report ? "  -> modo diagnostico (report/*.txt)"
                                                : "  -> off (sem overhead)");

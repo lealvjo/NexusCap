@@ -21,6 +21,8 @@ nexuscap.log
 .env.*
 *.pem
 credentials.json
+live.on
+**/live.on
 
 # OS junk
 Thumbs.db

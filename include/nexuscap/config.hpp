@@ -35,6 +35,8 @@ struct AppConfig {
   bool sync_image = true;  // vsync Present — default after 2.0.1 A/B (TEAR felt shakier)
   bool bug_report = false;
   bool perf_report = false;
+  bool live_overlay = false;  // secret right-side overlay (requires live.on)
+  int live_console = 0;       // LiveConsole: 0=ps5, 1=xbox_ss, 2=switch2
   int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // Default / Natural / Cinematic
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists

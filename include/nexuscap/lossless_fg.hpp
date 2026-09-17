@@ -225,8 +225,14 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   }
 
   push_sep();
-  char lat[64]{};
-  std::snprintf(lat, sizeof(lat), "p %.1f · e2e %.1f", present_ms, e2e_ms);
+  char lat[80]{};
+  // present = Present() wall time — includes Feed + RenoDX/NR when ON (~2ms tipico).
+  // cap = captura pura no app (nao inclui o hook NR).
+  if (dlss5_on) {
+    std::snprintf(lat, sizeof(lat), "cap %.1f · present %.1fms+NR", e2e_ms, present_ms);
+  } else {
+    std::snprintf(lat, sizeof(lat), "cap %.1f · present %.1fms", e2e_ms, present_ms);
+  }
   push(lat, 120, 255, 160);
 
   push_sep();

@@ -31,6 +31,9 @@ struct SessionUiFlags {
   bool preview_mute = false;  // lobby preview audio mute (icon on preview)
   bool bug_report = false;    // session → report/bug_TIMESTAMP.txt
   bool perf_report = false;   // session → performance/performance_TIMESTAMP.txt
+  // Secret live overlay (UI only if live.on gate unlocked). Console: ps5|xbox_ss|switch2.
+  bool live_overlay = false;
+  std::string live_console = "ps5";
 };
 
 struct PersistedSettings {

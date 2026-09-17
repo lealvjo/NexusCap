@@ -12,6 +12,7 @@
 #include "nexuscap/frame_slot.hpp"
 #include "nexuscap/frametime.hpp"
 #include "nexuscap/hitch.hpp"
+#include "nexuscap/live_mode.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/session_report.hpp"
 #include "nexuscap/settings_store.hpp"
@@ -688,8 +689,8 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(a, "cap|FG") != nullptr);
   CHECK(std::strstr(a, "NR ON") != nullptr);
   CHECK(std::strstr(a, "VSYNC") != nullptr);
-  CHECK(std::strstr(a, "p 2.2") != nullptr);
-  CHECK(std::strstr(a, "e2e 8.5") != nullptr);
+  CHECK(std::strstr(a, "present 2.2ms+NR") != nullptr);
+  CHECK(std::strstr(a, "cap 8.5") != nullptr);
   CHECK(std::strstr(a, "st2/cl1") != nullptr);
   CHECK(std::strstr(a, "frm 900") != nullptr);
   CHECK(std::strstr(a, "drop 5") != nullptr);
@@ -1071,6 +1072,8 @@ TEST_CASE("settings ini round-trip") {
   s.ui.fullscreen = false;
   s.ui.hide_panel_on_capture = false;
   s.ui.sync_image = true;
+  s.ui.live_overlay = true;
+  s.ui.live_console = "xbox_ss";
   s.enhance_renodx = false;
   s.renodx_preset = static_cast<int>(RenodxVisualPreset::Cinematic);
   const std::string text = serialize_settings_ini(s);
@@ -1088,6 +1091,8 @@ TEST_CASE("settings ini round-trip") {
   CHECK_FALSE(out.ui.fullscreen);
   CHECK_FALSE(out.ui.hide_panel_on_capture);
   CHECK(out.ui.sync_image);
+  CHECK(out.ui.live_overlay);
+  CHECK(out.ui.live_console == "xbox_ss");
   CHECK_FALSE(out.enhance_renodx);
   CHECK(out.renodx_preset == static_cast<int>(RenodxVisualPreset::Cinematic));
   // Legacy auto_start key must not break parse / must be ignored.
@@ -1892,17 +1897,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(2, 4, 0));
+  CHECK(app_version_is(2, 4, 1));
   CHECK_FALSE(app_version_is(2, 0, 1));
-  CHECK(std::string(kAppVersion) == "2.4.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v2.4.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.4.0");
+  CHECK(std::string(kAppVersion) == "2.4.1");
+  CHECK(std::strstr(kAppNameWithVersion, "v2.4.1") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.4.1");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("2.4.0") != std::string::npos);
+  CHECK(lobby_t.find("2.4.1") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("2.4.0") != std::string::npos);
+  CHECK(sess_t.find("2.4.1") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2569,6 +2574,77 @@ TEST_CASE("SessionReportWriter writes unique files when started") {
 
   SessionReportWriter noop;
   CHECK_FALSE(noop.active());
+}
+
+TEST_CASE("live console enum parse/label/color") {
+  CHECK(parse_live_console("ps5") == LiveConsole::Ps5);
+  CHECK(parse_live_console("") == LiveConsole::Ps5);
+  CHECK(parse_live_console("xbox_ss") == LiveConsole::XboxSs);
+  CHECK(parse_live_console("switch2") == LiveConsole::Switch2);
+  CHECK(std::string(live_console_key(LiveConsole::Ps5)) == "ps5");
+  CHECK(std::string(live_console_key(LiveConsole::XboxSs)) == "xbox_ss");
+  CHECK(std::string(live_console_key(LiveConsole::Switch2)) == "switch2");
+  CHECK(std::string(live_console_label(LiveConsole::Ps5)) == "PS5");
+  CHECK(std::string(live_console_label(LiveConsole::XboxSs)) == "Xbox Series S");
+  CHECK(std::string(live_console_label(LiveConsole::Switch2)) == "Switch 2");
+  CHECK(live_console_color(LiveConsole::Ps5) == RGB(0, 55, 145));
+  CHECK(live_console_color(LiveConsole::XboxSs) == RGB(16, 124, 16));
+  CHECK(live_console_color(LiveConsole::Switch2) == RGB(230, 0, 18));
+  CHECK(clamp_live_console(-1) == LiveConsole::Ps5);
+  CHECK(clamp_live_console(99) == LiveConsole::Ps5);
+}
+
+TEST_CASE("live mode gate requires file path") {
+  CHECK_FALSE(live_mode_unlocked_at(""));
+  CHECK_FALSE(live_mode_unlocked_at("C:\\this\\path\\should\\not\\exist\\live.on"));
+  CHECK_FALSE(live_overlay_active(false, true));
+  CHECK_FALSE(live_overlay_active(true, false));
+  CHECK(live_overlay_active(true, true));
+
+  namespace fs = std::filesystem;
+  const auto dir = fs::temp_directory_path() / "nexuscap_live_gate_test";
+  fs::create_directories(dir);
+  const auto path = dir / "live.on";
+  {
+    std::ofstream o(path.string());
+    o << "1\n";
+  }
+  CHECK(live_mode_unlocked_at(path.string()));
+  fs::remove(path);
+  CHECK_FALSE(live_mode_unlocked_at(path.string()));
+  fs::remove_all(dir);
+}
+
+TEST_CASE("live fps line shows FG bar when on") {
+  char line[64]{};
+  format_live_fps_line(line, sizeof(line), 60.0, 240.0, true, 4);
+  CHECK(std::string(line) == "60.0 | 240.0");
+  format_live_fps_line(line, sizeof(line), 59.9, 0.0, false, 2);
+  CHECK(std::string(line) == "59.9");
+  format_live_dlss5_line(line, sizeof(line), true);
+  CHECK(std::string(line) == "DLSS 5 ON");
+  format_live_dlss5_line(line, sizeof(line), false);
+  CHECK(std::string(line) == "DLSS 5 OFF");
+}
+
+TEST_CASE("apply_persisted copies live overlay flags") {
+  PersistedSettings s = default_settings();
+  s.ui.live_overlay = true;
+  s.ui.live_console = "switch2";
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.live_overlay);
+  CHECK(cfg.live_console == static_cast<int>(LiveConsole::Switch2));
+}
+
+TEST_CASE("unlocked false keeps live setting inert for overlay_active") {
+  // Setting may persist on disk, but without live.on the overlay must stay inactive.
+  PersistedSettings s = default_settings();
+  s.ui.live_overlay = true;
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.live_overlay);
+  CHECK_FALSE(live_overlay_active(false, cfg.live_overlay));
 }
 
 

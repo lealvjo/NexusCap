@@ -4,11 +4,11 @@
   <img src="assets/logo.png" alt="NexusCap" width="160" />
 </p>
 
-**Viewer nativo de captura HDMI** — sinal direto da placa (DirectShow), enhance no Present (**RenoDX / Neural Rendering**), Frame Gen opcional (**Lossless Scaling**), lobby com preview e CFG.
+**Viewer nativo de captura HDMI** — sinal direto da placa (DirectShow), **DLSS 5 / Neural Rendering** no Present (já no setup), Frame Gen opcional (**Lossless Scaling**), lobby com preview e CFG.
 
 | | |
 |---|---|
-| **Versão** | `2.4.0` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `2.4.1` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-2.4.0.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-2.4.1.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-2.4.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
+1. Instalar `NexusCap-Setup-2.4.1.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -43,7 +43,7 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-2.4.0.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-2.4.1.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -53,19 +53,33 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
 
-### Qualidade e latência (2.4.0)
+### Qualidade e latência (2.4.1)
 
 - Captura **NV12-first**; rejeita downscale silencioso (ex.: 4K60 → 1080p) — sem fake/tela branca no lobby.
 - Lobby lista só modos que anunciam NV12; falha de open volta ao lobby (sem fallback fake).
-- Hitch / overlay **STABLE** escalam com o FPS da captura (`25×60/fps`) — sem falso instável em 4K30.
-- Probe de hardware: `nexuscap_probe.exe` (dev) para validar modos reais da placa.
+- Hitch / overlay **STABLE** escalam com o FPS da captura (`25×60/fps`) — sem falso instável em 30 fps.
+- **Latência no HUD (qualquer modo · escala/work 100%):**
+  - **`present` (+NR/DLSS5)** = processamento no Present **com enhance ligado** — tipicamente **~1,5–2 ms** (sessão real 1440p60).
+  - **`cap`** = captura pura no app — tipicamente **~1 ms**.
+  - Os dois cabem folgados no intervalo do sinal (~16 ms @60 / ~33 ms @30).
+- Mini overlay: `cap … · present …ms+NR` · HUD F3: `present … (+NR/DLSS5)`.
+- Instalador **Release** sem janela preta de CMD (só GUI).
+
+### Prints (God of War · 1440p60 · 100%)
+
+| | |
+|---|---|
+| Sessão + HUD (NR ON, FG x4) | ![sessão NR](assets/pitch/print_session_nr_on.jpg) |
+| COM NR / DLSS5 | ![NR on](assets/pitch/print_compare_nr_on.jpg) |
+| SEM NR / DLSS5 | ![NR off](assets/pitch/print_compare_nr_off.jpg) |
+
 - Stack enhance: **Krish `renodx-dlss5` + Feed + Bridge** (não usar builds ShortFuse / “super-anus”).
 - Guardrail: mudanças de enhance não devem piorar nitidez nem `present_ms` vs 1.1.7.
 - Com RenoDX ligado, escala UI → `work_resolution` do Feed apenas (sem double-downsample no app).
 - **VSYNC default** (`Sincronizar imagem`) — TEAR+ALLOW_TEARING ficou mais “tremido” no A/B; Present(1) no Hz do monitor.
 - NR no boot confia **NeuralUplift** (sem enable-pulse que invertia OFF).
 - Métricas smoke: **120 frames de warmup** (hitch NGX ~2,5 s) fora da janela de 600; regime steady ~**59,9 fps**, `p95_present` ~2,1–2,4 ms.
-- **Mini overlay**: 2 linhas (ADV + FT/L600/HW) com as **3 resoluções** signal→work→out@%; latência `p` / `e2e` na barra.
+- **Mini overlay**: 2 linhas · latência `cap` / `present+NR` · FT/L600/HW · 3 resoluções.
 - **Preview lobby**: áudio WASAPI + mute (S/M) no canto do preview.
 - **Ctrl+Espaço** (default, configurável em Atalhos + checkbox Ctrl): toggle do HUD na sessão.
 - **Reportar bug** → `report/bug_TIMESTAMP.txt` (eventos, hitch, `event=exception` em falhas).
@@ -300,9 +314,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 2.4.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 2.4.1
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 2.4.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 2.4.1
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

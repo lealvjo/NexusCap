@@ -85,6 +85,9 @@ struct OverlayState {
   double s600_p95_present = 0;
   double s600_max_interval = 0;
   uint64_t s600_stalls = 0;
+  // Secret live overlay (right edge). When active, mini/ADV HUD share is suppressed.
+  bool live_overlay = false;
+  int live_console = 0;  // LiveConsole
 };
 
 class MetricsHud {
@@ -147,6 +150,38 @@ private:
   HWND owner_ = nullptr;
   OverlayState state_{};
   bool visible_ = false;
+};
+
+// Secret right-edge overlay: Console / DLSS5 / FPS (+ FG bar) / frametime sparkline.
+// Per-pixel alpha (UpdateLayeredWindow) — crisp on high-DPI; click opens console picker.
+class LiveOverlay {
+public:
+  ~LiveOverlay() { destroy(); }
+  bool create(HWND owner, HINSTANCE hi);
+  void destroy();
+  void update(const OverlayState& state);
+  void set_visible(bool visible);
+  void set_console(int live_console);
+  int console() const { return console_; }
+  // True once after the user picks a console from the click menu.
+  bool take_console_changed();
+
+private:
+  static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+  void present() const;
+  void reposition();
+  void show_console_menu();
+  UINT dpi() const;
+
+  HWND hwnd_ = nullptr;
+  HWND owner_ = nullptr;
+  OverlayState state_{};
+  int console_ = 0;
+  bool console_changed_ = false;
+  bool visible_ = false;
+  DWORD last_paint_tick_ = 0;
+  mutable int layout_w_ = 420;
+  mutable int layout_h_ = 26;
 };
 
 class RendererD3D11 {

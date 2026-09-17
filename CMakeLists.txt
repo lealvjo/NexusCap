@@ -68,6 +68,20 @@ target_link_libraries(NexusCap PRIVATE nexuscap_core)
 target_compile_definitions(NexusCap PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_include_directories(NexusCap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 
+# Release/instalador: sem janela preta de CMD (assusta usuario).
+# Debug local: console ON pra ver printf/logs no terminal.
+option(NEXUSCAP_FORCE_CONSOLE "Force console even in Release (local only)" OFF)
+if(MSVC)
+  if(NEXUSCAP_FORCE_CONSOLE)
+    target_link_options(NexusCap PRIVATE /SUBSYSTEM:CONSOLE)
+  else()
+    target_link_options(NexusCap PRIVATE
+      $<$<CONFIG:Debug>:/SUBSYSTEM:CONSOLE>
+      $<$<NOT:$<CONFIG:Debug>>:/SUBSYSTEM:WINDOWS>
+      $<$<NOT:$<CONFIG:Debug>>:/ENTRY:mainCRTStartup>)
+  endif()
+endif()
+
 
 add_executable(nexuscap_tests tests/test_core.cpp)
 target_include_directories(nexuscap_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)

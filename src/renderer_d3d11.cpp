@@ -4,6 +4,7 @@
 #include "nexuscap/config.hpp"
 #include "nexuscap/display_geom.hpp"
 #include "nexuscap/dlss_options.hpp"
+#include "nexuscap/live_mode.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/system_metrics.hpp"
 
@@ -112,6 +113,7 @@ struct RendererD3D11::Impl {
   // Mini overlay burned into Present (OBS Game Capture sees it in fullscreen too).
   ComPtr<ID3D11Texture2D> hudTex;
   ComPtr<ID3D11ShaderResourceView> hudSrv;
+  ComPtr<ID3D11BlendState> hudBlend;
   int hud_w = 0;
   int hud_h = 0;
   DWORD hud_last_tick = 0;
@@ -529,7 +531,8 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   impl_->ctx->PSSetShaderResources(0, 1, null_srv);
 
   // Bake mini overlay into the swapchain so OBS Game Capture (fullscreen/window) gets it.
-  if (overlay.mini_overlay && overlay.visible) {
+  // Live overlay uses its own HWND — never burn mini into the same space.
+  if (overlay.mini_overlay && overlay.visible && !overlay.live_overlay) {
     burn_mini_overlay(overlay);
   }
 
@@ -797,6 +800,14 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
     RECT rc{0, 0, bar_w, bar_h};
     paint_mini_overlay_hdc(mem, rc, overlay);
 
+    // GDI BI_RGB leaves alpha=0 — stamp ~86% opacity so the burned bar is see-through.
+    {
+      auto* px = static_cast<uint32_t*>(bits);
+      const int n = bar_w * bar_h;
+      constexpr uint32_t kA = 220u << 24;
+      for (int i = 0; i < n; ++i) px[i] = (px[i] & 0x00FFFFFFu) | kA;
+    }
+
     D3D11_MAPPED_SUBRESOURCE map{};
     if (SUCCEEDED(impl_->ctx->Map(impl_->hudTex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
       const auto* src = static_cast<const uint8_t*>(bits);
@@ -814,6 +825,18 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
   }
 
   if (!impl_->hudSrv) return;
+  if (!impl_->hudBlend) {
+    D3D11_BLEND_DESC bd{};
+    bd.RenderTarget[0].BlendEnable = TRUE;
+    bd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    impl_->device->CreateBlendState(&bd, &impl_->hudBlend);
+  }
   D3D11_VIEWPORT vp{};
   vp.MinDepth = 0.f;
   vp.MaxDepth = 1.f;
@@ -823,6 +846,8 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
   vp.Height = static_cast<float>(bar_h);
   impl_->ctx->OMSetRenderTargets(1, impl_->rtv.GetAddressOf(), nullptr);
   impl_->ctx->RSSetViewports(1, &vp);
+  const float bf[4] = {0, 0, 0, 0};
+  if (impl_->hudBlend) impl_->ctx->OMSetBlendState(impl_->hudBlend.Get(), bf, 0xffffffff);
   impl_->ctx->VSSetShader(impl_->blitVs.Get(), nullptr, 0);
   impl_->ctx->PSSetShader(impl_->blitPs.Get(), nullptr, 0);
   ID3D11ShaderResourceView* srv[] = {impl_->hudSrv.Get()};
@@ -833,6 +858,7 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
   impl_->ctx->Draw(3, 0);
   ID3D11ShaderResourceView* null_srv[] = {nullptr};
   impl_->ctx->PSSetShaderResources(0, 1, null_srv);
+  impl_->ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
 }
 
 bool MetricsHud::create(HWND owner, HINSTANCE hi) {
@@ -846,11 +872,11 @@ bool MetricsHud::create(HWND owner, HINSTANCE hi) {
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   RegisterClassW(&wc);
 
-  // Opaque TOPMOST popup — layered (LWA_ALPHA) is often skipped by OBS Display/Game Capture.
-  // Mini overlay must appear in recordings (posts); solid bar is fine and capture-friendly.
-  hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kHudClass,
+  // Semi-transparent TOPMOST popup (same feel as session/HW panels).
+  hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kHudClass,
                           L"NexusCap metrics", WS_POPUP, 0, 0, 920, 780, owner, nullptr, hi, this);
   if (!hwnd_) return false;
+  SetLayeredWindowAttributes(hwnd_, 0, 220, LWA_ALPHA);
   return true;
 }
 
@@ -903,6 +929,11 @@ void MetricsHud::update(const OverlayState& state) {
   state_ = state;
   last_notice_ = state.session_notice;
   if (!hwnd_) return;
+  // Live overlay owns the HUD surface — hide GDI twin / mini twin.
+  if (state.live_overlay) {
+    set_visible(false);
+    return;
+  }
   // Mini is burned into D3D Present (OBS Game Capture / fullscreen). Hide GDI twin.
   if (state.mini_overlay) {
     set_visible(false);
@@ -1016,8 +1047,9 @@ void MetricsHud::paint(HDC hdc) const {
   }
   swprintf(lines[4], 180, L"frametime  %.2f ms   avg %.2f  p95 %.2f  max %.2f  %s", o.frame_ms, o.ft_avg_ms,
            o.ft_p95_ms, o.ft_max_ms, o.ft_stable ? L"STABLE" : L"UNSTABLE");
-  swprintf(lines[5], 180, L"latency e2e %.2f ms   present %.2f ms   %s Present(%u)", o.e2e_ms,
-           o.present_ms, o.sync_image ? L"SYNC VSYNC" : L"SYNC TEAR", o.sync_image ? 1u : 0u);
+  swprintf(lines[5], 180, L"latencia  cap %.2f ms   present %.2f ms%s   %s", o.e2e_ms, o.present_ms,
+           (o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos) ? L" (+NR/DLSS5)" : L"",
+           o.sync_image ? L"VSYNC" : L"TEAR");
   if (o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos) {
     swprintf(lines[6], 180, L"RenoDX  %s  preset=%s  [%s] %s", o.renodx_on ? L"ON" : L"off",
              utf8_to_wide_hud(o.renodx_preset).c_str(), utf8_to_wide_hud(o.dlss_backend).c_str(),
@@ -1422,6 +1454,302 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
     ShowWindow(hwnd, SW_SHOWMAXIMIZED);  // janela cobrindo tudo (não exclusive fullscreen)
   }
   return hwnd;
+}
+
+namespace {
+constexpr wchar_t kLiveOverlayClass[] = L"NexusCapLiveOverlay";
+// ~40% of the previous strip; width is measured from content (tight to top-right).
+constexpr int kLiveH96 = 26;
+constexpr int kLiveFont96 = 16;
+constexpr int kLiveSpark96 = 104;
+constexpr int kLiveGap96 = 12;
+constexpr int kLivePad96 = 8;
+constexpr int kLiveMargin96 = 10;
+
+int live_mul_dpi(int v, UINT dpi) { return MulDiv(v, static_cast<int>(dpi), 96); }
+
+void live_fix_dib_alpha(void* bits, int w, int h) {
+  // GDI writes BGR with A=0; ULW_ALPHA needs A=255 on ink.
+  // Empty pixels get A=1 so the whole strip receives mouse clicks (menu).
+  auto* p = static_cast<unsigned char*>(bits);
+  const int n = w * h;
+  for (int i = 0; i < n; ++i) {
+    const unsigned char b = p[0], g = p[1], r = p[2];
+    if (b | g | r) {
+      p[3] = 255;
+    } else {
+      p[0] = p[1] = p[2] = 1;
+      p[3] = 1;
+    }
+    p += 4;
+  }
+}
+}  // namespace
+
+UINT LiveOverlay::dpi() const {
+  HWND ref = hwnd_ ? hwnd_ : owner_;
+  if (!ref) return 96;
+  using Fn = UINT(WINAPI*)(HWND);
+  static Fn get_dpi = reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+  if (get_dpi) {
+    const UINT d = get_dpi(ref);
+    if (d >= 96) return d;
+  }
+  return 96;
+}
+
+bool LiveOverlay::create(HWND owner, HINSTANCE hi) {
+  destroy();
+  owner_ = owner;
+  WNDCLASSW wc{};
+  wc.lpfnWndProc = LiveOverlay::WndProc;
+  wc.hInstance = hi;
+  wc.lpszClassName = kLiveOverlayClass;
+  wc.hbrBackground = nullptr;
+  wc.hCursor = LoadCursor(nullptr, IDC_HAND);
+  RegisterClassW(&wc);
+
+  const UINT d = dpi();
+  layout_w_ = live_mul_dpi(420, d);  // seed; present() tightens to content
+  layout_h_ = live_mul_dpi(kLiveH96, d);
+
+  hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED, kLiveOverlayClass, L"NexusCap live",
+                          WS_POPUP, 0, 0, layout_w_, layout_h_, owner, nullptr, hi, this);
+  if (!hwnd_) return false;
+  return true;
+}
+
+void LiveOverlay::destroy() {
+  if (hwnd_) {
+    DestroyWindow(hwnd_);
+    hwnd_ = nullptr;
+  }
+  owner_ = nullptr;
+}
+
+void LiveOverlay::set_visible(bool visible) {
+  visible_ = visible;
+  if (!hwnd_) return;
+  ShowWindow(hwnd_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
+}
+
+void LiveOverlay::set_console(int live_console) {
+  console_ = static_cast<int>(clamp_live_console(live_console));
+}
+
+bool LiveOverlay::take_console_changed() {
+  const bool v = console_changed_;
+  console_changed_ = false;
+  return v;
+}
+
+void LiveOverlay::reposition() {
+  if (!hwnd_ || !owner_ || !visible_) return;
+  present();
+}
+
+void LiveOverlay::update(const OverlayState& state) {
+  state_ = state;
+  if (state.live_console != console_) {
+    console_ = static_cast<int>(clamp_live_console(state.live_console));
+  }
+  if (!hwnd_) return;
+  if (!state.live_overlay) {
+    set_visible(false);
+    return;
+  }
+  set_visible(state.visible);
+  if (!state.visible) return;
+  const DWORD now = GetTickCount();
+  if (last_paint_tick_ != 0 && (now - last_paint_tick_) < 33) return;
+  last_paint_tick_ = now;
+  present();
+}
+
+void LiveOverlay::show_console_menu() {
+  if (!hwnd_) return;
+  POINT pt{};
+  GetCursorPos(&pt);
+  HMENU menu = CreatePopupMenu();
+  if (!menu) return;
+  AppendMenuW(menu, MF_STRING | (console_ == 0 ? MF_CHECKED : 0), 1, L"PS5");
+  AppendMenuW(menu, MF_STRING | (console_ == 1 ? MF_CHECKED : 0), 2, L"Xbox Series S");
+  AppendMenuW(menu, MF_STRING | (console_ == 2 ? MF_CHECKED : 0), 3, L"Switch 2");
+  const int cmd =
+      TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+  DestroyMenu(menu);
+  if (cmd >= 1 && cmd <= 3) {
+    const int next = cmd - 1;
+    if (next != console_) {
+      console_ = next;
+      console_changed_ = true;
+      present();
+    }
+  }
+}
+
+void LiveOverlay::present() const {
+  if (!hwnd_ || !visible_ || !owner_) return;
+  const UINT d = dpi();
+  const int hh = live_mul_dpi(kLiveH96, d);
+  const int font_px = live_mul_dpi(kLiveFont96, d);
+  const int spark_w = live_mul_dpi(kLiveSpark96, d);
+  const int gap = live_mul_dpi(kLiveGap96, d);
+  const int pad_x = live_mul_dpi(kLivePad96, d);
+  const int margin = live_mul_dpi(kLiveMargin96, d);
+
+  HDC screen = GetDC(nullptr);
+  HDC measure = CreateCompatibleDC(screen);
+  HFONT font = CreateFontW(font_px, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
+                           CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+  HFONT old_m = static_cast<HFONT>(SelectObject(measure, font));
+
+  const LiveConsole cons = clamp_live_console(console_);
+  const std::wstring cons_w = utf8_to_wide_hud(live_console_label(cons));
+  char dlss_buf[64]{};
+  format_live_dlss5_line(dlss_buf, sizeof(dlss_buf), state_.renodx_on || state_.dlss_on);
+  const std::wstring dlss_w = utf8_to_wide_hud(dlss_buf);
+  const double show_fps = state_.fps_smooth > 0 ? state_.fps_smooth : state_.fps;
+  char fps_part[64]{};
+  format_live_fps_line(fps_part, sizeof(fps_part), show_fps, state_.fps_fg_est, state_.fg_on, state_.fg_multiplier);
+  char fps_line[80]{};
+  std::snprintf(fps_line, sizeof(fps_line), "FPS  %s", fps_part);
+  const std::wstring fps_w = utf8_to_wide_hud(fps_line);
+
+  SIZE sz_cons{}, sz_dlss{}, sz_fps{};
+  GetTextExtentPoint32W(measure, cons_w.c_str(), static_cast<int>(cons_w.size()), &sz_cons);
+  GetTextExtentPoint32W(measure, dlss_w.c_str(), static_cast<int>(dlss_w.size()), &sz_dlss);
+  GetTextExtentPoint32W(measure, fps_w.c_str(), static_cast<int>(fps_w.size()), &sz_fps);
+  SelectObject(measure, old_m);
+  DeleteDC(measure);
+
+  const int ww = pad_x + sz_cons.cx + gap + sz_dlss.cx + gap + sz_fps.cx + gap + spark_w + pad_x;
+  layout_w_ = ww;
+  layout_h_ = hh;
+
+  BITMAPINFO bmi{};
+  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bmi.bmiHeader.biWidth = ww;
+  bmi.bmiHeader.biHeight = -hh;
+  bmi.bmiHeader.biPlanes = 1;
+  bmi.bmiHeader.biBitCount = 32;
+  bmi.bmiHeader.biCompression = BI_RGB;
+
+  void* bits = nullptr;
+  HDC mem = CreateCompatibleDC(screen);
+  HBITMAP dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+  if (!dib || !bits) {
+    if (dib) DeleteObject(dib);
+    DeleteObject(font);
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return;
+  }
+  HGDIOBJ old_bmp = SelectObject(mem, dib);
+  std::memset(bits, 0, static_cast<size_t>(ww) * static_cast<size_t>(hh) * 4);
+
+  SetBkMode(mem, TRANSPARENT);
+  HFONT old_font = static_cast<HFONT>(SelectObject(mem, font));
+  const int text_y = (hh - font_px) / 2;
+  int x = pad_x;
+
+  auto draw_seg = [&](const std::wstring& text, COLORREF color) {
+    SIZE sz{};
+    GetTextExtentPoint32W(mem, text.c_str(), static_cast<int>(text.size()), &sz);
+    SetTextColor(mem, color);
+    TextOutW(mem, x, text_y, text.c_str(), static_cast<int>(text.size()));
+    x += sz.cx + gap;
+  };
+
+  draw_seg(cons_w, live_console_color(cons));
+  draw_seg(dlss_w, RGB(240, 242, 248));
+  draw_seg(fps_w, RGB(120, 220, 255));
+
+  {
+    const int gx = x;
+    const int gw = spark_w;
+    const int gy = live_mul_dpi(4, d);
+    const int gh = hh - gy * 2;
+    const double target_ms = state_.target_fps > 0 ? 1000.0 / state_.target_fps : (1000.0 / 60.0);
+    double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
+    if (!state_.ft_hist.empty()) {
+      for (double v : state_.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
+    }
+    ceil_ms = (std::min)(ceil_ms, 80.0);
+    auto y_for = [&](double ms) -> int {
+      const double t = (std::max)(0.0, (std::min)(1.0, ms / ceil_ms));
+      return gy + gh - 2 - static_cast<int>(t * (gh - 4));
+    };
+    if (state_.ft_hist.size() >= 2 && gw > 8) {
+      const size_t hn = state_.ft_hist.size();
+      std::vector<POINT> pts(hn);
+      for (size_t i = 0; i < hn; ++i) {
+        pts[i].x = gx + static_cast<LONG>((gw - 2) * i / (hn - 1));
+        pts[i].y = y_for(state_.ft_hist[i]);
+      }
+      const COLORREF base = state_.ft_stable ? RGB(90, 220, 255) : RGB(255, 70, 70);
+      const double spike = (std::max)(target_ms * 1.35, target_ms + 4.0);
+      const int pen_w = (std::max)(1, live_mul_dpi(1, d));
+      for (size_t i = 1; i < hn; ++i) {
+        const bool bad = state_.ft_hist[i] >= spike || !state_.ft_stable;
+        HPEN pen = CreatePen(PS_SOLID, pen_w, bad ? RGB(255, 70, 70) : base);
+        HGDIOBJ oldp = SelectObject(mem, pen);
+        MoveToEx(mem, pts[i - 1].x, pts[i - 1].y, nullptr);
+        LineTo(mem, pts[i].x, pts[i].y);
+        SelectObject(mem, oldp);
+        DeleteObject(pen);
+      }
+    }
+  }
+
+  SelectObject(mem, old_font);
+  DeleteObject(font);
+  live_fix_dib_alpha(bits, ww, hh);
+
+  // Owner top-right — not previous hwnd rect (wide strip looked centered).
+  RECT orc{};
+  GetWindowRect(owner_, &orc);
+  POINT pt{};
+  pt.x = orc.right - margin - ww;
+  pt.y = orc.top + margin;
+  SIZE sz{ww, hh};
+  POINT src{0, 0};
+  BLENDFUNCTION blend{};
+  blend.BlendOp = AC_SRC_OVER;
+  blend.SourceConstantAlpha = 255;
+  blend.AlphaFormat = AC_SRC_ALPHA;
+  UpdateLayeredWindow(hwnd_, screen, &pt, &sz, mem, &src, 0, &blend, ULW_ALPHA);
+
+  SelectObject(mem, old_bmp);
+  DeleteObject(dib);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+}
+
+LRESULT CALLBACK LiveOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return TRUE;
+  }
+  auto* self = reinterpret_cast<LiveOverlay*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_PAINT && self) {
+    PAINTSTRUCT ps;
+    BeginPaint(hwnd, &ps);
+    EndPaint(hwnd, &ps);
+    self->present();
+    return 0;
+  }
+  if (msg == WM_ERASEBKGND) return 1;
+  if (msg == WM_DPICHANGED && self) {
+    self->present();
+    return 0;
+  }
+  if ((msg == WM_LBUTTONUP || msg == WM_RBUTTONUP) && self) {
+    self->show_console_menu();
+    return 0;
+  }
+  return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 bool apply_display_mode(HWND hwnd, RendererD3D11& renderer, bool fullscreen, int signal_w, int signal_h,

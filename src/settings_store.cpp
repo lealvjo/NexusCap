@@ -169,6 +169,8 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "preview_mute=" << (s.ui.preview_mute ? 1 : 0) << "\n";
   o << "bug_report=" << (s.ui.bug_report ? 1 : 0) << "\n";
   o << "perf_report=" << (s.ui.perf_report ? 1 : 0) << "\n";
+  o << "live_overlay=" << (s.ui.live_overlay ? 1 : 0) << "\n";
+  o << "live_console=" << (s.ui.live_console.empty() ? "ps5" : s.ui.live_console) << "\n";
   o << "\n[hotkeys]\n";
   o << "quit=" << s.hotkeys.vk_quit << "\n";
   o << "hud=" << s.hotkeys.vk_hud << "\n";
@@ -234,6 +236,8 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "preview_mute") s.ui.preview_mute = (val == "1" || val == "true");
       else if (key == "bug_report") s.ui.bug_report = (val == "1" || val == "true");
       else if (key == "perf_report") s.ui.perf_report = (val == "1" || val == "true");
+      else if (key == "live_overlay") s.ui.live_overlay = (val == "1" || val == "true");
+      else if (key == "live_console") s.ui.live_console = val.empty() ? "ps5" : val;
       // legacy auto_start ignored — lobby always opens first (maximized window)
     } else if (section == "hotkeys") {
       int v = std::atoi(val.c_str());

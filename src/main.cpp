@@ -244,15 +244,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           feed_locked_scale = before;
         }
       }
-      if (sync_renodx_visual_preset_files(exe_dir.string(), cfg.renodx_preset)) {
-        append_log(cfg.log_dir, std::string("renodx preset → ") + renodx_visual_preset_name(cfg.renodx_preset));
-        std::printf("renodx preset: %s (NR=%d)\n", renodx_visual_preset_name(cfg.renodx_preset),
-                    renodx_nr_preset_index(cfg.renodx_preset));
-      }
       if (sync_nr_pass_count_files(exe_dir.string(), cfg.nr_pass_count, cfg.renodx_preset)) {
         append_log(cfg.log_dir, std::string("nr pass count → ") + std::to_string(clamp_nr_pass_count(cfg.nr_pass_count)));
         std::printf("nr pass count: %d (%s)\n", clamp_nr_pass_count(cfg.nr_pass_count),
                     nr_pass_count_label(cfg.nr_pass_count));
+      }
+      // Visual por ultimo: look defaults do Pass Count nao podem deixar NRStyle=0 no Cinema.
+      if (sync_renodx_visual_preset_files(exe_dir.string(), cfg.renodx_preset)) {
+        append_log(cfg.log_dir, std::string("renodx preset → ") + renodx_visual_preset_name(cfg.renodx_preset));
+        std::printf("renodx preset: %s (NR=%d)\n", renodx_visual_preset_name(cfg.renodx_preset),
+                    renodx_nr_preset_index(cfg.renodx_preset));
       }
     }
 
@@ -1165,6 +1166,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         } else {
           const int preset_before = clamp_renodx_visual_preset(cfg.renodx_preset);
           cfg.renodx_preset = clamp_renodx_visual_preset(ui.renodx_preset);
+          (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
           (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset);
           cfg_restart_kind = SessionCfgApply::RelaunchPreset;
           cfg_restart_pending = true;

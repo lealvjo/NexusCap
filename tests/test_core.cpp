@@ -2048,17 +2048,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 1));
+  CHECK(app_version_is(3, 1, 2));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.1");
+  CHECK(std::string(kAppVersion) == "3.1.2");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.1.2") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.2");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.1") != std::string::npos);
+  CHECK(lobby_t.find("3.1.2") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.1") != std::string::npos);
+  CHECK(sess_t.find("3.1.2") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -3139,6 +3139,89 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(scale.find("sessao") != std::string::npos);
   CHECK(restart_notice_visible_at_boot(/*autostart=*/true));
   CHECK_FALSE(restart_notice_visible_at_boot(false));
+  CHECK(kDlss5MotorSwapHoldSec <= 1.1);
+  CHECK(kDlss5MotorSwapHoldSec >= 1.0);
+}
+
+TEST_CASE("visual preset writes every ReShade section on 1x 1.5x 2x 3x") {
+  CHECK_FALSE(every_keyed_int_is("NRPreset=0\nNRPreset=1\n", "NRPreset=", 1));
+  CHECK(every_keyed_int_is("NRPreset=1\nNRPreset=1\n", "NRPreset=", 1));
+  CHECK_FALSE(every_keyed_int_is("EnableHooks=2\n", "NRPreset=", 0));
+
+  const std::string live_ini =
+      "[GENERAL]\nAddonPath=.\\addons-multipass\n\n"
+      "[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\nDirectNeuralRenderingStyle=0\n\n"
+      "[RenoDX.DLSS5]\nNeuralUplift=1\nNRPreset=0\nNRStyle=0\nDirectNeuralRenderingPassCount=1\n";
+
+  // Cinema: live section used to stay at NRStyle=0 / missing Style — addon ignored preset1.
+  std::string cinema = apply_reshade_visual_look_keys(live_ini, 2);
+  CHECK(every_keyed_int_is(cinema, "NRPreset=", 1));
+  CHECK(every_keyed_int_is(cinema, "NRStyle=", 1));
+  CHECK(every_keyed_int_is(cinema, "DirectNeuralRenderingStyle=", 1));
+  CHECK(cinema.find("[RenoDX.DLSS5]") != std::string::npos);
+  CHECK(cinema.find("DirectNeuralRenderingStyle=1") != std::string::npos);
+
+  std::string back = apply_reshade_visual_look_keys(std::move(cinema), 0);
+  CHECK(every_keyed_int_is(back, "NRPreset=", 0));
+  CHECK(every_keyed_int_is(back, "NRStyle=", 0));
+  CHECK(every_keyed_int_is(back, "DirectNeuralRenderingStyle=", 0));
+
+  const int passes[] = {1, 4, 2, 3};
+  const int visuals[] = {0, 1, 2};
+  for (int p : passes) {
+    for (int v : visuals) {
+      std::string reshade =
+          std::string("[GENERAL]\nAddonPath=") + renodx_addon_stack_rel(p) +
+          "\n\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\nDirectNeuralRenderingStyle=0\n\n"
+          "[RenoDX.DLSS5]\nNeuralUplift=1\nNRPreset=0\nNRStyle=0\nDirectNeuralRenderingPassCount=1\n";
+      std::string feed = "enabled=1\npreset=0\nwork_resolution=100\n";
+      if (nr_pass_count_uses_multipass_addon(p)) {
+        reshade = apply_reshade_multipass_look_defaults(std::move(reshade), p, v);
+      } else {
+        reshade = apply_reshade_stable_look_defaults(std::move(reshade), v);
+      }
+      reshade = apply_reshade_visual_look_keys(std::move(reshade), v);
+      feed = apply_renodx_visual_preset_to_feed(std::move(feed), v);
+      CHECK(renodx_files_reflect_visual_preset(feed, reshade, v));
+      CHECK(every_keyed_int_is(reshade, "NRPreset=", renodx_nr_preset_index(v)));
+      CHECK(every_keyed_int_is(reshade, "NRStyle=", renodx_nr_preset_index(v)));
+      if (nr_pass_count_uses_multipass_addon(p)) {
+        CHECK(every_keyed_int_is(reshade, "DirectNeuralRenderingStyle=", renodx_nr_preset_index(v)));
+      }
+      CHECK(parse_feed_model_preset(feed) == renodx_feed_model_preset(v));
+      CHECK(parse_keyed_int(feed, "rebuild=", 0) == 1);
+    }
+  }
+}
+
+TEST_CASE("session CFG preset persist then boot files match on every motor") {
+  for (int p : {1, 4, 2, 3}) {
+    for (int v : {0, 1, 2}) {
+      AppConfig cfg;
+      cfg.enhance = EnhanceBackend::Renodx;
+      cfg.nr_pass_count = p;
+      cfg.renodx_preset = v;
+      PersistedSettings s = default_settings();
+      apply_session_cfg_to_persisted(cfg, s);
+      CHECK(s.renodx_preset == v);
+      CHECK(s.nr_pass_count == p);
+
+      AppConfig back;
+      apply_persisted_to_config(s, back);
+      CHECK(back.renodx_preset == v);
+      CHECK(back.nr_pass_count == p);
+      CHECK(plan_session_cfg_preset_apply(nr_pass_count_uses_multipass_addon(p)) ==
+            SessionCfgApply::RelaunchPreset);
+
+      std::string reshade =
+          std::string("AddonPath=") + renodx_addon_stack_rel(back.nr_pass_count) +
+          "\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingStyle=0\n[RenoDX.DLSS5]\nNRPreset=0\nNRStyle=0\n";
+      reshade = apply_reshade_look_for_current_stack(std::move(reshade), back.renodx_preset);
+      std::string feed = "preset=9\n";
+      feed = apply_renodx_visual_preset_to_feed(std::move(feed), back.renodx_preset);
+      CHECK(renodx_files_reflect_visual_preset(feed, reshade, v));
+    }
+  }
 }
 
 TEST_CASE("--selftest-cfg runs the session without the lobby") {

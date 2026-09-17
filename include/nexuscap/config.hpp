@@ -404,7 +404,7 @@ inline LobbyEscAction lobby_esc_action(bool gear_open, bool capturing_hotkey) {
 // Soft on-screen tips while playing (FG / Neural Rendering hotkeys).
 inline constexpr double kSessionNoticeTtlMs = 3200.0;
 // Delay before Krish↔multipass relaunch so the swap does not look like a crash.
-inline constexpr double kDlss5MotorSwapHoldSec = 2.2;
+inline constexpr double kDlss5MotorSwapHoldSec = 1.1;
 
 inline std::string session_notice_fg_on() {
   return "Frame Gen ON — latencia / artefatos podem subir";

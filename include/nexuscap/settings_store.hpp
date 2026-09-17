@@ -346,6 +346,82 @@ inline std::string apply_keyed_int_all(std::string text, const std::string& key,
   return hit ? text : apply_keyed_int(std::move(text), key, value);
 }
 
+// True when every line-start occurrence of key equals want. Missing key → false.
+inline bool every_keyed_int_is(const std::string& text, const std::string& key, int want) {
+  std::size_t pos = 0;
+  bool any = false;
+  while (pos <= text.size()) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos) break;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (!at_line_start) {
+      pos = found + key.size();
+      continue;
+    }
+    const auto start = found + key.size();
+    const auto end = text.find_first_of("\r\n", start);
+    const std::string num = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+    if (std::atoi(num.c_str()) != want) return false;
+    any = true;
+    pos = found + key.size();
+  }
+  return any;
+}
+
+inline std::size_t find_ini_section_pos(const std::string& text, const char* section) {
+  const std::string hdr = std::string("[") + section + "]";
+  std::size_t pos = 0;
+  while (pos < text.size()) {
+    const auto found = text.find(hdr, pos);
+    if (found == std::string::npos) return std::string::npos;
+    const bool at_line = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (at_line) return found;
+    pos = found + 1;
+  }
+  return std::string::npos;
+}
+
+inline std::size_t ini_section_body_end(const std::string& text, std::size_t section_start) {
+  const auto nl = text.find('\n', section_start);
+  if (nl == std::string::npos) return text.size();
+  std::size_t i = nl + 1;
+  while (i < text.size()) {
+    if (text[i] == '[') return i;
+    const auto e = text.find('\n', i);
+    if (e == std::string::npos) return text.size();
+    i = e + 1;
+  }
+  return text.size();
+}
+
+// ReShade live section [RenoDX.DLSS5] can omit a key that only exists in the saved
+// preset. apply_keyed_int_all then never creates it there, and the addon keeps the default.
+inline std::string upsert_keyed_int_in_section(std::string text, const char* section, const std::string& key,
+                                               int value) {
+  const auto start = find_ini_section_pos(text, section);
+  if (start == std::string::npos) return apply_keyed_int(std::move(text), key, value);
+  const auto hdr_nl = text.find('\n', start);
+  const auto body_start = (hdr_nl == std::string::npos) ? text.size() : hdr_nl + 1;
+  const auto body_end = ini_section_body_end(text, start);
+  const std::string line = key + std::to_string(value);
+  std::size_t pos = body_start;
+  while (pos < body_end) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos || found >= body_end) break;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (!at_line_start) {
+      pos = found + key.size();
+      continue;
+    }
+    const auto end = text.find_first_of("\r\n", found);
+    text.replace(found, (end == std::string::npos ? text.size() : end) - found, line);
+    return text;
+  }
+  std::string insert = line + "\n";
+  text.insert(body_end, insert);
+  return text;
+}
+
 inline std::string apply_keyed_value(std::string text, const std::string& key, const std::string& value) {
   const std::string line = key + value;
   std::size_t pos = 0;
@@ -447,16 +523,37 @@ inline int parse_feed_work_resolution(const std::string& text, int fallback = 10
 }
 
 inline std::string apply_feed_model_preset(std::string text, int visual_preset) {
-  return apply_keyed_int(std::move(text), "preset=", renodx_feed_model_preset(visual_preset));
+  text = apply_keyed_int(std::move(text), "preset=", renodx_feed_model_preset(visual_preset));
+  // Feed caches preset= like work_resolution — force rebuild so Default/Natural/Cinema entram.
+  return apply_keyed_int(std::move(text), "rebuild=", 1);
 }
 
 inline int parse_feed_model_preset(const std::string& text, int fallback = 0) {
   return parse_keyed_int(text, "preset=", fallback);
 }
 
-// ReShade.ini NRPreset — Natural(0) / Cinematic(1).
+// ReShade.ini NRPreset — Natural(0) / Cinematic(1). All sections + live [RenoDX.DLSS5].
 inline std::string apply_reshade_nr_preset(std::string text, int visual_preset) {
-  return apply_keyed_int(std::move(text), "NRPreset=", renodx_nr_preset_index(visual_preset));
+  const int nr = renodx_nr_preset_index(visual_preset);
+  text = apply_keyed_int_all(std::move(text), "NRPreset=", nr);
+  return upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRPreset=", nr);
+}
+
+// Preset visual: NRPreset/NRStyle in every section. Multipass also writes Style
+// into the saved preset AND the live addon section (first-only left cinema stale).
+inline std::string apply_reshade_visual_look_keys(std::string text, int visual_preset) {
+  const int nr = renodx_nr_preset_index(visual_preset);
+  text = apply_reshade_nr_preset(std::move(text), visual_preset);
+  text = apply_keyed_int_all(std::move(text), "NRStyle=", nr);
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRStyle=", nr);
+  if (reshade_addon_path_is_multipass(text)) {
+    text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingStyle=", nr);
+    text = upsert_keyed_int_in_section(std::move(text), "RENODX-DLSS-preset1",
+                                      "DirectNeuralRenderingStyle=", nr);
+    text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5",
+                                      "DirectNeuralRenderingStyle=", nr);
+  }
+  return text;
 }
 
 inline int parse_reshade_nr_preset(const std::string& text, int fallback = 0) {
@@ -533,10 +630,10 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalStructureStrength=", 1);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalToneStrength=", 1);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingSkinStructureStrength=", 1);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingStyle=", renodx_nr_preset_index(visual_preset));
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingStyle=",
+                            renodx_nr_preset_index(visual_preset));
   text = apply_reshade_nr_pass_count(std::move(text), pass_count);
   // Keep legacy NR* block in sync for tools / dual-read / Krish.
-  text = apply_reshade_nr_preset(std::move(text), visual_preset);
   text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", 500);
   text = apply_keyed_int(std::move(text), "NRIntensity=", 1);
   text = apply_keyed_int(std::move(text), "NRGlobalTone=", 1);
@@ -545,7 +642,7 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = apply_keyed_int(std::move(text), "NRAutoMask=", 1);
   text = apply_keyed_int(std::move(text), "NRSkinStructure=", -1);
   text = apply_keyed_int(std::move(text), "NRUICorrection=", 1);
-  text = apply_keyed_int(std::move(text), "NRStyle=", 0);
+  text = apply_reshade_visual_look_keys(std::move(text), visual_preset);
   // Multipass: Delete is the real NRToggleKey (Bridge cannot inject GetAsyncKeyState).
   text = apply_keyed_int(std::move(text), "NRToggleKey=", 0x2E);
   text = sanitize_multipass_home_windows(std::move(text));
@@ -563,9 +660,9 @@ inline std::string apply_reshade_stable_look_defaults(std::string text, int visu
   text = apply_keyed_int(std::move(text), "NRAutoMask=", 1);
   text = apply_keyed_int(std::move(text), "NRSkinStructure=", -1);
   text = apply_keyed_int(std::move(text), "NRUICorrection=", 1);
-  text = apply_keyed_int(std::move(text), "NRStyle=", 0);
   text = apply_keyed_int(std::move(text), "NREnableUpscaling=", 1);
   text = apply_keyed_int(std::move(text), "NeuralUplift=", 1);
+  text = apply_reshade_visual_look_keys(std::move(text), visual_preset);
   return text;
 }
 
@@ -583,8 +680,14 @@ inline std::string apply_reshade_look_for_current_stack(std::string text, int vi
 inline bool renodx_files_reflect_visual_preset(const std::string& feed_text, const std::string& reshade_text,
                                                int visual_preset) {
   const int v = clamp_renodx_visual_preset(visual_preset);
+  const int nr = renodx_nr_preset_index(v);
   if (parse_feed_model_preset(feed_text, -1) != renodx_feed_model_preset(v)) return false;
-  if (parse_reshade_nr_preset(reshade_text, -1) != renodx_nr_preset_index(v)) return false;
+  if (!every_keyed_int_is(reshade_text, "NRPreset=", nr)) return false;
+  if (!every_keyed_int_is(reshade_text, "NRStyle=", nr)) return false;
+  if (reshade_addon_path_is_multipass(reshade_text) &&
+      !every_keyed_int_is(reshade_text, "DirectNeuralRenderingStyle=", nr)) {
+    return false;
+  }
   return true;
 }
 
@@ -643,7 +746,7 @@ inline std::string apply_renodx_visual_preset_to_feed(std::string feed, int visu
 }
 
 inline std::string apply_renodx_visual_preset_to_reshade(std::string reshade, int visual_preset) {
-  return apply_reshade_nr_preset(std::move(reshade), visual_preset);
+  return apply_reshade_visual_look_keys(std::move(reshade), visual_preset);
 }
 
 // NeuralUplift in ReShade.ini [RenoDX.DLSS5] — 1=NR on, 0=off (Frame Gen is independent).

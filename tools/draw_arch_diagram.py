@@ -71,7 +71,7 @@ def main():
         ((380, 280, 680, 470), CYAN, ["Placa captura", "DirectShow · NV12"]),
         ((740, 200, 1180, 550), CYAN, ["NexusCap  (C++)", "Lobby + preview", "Sessão nativa 1440p"]),
         ((1280, 150, 1860, 320), GOLD, ["RenoDX  ·  modo 1,5x", "NR no Present  ·  ~60 fps"]),
-        ((1280, 360, 1860, 500), ORANGE, ["Frame Gen  (opcional)", "Lossless Scaling"]),
+        ((1280, 360, 1860, 500), ORANGE, ["Frame Gen  até 4x", "Lossless Scaling · auto"]),
         ((1280, 540, 1860, 660), GREEN, ["Monitor", "saída limpa"]),
     ]
     for box, col, lines in boxes:

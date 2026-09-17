@@ -75,6 +75,10 @@ target_link_libraries(nexuscap_tests PRIVATE nexuscap_core)
 target_compile_definitions(nexuscap_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
   "NEXUSCAP_SOURCE_DIR=R\"(${CMAKE_SOURCE_DIR})\"")
 
+add_executable(nexuscap_probe tools/probe_capture.cpp)
+target_link_libraries(nexuscap_probe PRIVATE nexuscap_core)
+target_compile_definitions(nexuscap_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+
 enable_testing()
 add_test(NAME unit COMMAND nexuscap_tests)
 add_test(NAME smoke COMMAND NexusCap --smoke --frames 120 --log-dir ${CMAKE_BINARY_DIR}/logs-smoke)

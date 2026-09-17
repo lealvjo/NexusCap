@@ -194,15 +194,17 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   const int height = opt.height;
   const double fps = opt.fps;
   const int want_saved = clamp_video_fourcc(opt.video_fourcc);
-  // Qualquer → try NV12 first (validated HDMI); specific format falls back to NV12.
+  // Always try NV12 first — this card's MJPEG/YUY2/I420 often SetFormat OK then RenderStream→NV12 grabber fails.
   std::vector<int> try_fourccs;
-  if (want_saved == static_cast<int>(VideoFourcc::Any)) {
-    try_fourccs = {static_cast<int>(VideoFourcc::Nv12), static_cast<int>(VideoFourcc::I420),
-                   static_cast<int>(VideoFourcc::Yuy2), static_cast<int>(VideoFourcc::Mjpeg)};
-  } else {
+  try_fourccs.push_back(static_cast<int>(VideoFourcc::Nv12));
+  if (want_saved != static_cast<int>(VideoFourcc::Nv12) &&
+      want_saved != static_cast<int>(VideoFourcc::Any)) {
     try_fourccs.push_back(want_saved);
-    if (want_saved != static_cast<int>(VideoFourcc::Nv12)) {
-      try_fourccs.push_back(static_cast<int>(VideoFourcc::Nv12));
+  }
+  if (want_saved == static_cast<int>(VideoFourcc::Any)) {
+    for (int fc : {static_cast<int>(VideoFourcc::I420), static_cast<int>(VideoFourcc::Yuy2),
+                   static_cast<int>(VideoFourcc::Mjpeg)}) {
+      try_fourccs.push_back(fc);
     }
   }
   opened_fourcc_ = try_fourccs.front();
@@ -360,36 +362,96 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
     }
     cfg->Release();
     if (!set_ok) {
-      err = "preferred format not set; negotiating default";
+      // Still RenderStream — default pin caps may match request (e.g. 1080p60).
+      // Wrong size is rejected after GetConnectedMediaType below.
+      err = "SetFormat falhou; tentando negociacao padrao";
     }
   }
 
   hr = impl_->builder->RenderStream(&PIN_CATEGORY_CAPTURE, &MEDIATYPE_Video, impl_->source, impl_->grabber_f,
                                     impl_->null_f);
   if (FAILED(hr)) {
-    err = "RenderStream failed hr=0x" + std::to_string(static_cast<unsigned long>(hr));
+    const unsigned long hrx = static_cast<unsigned long>(hr);
+    const int was_fc = opened_fourcc_;
+    stop();
+    if (was_fc != static_cast<int>(VideoFourcc::Nv12)) {
+      CaptureStartOptions nv = opt;
+      nv.video_fourcc = static_cast<int>(VideoFourcc::Nv12);
+      std::string err2;
+      if (start(device_name, nv, slot, clock, err2)) {
+        err = "RenderStream falhou p/ " + std::string(video_fourcc_name(was_fc)) + "; usando NV12";
+        return true;
+      }
+      err = "RenderStream failed hr=0x" + std::to_string(hrx) + " | NV12: " + err2;
+      return false;
+    }
+    err = "RenderStream failed hr=0x" + std::to_string(hrx);
     return false;
   }
 
-  // Confirm connected type
+  // Confirm connected type (even width/height for NV12 UV).
   AM_MEDIA_TYPE connected{};
   if (SUCCEEDED(impl_->grabber->GetConnectedMediaType(&connected))) {
     if (connected.formattype == FORMAT_VideoInfo && connected.pbFormat) {
       auto* vih = reinterpret_cast<VIDEOINFOHEADER*>(connected.pbFormat);
-      impl_->width = vih->bmiHeader.biWidth;
-      impl_->height = std::abs(vih->bmiHeader.biHeight);
+      int cw = vih->bmiHeader.biWidth;
+      int ch = std::abs(vih->bmiHeader.biHeight);
+      if (cw > 0) cw &= ~1;
+      if (ch > 0) ch &= ~1;
+      if (cw > 0 && ch > 0) {
+        impl_->width = cw;
+        impl_->height = ch;
+      }
     }
     free_media_type(connected);
+  }
+
+  // Reject silent downscale (4K60 NV12 → 1080p) — that looked like "OK" then white/wrong session.
+  if (std::abs(impl_->width - width) > 16 || std::abs(impl_->height - height) > 16) {
+    err = "negociou " + std::to_string(impl_->width) + "x" + std::to_string(impl_->height) +
+          " em vez de " + std::to_string(width) + "x" + std::to_string(height);
+    stop();
+    return false;
   }
 
   impl_->graph->QueryInterface(IID_IMediaControl, reinterpret_cast<void**>(&impl_->control));
   hr = impl_->control->Run();
   if (FAILED(hr)) {
     err = "MediaControl::Run failed";
+    stop();
     return false;
   }
   running_ = true;
   frames_ = 0;
+  // White-screen guard: mode churn / 4K can Run() with delayed or zero NV12 samples.
+  {
+    const int wait_ms = capture_first_frame_wait_ms(impl_->width, impl_->height);
+    const DWORD t0 = GetTickCount();
+    while (frames_.load(std::memory_order_relaxed) == 0 &&
+           (GetTickCount() - t0) < static_cast<DWORD>(wait_ms)) {
+      Sleep(10);
+    }
+    if (frames_.load(std::memory_order_relaxed) == 0) {
+      const std::string detail =
+          "nenhum frame apos Run (troca de modo / placa ocupada / formato sem NV12)";
+      stop();
+      // MJPEG@4K often negotiates then never produces NV12 — retry NV12 once.
+      if (want_saved != static_cast<int>(VideoFourcc::Nv12)) {
+        CaptureStartOptions nv = opt;
+        nv.video_fourcc = static_cast<int>(VideoFourcc::Nv12);
+        std::string err2;
+        if (start(device_name, nv, slot, clock, err2)) {
+          err = "formato " + std::string(video_fourcc_name(want_saved)) +
+                " sem frames; usando NV12";
+          return true;
+        }
+        err = detail + " | NV12: " + err2;
+        return false;
+      }
+      err = detail;
+      return false;
+    }
+  }
   err.clear();
   (void)com_init;
   (void)fps;
@@ -404,6 +466,8 @@ void DShowCapture::stop() {
   if (!impl_) return;
   if (impl_->control) {
     impl_->control->Stop();
+    // Let the driver finish tearing down the previous pin format before Release.
+    Sleep(static_cast<DWORD>(capture_device_settle_ms()));
     impl_->control->Release();
     impl_->control = nullptr;
   }
@@ -433,6 +497,9 @@ void DShowCapture::stop() {
     impl_->graph->Release();
     impl_->graph = nullptr;
   }
+  impl_->width = 0;
+  impl_->height = 0;
+  nv12_scratch_.clear();
 }
 
 std::vector<std::string> list_video_capture_devices() {

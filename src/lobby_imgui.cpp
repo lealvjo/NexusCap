@@ -209,6 +209,7 @@ struct LobbyPreview {
       capture.reset();
     }
     live = false;
+    slot.clear();
     release_tex();
     started_dev.clear();
     started_w = started_h = 0;
@@ -237,7 +238,7 @@ struct LobbyPreview {
     }
     stop();
     // USB capture cards often need a beat before reopen after format change.
-    Sleep(80);
+    Sleep(static_cast<DWORD>(capture_device_settle_ms()));
     err.clear();
     frames_seen = 0;
     started_dev = device;
@@ -847,6 +848,23 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
   auto refresh_modes = [&](std::vector<CaptureMode>& modes, int& mode_idx) {
     modes = list_video_capture_modes(current_device());
+    // Keep only modes that advertise NV12 — MJPEG-only (4K60 etc.) can't feed the grabber.
+    {
+      std::vector<CaptureMode> usable;
+      usable.reserve(modes.size());
+      for (const auto& m : modes) {
+        const auto fcs = list_video_fourccs_for_mode(current_device(), m.width, m.height, m.fps);
+        bool has_nv12 = false;
+        for (int fc : fcs) {
+          if (fc == static_cast<int>(VideoFourcc::Nv12)) {
+            has_nv12 = true;
+            break;
+          }
+        }
+        if (has_nv12) usable.push_back(m);
+      }
+      if (!usable.empty()) modes.swap(usable);
+    }
     mode_idx = 0;
     for (size_t i = 0; i < modes.size(); ++i) {
       if (modes[i].width == settings.width && modes[i].height == settings.height &&
@@ -1064,6 +1082,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         settings.fps = m.fps;
         fourccs_cache_key.clear();
         refresh_fourccs();
+        // 4K+: force NV12 when available — MJPEG often opens then yields white/fake.
+        if (capture_mode_prefers_nv12(settings.width, settings.height)) {
+          for (int fc : fourccs) {
+            if (fc == static_cast<int>(VideoFourcc::Nv12)) {
+              settings.video_fourcc = fc;
+              break;
+            }
+          }
+        }
         restart_preview();
       }
     }
@@ -1561,6 +1588,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   // Free capture device BEFORE session start (device exclusive).
   preview.stop();
   lobby_audio.stop();
+  // Extra settle: Iniciar after mode churn — driver still releasing pin format.
+  if (g_start_requested) Sleep(static_cast<DWORD>(capture_device_settle_ms()));
   if (logo_srv) {
     logo_srv->Release();
     logo_srv = nullptr;

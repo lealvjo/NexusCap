@@ -345,11 +345,46 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   } else {
     capture = std::make_unique<DShowCapture>();
   }
-  if (!capture->start(cfg.device_name, cap_opt, slot, clock, err)) {
+  auto try_start_capture = [&]() -> bool {
+    err.clear();
+    return capture->start(cfg.device_name, cap_opt, slot, clock, err);
+  };
+  if (!try_start_capture()) {
+    // Mode churn / exclusive device: one settle+retry before fake fallback.
+    if (!cfg.fake_capture) {
+      append_log(cfg.log_dir, "capture start fail: " + err + " — retry apos settle");
+      Sleep(static_cast<DWORD>(capture_device_settle_ms()));
+      capture = std::make_unique<DShowCapture>();
+      if (try_start_capture()) {
+        append_log(cfg.log_dir, "capture start ok on retry");
+      }
+    }
+  }
+  if (!capture->running()) {
     std::fprintf(stderr, "capture: %s\n", err.c_str());
+    append_log(cfg.log_dir, "capture start FAILED: " + err);
     if (cfg.selftest_cap) {
       std::printf("SKIP selftest-cap: %s\n", err.c_str());
-      return 0;  // skip, not fail
+      g_session_renderer = nullptr;
+      renderer.shutdown();
+      DestroyWindow(hwnd);
+      return 0;
+    }
+    // Lobby sessions: NEVER fake — fake+RenoDX = tela branca (visto em 4K MJPEG).
+    if (g_session_from_lobby) {
+      std::fprintf(stderr, "capture falhou — voltando ao lobby (sem fake)\n");
+      append_log(cfg.log_dir, "capture fail → lobby (no fake fallback)");
+      g_session_renderer = nullptr;
+      if (enhance) {
+        renderer.set_enhance(nullptr);
+        enhance->shutdown();
+        enhance.reset();
+      }
+      renderer.shutdown();
+      DestroyWindow(hwnd);
+      hwnd = nullptr;
+      g_return_to_lobby = true;
+      return kExitBackToLobby;
     }
     if (!cfg.fake_capture) {
       std::fprintf(stderr, "falling back to fake capture\n");
@@ -432,7 +467,15 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   analyze.session_start(info, clock.now_ms());
   analyze.set_verbose(false);
 
-  HitchDetector hitch(cfg.hitch_threshold_ms);
+  const double hitch_ms = effective_hitch_threshold_ms(cfg.hitch_threshold_ms, cfg.fps);
+  HitchDetector hitch(hitch_ms);
+  {
+    char hbuf[128];
+    std::snprintf(hbuf, sizeof(hbuf), "hitch threshold=%.1fms (cfg=%.1f @ %.0ffps)", hitch_ms,
+                  cfg.hitch_threshold_ms, cfg.fps);
+    append_log(cfg.log_dir, hbuf);
+    std::printf("%s\n", hbuf);
+  }
   ClusterDetector clusters;
   StatsWindow600 stats600;
   FrametimeWindow ft_win(180);
@@ -881,7 +924,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       overlay.ft_avg_ms = ft_win.avg();
       overlay.ft_p95_ms = ft_win.p95();
       overlay.ft_max_ms = ft_win.max();
-      overlay.ft_stable = ft_win.stable(1000.0 / (std::max)(1.0, cfg.fps));
+      overlay.ft_stable = ft_win.stable(1000.0 / (std::max)(1.0, cfg.fps), hitch_ms);
       overlay.ft_spark = ft_win.sparkline(56, 1000.0 / (std::max)(1.0, cfg.fps));
       ft_win.chronological(overlay.ft_hist);
     }
@@ -939,7 +982,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     ++presented;
     overlay.frames = presented;
 
-    const bool is_stall = interval >= cfg.hitch_threshold_ms;
+    const bool is_stall = interval >= hitch_ms;
     if (!stats_frame_counts_toward_window(presented)) {
       max_boot_interval_ms = (std::max)(max_boot_interval_ms, interval);
     } else if (!warmup_logged) {

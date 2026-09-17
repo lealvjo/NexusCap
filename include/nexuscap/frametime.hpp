@@ -54,10 +54,13 @@ public:
     return v[lo] * (1.0 - t) + v[hi] * t;
   }
 
-  // Stable = p95 within +10% of 16.67ms target (or configured) and max < threshold.
-  bool stable(double target_ms = 1000.0 / 60.0, double max_stall_ms = 25.0) const {
+  // Stable = p95 within +10% of target cadence and max under stall cap.
+  // If max_stall_ms <= 0, stall cap defaults to 1.5× target (avoids 30fps UNSTABLE
+  // when callers forget to pass a cadence-scaled hitch threshold).
+  bool stable(double target_ms = 1000.0 / 60.0, double max_stall_ms = 0.0) const {
     if (size() < 30) return false;
-    return p95() <= target_ms * 1.10 && max() < max_stall_ms;
+    const double stall_cap = max_stall_ms > 0.0 ? max_stall_ms : target_ms * 1.5;
+    return p95() <= target_ms * 1.10 && max() < stall_cap;
   }
 
   // Oldest→newest order for graph / sparkline.

@@ -59,6 +59,17 @@ public:
     return has_;
   }
 
+  // Drop pending sample (format change / reopen) so consumers never see stale WxH.
+  void clear() {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (has_) {
+      recycle_.nv12.swap(slot_.nv12);
+      slot_ = FramePayload{};
+      has_ = false;
+      ++dropped_;
+    }
+  }
+
 private:
   mutable std::mutex mu_;
   FramePayload slot_;

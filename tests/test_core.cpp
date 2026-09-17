@@ -10,6 +10,7 @@
 #include "nexuscap/dlss_options.hpp"
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/frame_slot.hpp"
+#include "nexuscap/frametime.hpp"
 #include "nexuscap/hitch.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/session_report.hpp"
@@ -29,6 +30,30 @@
 #include <vector>
 
 using namespace nexuscap;
+
+TEST_CASE("FrameSlot clear drops stale frame after format change") {
+  FrameSlot slot;
+  FramePayload a;
+  a.frame_index = 1;
+  a.width = 1920;
+  a.height = 1080;
+  a.nv12.resize(100);
+  slot.publish(std::move(a));
+  CHECK(slot.has_frame());
+  slot.clear();
+  CHECK_FALSE(slot.has_frame());
+  FramePayload out;
+  CHECK_FALSE(slot.consume(out));
+  CHECK(slot.dropped() >= 1);
+}
+
+TEST_CASE("capture reopen settle helpers") {
+  CHECK(capture_device_settle_ms() >= 100);
+  CHECK(capture_first_frame_wait_ms(1920, 1080) >= capture_device_settle_ms());
+  CHECK(capture_first_frame_wait_ms(3840, 2160) > capture_first_frame_wait_ms(1920, 1080));
+  CHECK(capture_mode_prefers_nv12(3840, 2160));
+  CHECK_FALSE(capture_mode_prefers_nv12(1920, 1080));
+}
 
 TEST_CASE("FrameSlot latest-wins and drop count") {
   FrameSlot slot;
@@ -95,6 +120,55 @@ TEST_CASE("HitchDetector threshold and log cap") {
   CHECK(d.stall_count() == 20);
   d.reset_window_log_cap();
   CHECK(d.observe(100, 1000, 30, 0, 0, 0).has_value());
+}
+
+TEST_CASE("effective_hitch_threshold_ms scales with capture fps") {
+  CHECK(effective_hitch_threshold_ms(25.0, 60.0) == doctest::Approx(25.0));
+  CHECK(effective_hitch_threshold_ms(25.0, 120.0) == doctest::Approx(12.5));
+  CHECK(effective_hitch_threshold_ms(25.0, 144.0) == doctest::Approx(25.0 * 60.0 / 144.0));
+  CHECK(effective_hitch_threshold_ms(25.0, 30.0) == doctest::Approx(50.0));
+  CHECK(effective_hitch_threshold_ms(25.0, 24.0) == doctest::Approx(62.5));
+  HitchDetector d30(effective_hitch_threshold_ms(25.0, 30.0));
+  CHECK_FALSE(d30.observe(1, 0, 33.4, 0, 0, 0).has_value());
+  CHECK(d30.observe(2, 50, 55.0, 0, 0, 0).has_value());
+  HitchDetector d120(effective_hitch_threshold_ms(25.0, 120.0));
+  CHECK_FALSE(d120.observe(1, 0, 8.4, 0, 0, 0).has_value());
+  CHECK(d120.observe(2, 20, 14.0, 0, 0, 0).has_value());
+}
+
+TEST_CASE("hitch no false positive on steady cadence 30/60/120/144") {
+  const double fpss[] = {30.0, 60.0, 120.0, 144.0};
+  for (double fps : fpss) {
+    const double thr = effective_hitch_threshold_ms(25.0, fps);
+    const double cadence = 1000.0 / fps;
+    HitchDetector d(thr);
+    // 600 steady frames at exact cadence (+0.5ms jitter) must not stall.
+    for (int i = 0; i < 600; ++i) {
+      CHECK_FALSE(d.observe(static_cast<uint64_t>(i), i * cadence, cadence + 0.5, 0, 0, 0).has_value());
+    }
+    CHECK(d.stall_count() == 0);
+    // One real hitch (~2× cadence) must count.
+    CHECK(d.observe(600, 600 * cadence, cadence * 2.0, 0, 0, 0).has_value());
+    CHECK(d.stall_count() == 1);
+  }
+  // Legacy bug: fixed 25ms would stall every 30fps frame.
+  CHECK(effective_hitch_threshold_ms(25.0, 30.0) > 33.4);
+}
+
+TEST_CASE("overlay ft_stable no false UNSTABLE at 30/120/144") {
+  const double fpss[] = {30.0, 60.0, 120.0, 144.0};
+  for (double fps : fpss) {
+    const double cadence = 1000.0 / fps;
+    const double hitch_ms = effective_hitch_threshold_ms(25.0, fps);
+    FrametimeWindow w(180);
+    for (int i = 0; i < 60; ++i) w.push(cadence + 0.3);
+    CHECK(w.stable(cadence, hitch_ms));
+  }
+  // Old HUD bug: default max_stall 25ms made every 30fps frame UNSTABLE.
+  FrametimeWindow w30(180);
+  for (int i = 0; i < 60; ++i) w30.push(33.4);
+  CHECK(w30.stable(1000.0 / 30.0));  // auto 1.5× target
+  CHECK_FALSE(w30.stable(1000.0 / 30.0, 25.0));  // legacy fixed cap still fails
 }
 
 TEST_CASE("ClusterDetector metronome gap") {
@@ -1818,17 +1892,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(2, 3, 0));
+  CHECK(app_version_is(2, 4, 0));
   CHECK_FALSE(app_version_is(2, 0, 1));
-  CHECK(std::string(kAppVersion) == "2.3.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v2.3.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.3.0");
+  CHECK(std::string(kAppVersion) == "2.4.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v2.4.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.4.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("2.3.0") != std::string::npos);
+  CHECK(lobby_t.find("2.4.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("2.3.0") != std::string::npos);
+  CHECK(sess_t.find("2.4.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 

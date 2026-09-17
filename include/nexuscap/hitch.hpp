@@ -6,6 +6,16 @@
 
 namespace nexuscap {
 
+// Stall/hitch threshold scales with capture cadence (session fps).
+// `configured_ms` is the reference at 60fps (default 25). Examples with 25:
+//   30fps → 50ms, 60 → 25, 120 → 12.5, 144 → ~10.4
+// So normal cadence is never a stall; ~1.5× late still is.
+inline double effective_hitch_threshold_ms(double configured_ms, double target_fps) {
+  const double ref_60 = configured_ms > 1.0 ? configured_ms : 25.0;
+  if (target_fps <= 1.0) return ref_60;
+  return ref_60 * (60.0 / target_fps);
+}
+
 struct HitchEvent {
   double t_ms = 0;
   double interval_ms = 0;

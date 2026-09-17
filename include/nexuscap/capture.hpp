@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <string>
@@ -97,6 +98,24 @@ private:
   // Reused NV12 scratch — avoids per-frame heap churn when resolution is stable.
   std::vector<uint8_t> nv12_scratch_;
 };
+
+// USB capture cards need a beat after Stop/SetFormat before reopen (white screen if skipped).
+inline int capture_device_settle_ms() { return 180; }
+
+// After MediaControl::Run, wait for first BufferCB. 4K/MJPEG needs more than 1080p.
+inline int capture_first_frame_wait_ms(int width = 1920, int height = 1080) {
+  const long long px = static_cast<long long>((std::max)(1, width)) * static_cast<long long>((std::max)(1, height));
+  // ~0.25 ms per 1k pixels, floor 900, ceiling 3500 (4K60 ≈ 2s+).
+  int ms = static_cast<int>(px / 4000);
+  if (ms < 900) ms = 900;
+  if (ms > 3500) ms = 3500;
+  return ms;
+}
+
+// Prefer NV12 at UHD+ — MJPEG often "opens" then delivers no convertible samples (white/fake).
+inline bool capture_mode_prefers_nv12(int width, int height) {
+  return static_cast<long long>(width) * height >= 3840LL * 2160LL;
+}
 
 std::vector<std::string> list_video_capture_devices();
 

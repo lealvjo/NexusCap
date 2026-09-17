@@ -49,6 +49,15 @@ AppConfig parse_args(int argc, char** argv) {
         c.frames_limited = true;
       }
       if (c.fg_multiplier < 2) c.fg_multiplier = 2;
+    } else if (a == "--selftest-cfg") {
+      c.selftest_cfg = true;
+      c.fake_capture = true;
+      c.exclusive_fullscreen = false;
+      c.show_lobby = false;
+      if (!c.frames_limited) {
+        c.smoke_frames = 90;
+        c.frames_limited = true;
+      }
     } else if (a == "--frames" && i + 1 < argc) {
       c.smoke_frames = std::atoi(argv[++i]);
       c.frames_limited = true;

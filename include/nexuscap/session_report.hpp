@@ -44,6 +44,13 @@ inline bool hud_hotkey_fired(int vk, bool ctrl_down, int vk_hud, bool hud_ctrl) 
   return true;
 }
 
+// Ctrl+M na captura abre o CFG. Mesma regra do HUD, tecla própria.
+inline bool cfg_hotkey_fired(int vk, bool ctrl_down, int vk_cfg, bool cfg_ctrl) {
+  if (vk != vk_cfg) return false;
+  if (cfg_ctrl && !ctrl_down) return false;
+  return true;
+}
+
 struct SessionReportSnapshot {
   std::string build = kAppAnalyzeBuild;
   std::string device;

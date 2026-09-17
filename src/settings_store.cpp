@@ -189,6 +189,8 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "nr_toggle=" << s.hotkeys.vk_nr_toggle << "\n";
   o << "fullscreen=" << s.hotkeys.vk_fullscreen << "\n";
   o << "gear=" << s.hotkeys.vk_gear << "\n";
+  o << "cfg_key=" << s.hotkeys.vk_cfg << "\n";
+  o << "cfg_ctrl=" << (s.hotkeys.cfg_ctrl ? 1 : 0) << "\n";
   return o.str();
 }
 
@@ -259,6 +261,8 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "nr_toggle") s.hotkeys.vk_nr_toggle = v;
       else if (key == "fullscreen") s.hotkeys.vk_fullscreen = v;
       else if (key == "gear") s.hotkeys.vk_gear = v;
+      else if (key == "cfg_key") s.hotkeys.vk_cfg = v;
+      else if (key == "cfg_ctrl") s.hotkeys.cfg_ctrl = (val == "1" || val == "true");
     }
   }
   return true;
@@ -322,6 +326,18 @@ const char* vk_display_name(int vk) {
       return "Delete";
     default:
       break;
+  }
+  // Letras e números (ex.: Ctrl+M do CFG na captura) — uma string fixa por tecla.
+  {
+    static char alnum[36][2];
+    static bool alnum_ready = false;
+    if (!alnum_ready) {
+      for (int i = 0; i < 10; ++i) alnum[i][0] = static_cast<char>('0' + i);
+      for (int i = 0; i < 26; ++i) alnum[10 + i][0] = static_cast<char>('A' + i);
+      alnum_ready = true;
+    }
+    if (vk >= '0' && vk <= '9') return alnum[vk - '0'];
+    if (vk >= 'A' && vk <= 'Z') return alnum[10 + (vk - 'A')];
   }
   return "Key";
 }

@@ -18,6 +18,8 @@ struct HotkeyConfig {
   int vk_nr_toggle = 0x2E;  // VK_DELETE — Neural Rendering on/off (FG independente)
   int vk_fullscreen = 0x7A; // VK_F11
   int vk_gear = 0x7B;       // VK_F12 — open gear in lobby
+  int vk_cfg = 0x4D;        // 'M' — with cfg_ctrl → Ctrl+M abre o CFG na captura
+  bool cfg_ctrl = true;     // require Ctrl for the session CFG menu
 };
 
 struct SessionUiFlags {
@@ -145,6 +147,17 @@ inline void format_dlss5_stack_hud_line(char* out, size_t out_n, bool nr_on, boo
 
 inline bool nr_pass_count_change_needs_relaunch(int before, int after) {
   return nr_pass_count_uses_multipass_addon(before) != nr_pass_count_uses_multipass_addon(after);
+}
+
+// O addon multipass lê DirectNeuralRenderingPassCount só no init e não aceita o ciclo OFF→ON
+// do NR (ReShade.log: "nao importa USER32!GetAsyncKeyState ... alternancia do NR indisponivel").
+// Medido: com o ini já em 3 o runtime seguia em "NR PASS TEST 1: passes=1". Logo 1,5x↔2x↔3x
+// também precisa de processo novo — só escrever o ini não muda nada na imagem.
+inline bool nr_pass_count_change_applies_live(int before, int after) {
+  const int a = clamp_nr_pass_count(before);
+  const int b = clamp_nr_pass_count(after);
+  if (a == b) return true;
+  return !nr_pass_count_uses_multipass_addon(a) && !nr_pass_count_uses_multipass_addon(b);
 }
 
 enum class RenodxAddonSyncResult {

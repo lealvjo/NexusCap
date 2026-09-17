@@ -9,6 +9,7 @@
 #include "nexuscap/display_geom.hpp"
 #include "nexuscap/dlss_options.hpp"
 #include "nexuscap/dlss5_bridge.hpp"
+#include "nexuscap/imgui_theme.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/system_metrics.hpp"
@@ -375,40 +376,10 @@ LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-void apply_steam_theme() {
-  ImGuiStyle& st = ImGui::GetStyle();
-  st.WindowRounding = 12.f;
-  st.ChildRounding = 10.f;
-  st.FrameRounding = 8.f;
-  st.GrabRounding = 8.f;
-  st.PopupRounding = 10.f;
-  st.ScrollbarRounding = 10.f;
-  st.WindowPadding = ImVec2(20, 18);
-  st.FramePadding = ImVec2(14, 10);
-  st.ItemSpacing = ImVec2(12, 12);
-  st.ItemInnerSpacing = ImVec2(10, 8);
-  st.ScrollbarSize = 16.f;
-  st.GrabMinSize = 14.f;
-  st.Colors[ImGuiCol_WindowBg] = ImVec4(0.07f, 0.08f, 0.11f, 1.f);
-  st.Colors[ImGuiCol_ChildBg] = ImVec4(0.10f, 0.11f, 0.15f, 1.f);
-  st.Colors[ImGuiCol_FrameBg] = ImVec4(0.14f, 0.16f, 0.22f, 1.f);
-  st.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.18f, 0.22f, 0.32f, 1.f);
-  st.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.20f, 0.35f, 0.55f, 1.f);
-  st.Colors[ImGuiCol_Button] = ImVec4(0.18f, 0.45f, 0.85f, 1.f);
-  st.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.25f, 0.55f, 0.95f, 1.f);
-  st.Colors[ImGuiCol_ButtonActive] = ImVec4(0.12f, 0.38f, 0.75f, 1.f);
-  st.Colors[ImGuiCol_Header] = ImVec4(0.16f, 0.35f, 0.65f, 0.7f);
-  st.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.20f, 0.45f, 0.80f, 0.85f);
-  st.Colors[ImGuiCol_CheckMark] = ImVec4(0.35f, 0.75f, 1.f, 1.f);
-  st.Colors[ImGuiCol_SliderGrab] = ImVec4(0.30f, 0.65f, 1.f, 1.f);
-  st.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.45f, 0.80f, 1.f, 1.f);
-  st.Colors[ImGuiCol_Text] = ImVec4(0.92f, 0.94f, 0.98f, 1.f);
-  st.Colors[ImGuiCol_TextDisabled] = ImVec4(0.50f, 0.55f, 0.62f, 1.f);
-  st.Colors[ImGuiCol_Border] = ImVec4(0.20f, 0.28f, 0.40f, 0.6f);
-  st.Colors[ImGuiCol_Separator] = ImVec4(0.22f, 0.28f, 0.38f, 0.7f);
-  st.Colors[ImGuiCol_TitleBg] = ImVec4(0.08f, 0.10f, 0.14f, 1.f);
-  st.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.10f, 0.14f, 0.22f, 1.f);
-  st.Colors[ImGuiCol_PopupBg] = ImVec4(0.09f, 0.10f, 0.14f, 0.98f);
+void apply_lobby_theme() {
+  apply_nexuscap_imgui_theme();
+  // Só o FramePadding é do lobby: a janela é grande e os controles ficam clicáveis à distância.
+  ImGui::GetStyle().FramePadding = ImVec2(14, 10);
 }
 
 void apply_settings_to_cfg(const PersistedSettings& s, AppConfig& cfg) {
@@ -823,7 +794,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.IniFilename = nullptr;
   io.FontGlobalScale = 1.45f;
-  apply_steam_theme();
+  apply_lobby_theme();
   ImGui_ImplWin32_Init(g_hwnd);
   ImGui_ImplDX11_Init(g_dx.device, g_dx.ctx);
 
@@ -1372,25 +1343,25 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           settings.fps = modes[static_cast<size_t>(mode_idx)].fps;
         }
         settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
+        const int session_scale = clamp_scale_percent(settings.scale_percent);
         {
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           sync_feed_work_resolution_in_dir(std::filesystem::path(exe_path).parent_path().string(),
-                                           feed_work_resolution_for_session(settings.scale_percent));
+                                           feed_work_resolution_for_session(session_scale));
         }
-        if (feed_scale_change_needs_relaunch(settings.enhance_renodx, feed_loaded_scale,
-                                             settings.scale_percent)) {
+        if (feed_scale_change_needs_relaunch(settings.enhance_renodx, feed_loaded_scale, session_scale)) {
           // Feed already snapshotted the old work_resolution — restart, then resume the session.
           std::string serr;
           save_settings(settings, settings_default_path(), serr);
           motor_swap_title = "Aplicando escala do Feed";
           motor_swap_line = std::to_string(effective_scale_percent(true, feed_loaded_scale)) + "%  \xE2\x86\x92  " +
-                            std::to_string(effective_scale_percent(true, settings.scale_percent)) + "%";
+                            std::to_string(effective_scale_percent(true, session_scale)) + "%";
           motor_swap_args = "--autostart";
           motor_swap_pending = true;
           motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
           push_lobby_toast(session_notice_feed_scale_apply(effective_scale_percent(true, feed_loaded_scale),
-                                                          effective_scale_percent(true, settings.scale_percent)));
+                                                          effective_scale_percent(true, session_scale)));
         } else {
           g_start_requested = true;
           g_lobby_running = false;
@@ -1410,11 +1381,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     // Non-modal side panel — preview stays visible so you see adjustments live.
     if (g_open_gear) {
       const ImGuiViewport* mvp = ImGui::GetMainViewport();
-      ImGui::SetNextWindowPos(ImVec2(mvp->WorkPos.x + mvp->WorkSize.x - 440.f, mvp->WorkPos.y + 80.f),
+      // Mesma regra do CFG da captura: largura acompanha a janela, senão as notas ficam cortadas.
+      const float gear_w = (std::max)(420.f, (std::min)(mvp->WorkSize.x * 0.32f, 860.f));
+      const float gear_h = (std::max)(240.f, mvp->WorkSize.y - 120.f);
+      ImGui::SetNextWindowPos(ImVec2(mvp->WorkPos.x + mvp->WorkSize.x - gear_w - 40.f, mvp->WorkPos.y + 80.f),
                               ImGuiCond_Appearing);
-      ImGui::SetNextWindowSize(ImVec2(420.f, mvp->WorkSize.y - 120.f), ImGuiCond_Appearing);
+      ImGui::SetNextWindowSize(ImVec2(gear_w, gear_h), ImGuiCond_Appearing);
       if (ImGui::Begin("Configuracoes (CFG)", &g_open_gear, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.f, 1.f), "Ajuste e veja no preview ao vivo");
+        ImGui::TextColored(nexuscap_accent_color(), "Ajuste e veja no preview ao vivo");
+        ImGui::PushTextWrapPos(0.f);  // notas longas quebram linha em vez de sumir na borda
         ImGui::Separator();
         ImGui::TextUnformatted("Frame Gen (Lossless Scaling)");
         const bool fg_was = settings.fg_enabled;
@@ -1549,6 +1524,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextDisabled("NR=%d  model=%d  ·  olhe a imagem (nao so o texto)",
                             renodx_nr_preset_index(settings.renodx_preset),
                             renodx_feed_model_preset(settings.renodx_preset));
+        ImGui::TextDisabled(nr_pass_count_uses_multipass_addon(settings.nr_pass_count)
+                                ? "  no multipass o Iniciar aplica o preset (o addon so le no boot)"
+                                : "  no 1x o preview muda na hora; na captura o preset reinicia");
         ImGui::TextDisabled("Mesmo look no Iniciar — janela ou tela cheia.");
 
         ImGui::Spacing();
@@ -1569,8 +1547,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           const bool writable = prepare_renodx_runtime_dirs(exe_dir);
-          const bool need_relaunch =
-              nr_pass_count_change_needs_relaunch(pass_before, settings.nr_pass_count);
+          // Multipass não relê o PassCount no processo vivo, então 1,5x↔2x↔3x também reinicia.
+          const bool need_relaunch = !nr_pass_count_change_applies_live(pass_before, settings.nr_pass_count);
           if (!writable) {
             push_lobby_toast(renodx_write_denied_notice());
           } else if (need_relaunch) {
@@ -1578,13 +1556,19 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             std::string serr;
             save_settings(settings, settings_default_path(), serr);
             (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
-            motor_swap_title = "Trocando motor DLSS 5";
+            (void)sync_feed_work_resolution_in_dir(
+                exe_dir, feed_work_resolution_for_session(settings.scale_percent));
+            const bool motor_change =
+                nr_pass_count_change_needs_relaunch(pass_before, settings.nr_pass_count);
+            motor_swap_title = motor_change ? "Trocando motor DLSS 5" : "Aplicando Pass Count";
             motor_swap_line = std::string(nr_pass_count_label(pass_before)) + "  \xE2\x86\x92  " +
                               nr_pass_count_label(settings.nr_pass_count);
             motor_swap_args.clear();
             motor_swap_pending = true;
             motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
-            push_lobby_toast(session_notice_dlss5_motor_swap(pass_before, settings.nr_pass_count));
+            push_lobby_toast(motor_change
+                                 ? session_notice_dlss5_motor_swap(pass_before, settings.nr_pass_count)
+                                 : session_notice_nr_pass_count_apply(pass_before, settings.nr_pass_count));
           } else {
             // 1,5x ↔ 2x ↔ 3x: same multipass addon — INI + NR reload only.
             apply_lobby_nr_pass_count_live(exe_dir, settings.nr_pass_count, want, &nr_runtime_on,
@@ -1599,11 +1583,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextDisabled("1,5x: mesma res e ~60 fps que o 1x (recomendado).");
         ImGui::TextDisabled("2x/3x: mais pesados, pouco ganho, look mais processado.");
         ImGui::TextDisabled("Escala do Feed e manual se quiseres menos carga.");
-        if (!renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(settings.nr_pass_count))) {
-          ImGui::TextDisabled("1,5x/2x/3x: NR sempre ON (sem NRToggleKey) — on/off pelo Home.");
-        } else {
-          ImGui::TextDisabled("1x: Delete liga/desliga o NR na captura.");
-        }
+        ImGui::TextDisabled("Delete ou Ctrl+M liga/desliga o NR na captura (reinicia e volta).");
         ImGui::EndDisabled();
 
         ImGui::Separator();
@@ -1639,6 +1619,25 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           ImGui::SameLine();
           ImGui::Checkbox("Ctrl##hud_ctrl", &settings.hotkeys.hud_ctrl);
         }
+        {
+          ImGui::AlignTextToFramePadding();
+          ImGui::TextUnformatted("Menu na captura");
+          ImGui::SameLine(220);
+          char buf[64];
+          if (settings.hotkeys.cfg_ctrl) {
+            std::snprintf(buf, sizeof(buf), "Ctrl+%s##cfgkey", vk_display_name(settings.hotkeys.vk_cfg));
+          } else {
+            std::snprintf(buf, sizeof(buf), "%s##cfgkey", vk_display_name(settings.hotkeys.vk_cfg));
+          }
+          if (g_capture_vk_target == &settings.hotkeys.vk_cfg) {
+            ImGui::Button("... pressione tecla ...", ImVec2(200, 0));
+          } else if (ImGui::Button(buf, ImVec2(200, 0))) {
+            g_capture_vk_target = &settings.hotkeys.vk_cfg;
+          }
+          ImGui::SameLine();
+          ImGui::Checkbox("Ctrl##cfg_ctrl", &settings.hotkeys.cfg_ctrl);
+          ImGui::TextDisabled("  abre este CFG por cima do jogo, sem sair da captura");
+        }
         hotkey_row("Analyze", &settings.hotkeys.vk_analyze);
         hotkey_row("RenoDX overlay", &settings.hotkeys.vk_renodx);
         hotkey_row("Neural Rendering on/off", &settings.hotkeys.vk_nr_toggle);
@@ -1670,6 +1669,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           persist_gear();
           g_open_gear = false;
         }
+        ImGui::PopTextWrapPos();
       }
       ImGui::End();
     }

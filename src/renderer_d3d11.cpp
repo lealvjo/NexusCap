@@ -538,6 +538,17 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
     burn_mini_overlay(overlay);
   }
 
+  // CFG da sessão por cima de tudo (mesmo backbuffer, mesmo Present).
+  if (ui_draw_) {
+    D3D11_VIEWPORT full{};
+    full.Width = static_cast<float>(back_w_);
+    full.Height = static_cast<float>(back_h_);
+    full.MaxDepth = 1.f;
+    impl_->ctx->OMSetRenderTargets(1, impl_->rtv.GetAddressOf(), nullptr);
+    impl_->ctx->RSSetViewports(1, &full);
+    ui_draw_(ui_draw_user_);
+  }
+
   UINT present_flags = 0;
   if (!vsync_ && (swap_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)) {
     present_flags = DXGI_PRESENT_ALLOW_TEARING;
@@ -1306,6 +1317,111 @@ LRESULT CALLBACK SessionControlPanel::WndProc(HWND hwnd, UINT msg, WPARAM wp, LP
     return 0;
   }
   if (msg == WM_NCHITTEST) return HTTRANSPARENT;
+  return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+namespace {
+constexpr wchar_t kRestartNoticeClass[] = L"NexusCapRestartNotice";
+constexpr int kRestartNoticeW = 720;
+constexpr int kRestartNoticeH = 150;
+}  // namespace
+
+bool RestartNotice::show(HINSTANCE hi, const std::string& title, const std::string& detail) {
+  title_ = utf8_to_wide_hud(title);
+  detail_ = utf8_to_wide_hud(detail);
+  if (hwnd_) {
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    pump();
+    return true;
+  }
+  WNDCLASSW wc{};
+  wc.lpfnWndProc = RestartNotice::WndProc;
+  wc.hInstance = hi;
+  wc.lpszClassName = kRestartNoticeClass;
+  wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  RegisterClassW(&wc);
+
+  const int sw = GetSystemMetrics(SM_CXSCREEN);
+  const int sh = GetSystemMetrics(SM_CYSCREEN);
+  const int x = (std::max)(0, (sw - kRestartNoticeW) / 2);
+  const int y = (std::max)(0, (sh - kRestartNoticeH) / 2);
+  // Sem owner: a janela de captura pode morrer que este aviso continua na tela.
+  hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kRestartNoticeClass,
+                          L"NexusCap", WS_POPUP, x, y, kRestartNoticeW, kRestartNoticeH, nullptr, nullptr, hi,
+                          this);
+  if (!hwnd_) return false;
+  ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  pump();
+  return true;
+}
+
+void RestartNotice::destroy() {
+  if (hwnd_) {
+    DestroyWindow(hwnd_);
+    hwnd_ = nullptr;
+  }
+}
+
+void RestartNotice::pump() const {
+  if (!hwnd_) return;
+  SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  UpdateWindow(hwnd_);
+  MSG msg{};
+  while (PeekMessageW(&msg, hwnd_, 0, 0, PM_REMOVE)) {
+    TranslateMessage(&msg);
+    DispatchMessageW(&msg);
+  }
+}
+
+void RestartNotice::paint(HDC hdc) const {
+  RECT rc{};
+  GetClientRect(hwnd_, &rc);
+  HBRUSH bg = CreateSolidBrush(RGB(14, 18, 26));
+  FillRect(hdc, &rc, bg);
+  DeleteObject(bg);
+  HPEN edge = CreatePen(PS_SOLID, 2, RGB(240, 180, 65));
+  HGDIOBJ old_pen = SelectObject(hdc, edge);
+  HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+  Rectangle(hdc, 0, 0, rc.right, rc.bottom);
+  SelectObject(hdc, old_pen);
+  SelectObject(hdc, old_brush);
+  DeleteObject(edge);
+
+  SetBkMode(hdc, TRANSPARENT);
+  HFONT big = CreateFontW(34, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HFONT old = static_cast<HFONT>(SelectObject(hdc, big));
+  SetTextColor(hdc, RGB(255, 210, 110));
+  TextOutW(hdc, 28, 30, title_.c_str(), static_cast<int>(title_.size()));
+  SelectObject(hdc, old);
+  DeleteObject(big);
+
+  HFONT small_font = CreateFontW(22, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                 DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  old = static_cast<HFONT>(SelectObject(hdc, small_font));
+  SetTextColor(hdc, RGB(205, 225, 250));
+  TextOutW(hdc, 28, 80, detail_.c_str(), static_cast<int>(detail_.size()));
+  SelectObject(hdc, old);
+  DeleteObject(small_font);
+}
+
+LRESULT CALLBACK RestartNotice::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_NCCREATE) {
+    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
+    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+    return TRUE;
+  }
+  auto* self = reinterpret_cast<RestartNotice*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_PAINT && self) {
+    PAINTSTRUCT ps;
+    HDC hdc = BeginPaint(hwnd, &ps);
+    self->paint(hdc);
+    EndPaint(hwnd, &ps);
+    return 0;
+  }
+  if (msg == WM_CLOSE) return 0;  // nunca fecha por clique: o relaunch decide
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
 

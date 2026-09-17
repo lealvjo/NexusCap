@@ -1264,11 +1264,13 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(clamp_nr_pass_count(2) == 2);
   CHECK(clamp_nr_pass_count(3) == 3);
   CHECK(clamp_nr_pass_count(4) == 4);
+  CHECK(clamp_nr_pass_count(5) == 4);
   CHECK(clamp_nr_pass_count(9) == 4);
   CHECK(nr_reshade_pass_count(1) == 1);
   CHECK(nr_reshade_pass_count(2) == 2);
   CHECK(nr_reshade_pass_count(3) == 3);
   CHECK(nr_reshade_pass_count(4) == 1);  // 1.5x writes INI PassCount=1
+  CHECK(nr_reshade_pass_count(5) == 1);  // ini antigo 1.75x cai no 1,5x
   CHECK(std::string(nr_pass_count_label(1)).find("1x") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(2)).find("2x") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(3)).find("3x") != std::string::npos);
@@ -1311,6 +1313,9 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   PersistedSettings loaded15;
   REQUIRE(parse_settings_ini(ini15, loaded15));
   CHECK(loaded15.nr_pass_count == 4);
+  PersistedSettings loaded_old175;
+  REQUIRE(parse_settings_ini("[session]\nnr_pass_count=5\n", loaded_old175));
+  CHECK(loaded_old175.nr_pass_count == 4);  // 1,75x antigo vira 1,5x
 
   AppConfig cfg;
   apply_persisted_to_config(loaded, cfg);
@@ -1324,6 +1329,8 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(parse_reshade_nr_pass_count(reshade) == 1);
   CHECK(reshade.find("DirectNeuralRenderingPassCount=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingPassCount=4") == std::string::npos);
+  reshade = apply_reshade_nr_pass_count(std::move(reshade), 5);
+  CHECK(parse_reshade_nr_pass_count(reshade) == 1);  // 5 clampa para 1,5x → INI 1
 
   reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 2, /*visual=*/0);
   CHECK(parse_reshade_nr_pass_count(reshade) == 2);
@@ -2041,17 +2048,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 0));
+  CHECK(app_version_is(3, 1, 1));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.0");
+  CHECK(std::string(kAppVersion) == "3.1.1");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.1.1") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.1");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.0") != std::string::npos);
+  CHECK(lobby_t.find("3.1.1") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.0") != std::string::npos);
+  CHECK(sess_t.find("3.1.1") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2957,6 +2964,191 @@ TEST_CASE("feed boot scale is 100 in lobby and session scale when autostart") {
   CHECK(feed_work_resolution_at_boot(/*lobby_first=*/true, 50) == 100);
   CHECK(feed_work_resolution_at_boot(/*lobby_first=*/false, 50) == 50);
   CHECK(feed_work_resolution_at_boot(false, 25) == kMinFeedWorkResolution);
+}
+
+TEST_CASE("session CFG hotkey default is Ctrl+M and never collides with the HUD") {
+  const HotkeyConfig h = default_hotkeys();
+  CHECK(h.vk_cfg == 0x4D);
+  CHECK(h.cfg_ctrl);
+  CHECK(cfg_hotkey_fired(0x4D, true, h.vk_cfg, h.cfg_ctrl));
+  CHECK_FALSE(cfg_hotkey_fired(0x4D, false, h.vk_cfg, h.cfg_ctrl));
+  CHECK_FALSE(cfg_hotkey_fired(0x20, true, h.vk_cfg, h.cfg_ctrl));
+  // Ctrl+Espaco continua so HUD; Ctrl+M continua so CFG.
+  CHECK_FALSE(hud_hotkey_fired(0x4D, true, h.vk_hud, h.hud_ctrl));
+  CHECK(hud_hotkey_fired(0x20, true, h.vk_hud, h.hud_ctrl));
+  CHECK(h.vk_cfg != h.vk_hud);
+  CHECK(std::string(vk_display_name(0x4D)) == "M");
+}
+
+TEST_CASE("Esc closes the session CFG before leaving to the lobby") {
+  CHECK(session_esc_action(/*cfg_open=*/true) == SessionEscAction::CloseCfg);
+  CHECK(session_esc_action(/*cfg_open=*/false) == SessionEscAction::BackToLobby);
+}
+
+TEST_CASE("session hotkeys are blocked while the CFG has the keyboard") {
+  CHECK(session_hotkeys_blocked_while_cfg_open(true));
+  CHECK_FALSE(session_hotkeys_blocked_while_cfg_open(false));
+}
+
+TEST_CASE("session CFG plan: motor swap and feed scale restart, the rest is live") {
+  // 1x ↔ multipass troca o addon (AddonPath) → reinicio.
+  CHECK(plan_session_cfg_apply(true, 1, 4, 100, 100) == SessionCfgApply::RelaunchMotor);
+  CHECK(plan_session_cfg_apply(true, 4, 1, 100, 100) == SessionCfgApply::RelaunchMotor);
+  CHECK(plan_session_cfg_apply(true, 1, 2, 100, 100) == SessionCfgApply::RelaunchMotor);
+  // 1,5x ↔ 2x ↔ 3x: mesmo motor, mas o multipass le o PassCount so no init (ReShade.log:
+  // ini em 3 e runtime em "passes=1", sem NRToggleKey pro ciclo OFF→ON) — reinicia tambem.
+  CHECK(plan_session_cfg_apply(true, 4, 2, 100, 100) == SessionCfgApply::RelaunchPassCount);
+  CHECK(plan_session_cfg_apply(true, 2, 3, 100, 100) == SessionCfgApply::RelaunchPassCount);
+  CHECK(plan_session_cfg_apply(true, 3, 4, 100, 100) == SessionCfgApply::RelaunchPassCount);
+  CHECK(plan_session_cfg_preset_apply(true) == SessionCfgApply::RelaunchPreset);
+  CHECK(plan_session_cfg_preset_apply(false) == SessionCfgApply::RelaunchPreset);
+  CHECK_FALSE(session_cfg_preset_applies_live(true));
+  CHECK_FALSE(session_cfg_preset_applies_live(false));
+  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::RelaunchNr);
+  CHECK(plan_session_cfg_nr_apply(true, true) == SessionCfgApply::RelaunchNr);
+  CHECK(plan_session_cfg_nr_apply(false, false) == SessionCfgApply::Live);
+  CHECK_FALSE(nr_pass_count_change_applies_live(4, 2));
+  CHECK_FALSE(nr_pass_count_change_applies_live(2, 3));
+  CHECK(nr_pass_count_change_applies_live(2, 2));  // sem troca, nada a aplicar
+  CHECK(nr_pass_count_change_applies_live(1, 1));
+  // Preset / NR / FG nao mexem em pass count nem escala.
+  CHECK(plan_session_cfg_apply(true, 4, 4, 50, 50) == SessionCfgApply::Live);
+  // Escala do Feed so entra no boot do processo.
+  CHECK(plan_session_cfg_apply(true, 4, 4, 100, 50) == SessionCfgApply::RelaunchFeedScale);
+  // 40% e 33% caem no mesmo piso do Feed — reiniciar nao mudaria nada.
+  CHECK(plan_session_cfg_apply(true, 4, 4, 40, 33) == SessionCfgApply::Live);
+  // Sem RenoDX o renderer escala o proprio RT.
+  CHECK(plan_session_cfg_apply(false, 1, 1, 100, 50) == SessionCfgApply::Live);
+  // Motor tem prioridade quando as duas coisas mudam juntas.
+  CHECK(plan_session_cfg_apply(true, 1, 4, 100, 50) == SessionCfgApply::RelaunchMotor);
+
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchMotor));
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchPassCount));
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchFeedScale));
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchPreset));
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchNr));
+  CHECK_FALSE(session_cfg_apply_needs_relaunch(SessionCfgApply::Live));
+}
+
+TEST_CASE("session CFG restart resumes the session, never the lobby") {
+  CHECK(std::string(session_cfg_relaunch_args()) == "--autostart");
+  CHECK(kSessionExitRelaunch != kSessionExitBackToLobby);
+  const char* argv[] = {"NexusCap.exe", session_cfg_relaunch_args()};
+  const AppConfig c = parse_args(2, const_cast<char**>(argv));
+  CHECK(c.autostart);
+}
+
+TEST_CASE("session CFG NR on/off restarts on every RenoDX motor") {
+  CHECK(session_cfg_nr_toggle_allowed(/*renodx=*/true, /*multipass=*/false));
+  CHECK(session_cfg_nr_toggle_allowed(true, true));
+  CHECK_FALSE(session_cfg_nr_toggle_allowed(false, false));
+  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::RelaunchNr);
+  CHECK(plan_session_cfg_nr_apply(true, true) == SessionCfgApply::RelaunchNr);
+  const std::string on = session_notice_nr_apply(true);
+  const std::string off = session_notice_nr_apply(false);
+  CHECK(on.find("ON") != std::string::npos);
+  CHECK(off.find("OFF") != std::string::npos);
+  CHECK(on.find("reinicio") != std::string::npos);
+}
+
+TEST_CASE("session CFG changes survive the restart through settings.ini") {
+  AppConfig cfg;
+  cfg.enhance = EnhanceBackend::Renodx;
+  cfg.renodx_preset = 2;  // Cinematic
+  cfg.nr_pass_count = 2;
+  cfg.scale_percent = 50;
+  cfg.neural_rendering = true;
+  cfg.fg_auto_start = true;
+  cfg.fg_multiplier = 4;
+
+  PersistedSettings s = default_settings();
+  apply_session_cfg_to_persisted(cfg, s);
+  CHECK(s.renodx_preset == 2);
+  CHECK(s.nr_pass_count == 2);
+  CHECK(s.scale_percent == 50);
+  CHECK(s.neural_rendering);
+  CHECK(s.enhance_renodx);
+  CHECK(s.fg_enabled);
+  CHECK(s.fg_multiplier == 4);
+
+  PersistedSettings out;
+  CHECK(parse_settings_ini(serialize_settings_ini(s), out));
+  CHECK(out.renodx_preset == 2);
+  CHECK(out.nr_pass_count == 2);
+  CHECK(out.scale_percent == 50);
+  CHECK(out.fg_enabled);
+  CHECK(out.fg_multiplier == 4);
+
+  // O processo novo monta o AppConfig a partir do ini — mesma sessao de volta.
+  AppConfig back;
+  apply_persisted_to_config(out, back);
+  CHECK(back.renodx_preset == 2);
+  CHECK(back.nr_pass_count == 2);
+  CHECK(back.scale_percent == 50);
+  CHECK(back.enhance == EnhanceBackend::Renodx);
+}
+
+TEST_CASE("CFG hotkey round trips through settings.ini and old files default to Ctrl+M") {
+  PersistedSettings s = default_settings();
+  s.hotkeys.vk_cfg = 0x4E;  // N
+  s.hotkeys.cfg_ctrl = false;
+  const std::string ini = serialize_settings_ini(s);
+  CHECK(ini.find("cfg_key=78") != std::string::npos);
+  CHECK(ini.find("cfg_ctrl=0") != std::string::npos);
+  PersistedSettings out;
+  CHECK(parse_settings_ini(ini, out));
+  CHECK(out.hotkeys.vk_cfg == 0x4E);
+  CHECK_FALSE(out.hotkeys.cfg_ctrl);
+
+  // Ini de versao anterior (sem as chaves) carrega o default Ctrl+M.
+  PersistedSettings old;
+  CHECK(parse_settings_ini("[hotkeys]\nhud=32\nhud_ctrl=1\n", old));
+  CHECK(old.hotkeys.vk_cfg == 0x4D);
+  CHECK(old.hotkeys.cfg_ctrl);
+}
+
+TEST_CASE("restart notice explains the reason and covers the new process boot") {
+  const std::string title = session_restart_notice_title();
+  CHECK(title.find("Reiniciando") != std::string::npos);
+  const std::string motor = session_restart_notice_detail(SessionCfgApply::RelaunchMotor);
+  const std::string scale = session_restart_notice_detail(SessionCfgApply::RelaunchFeedScale);
+  const std::string pass = session_restart_notice_detail(SessionCfgApply::RelaunchPassCount);
+  const std::string preset = session_restart_notice_detail(SessionCfgApply::RelaunchPreset);
+  const std::string nr = session_restart_notice_detail(SessionCfgApply::RelaunchNr);
+  CHECK(motor.find("motor") != std::string::npos);
+  CHECK(scale.find("escala") != std::string::npos);
+  CHECK(pass.find("Pass Count") != std::string::npos);
+  CHECK(preset.find("preset") != std::string::npos);
+  CHECK(nr.find("Neural Rendering") != std::string::npos);
+  CHECK(motor != scale);
+  CHECK(pass != motor);
+  CHECK(preset != pass);
+  CHECK(nr != preset);
+  CHECK(pass.find("sessao") != std::string::npos);
+  const std::string preset_toast = session_notice_preset_apply(0, 2);
+  CHECK(preset_toast.find("Default") != std::string::npos);
+  CHECK(preset_toast.find("Cinematic") != std::string::npos);
+  CHECK(preset_toast.find("reinicio") != std::string::npos);
+  // Toast na sessao diz de onde pra onde, igual a troca de motor.
+  const std::string toast = session_notice_nr_pass_count_apply(4, 2);
+  CHECK(toast.find("1,5x") != std::string::npos);
+  CHECK(toast.find("2x multipass") != std::string::npos);
+  CHECK(toast.find("reinicio") != std::string::npos);
+  // Os dois prometem a volta para a sessao, nunca para o lobby.
+  CHECK(motor.find("sessao") != std::string::npos);
+  CHECK(scale.find("sessao") != std::string::npos);
+  CHECK(restart_notice_visible_at_boot(/*autostart=*/true));
+  CHECK_FALSE(restart_notice_visible_at_boot(false));
+}
+
+TEST_CASE("--selftest-cfg runs the session without the lobby") {
+  const char* argv[] = {"NexusCap.exe", "--selftest-cfg"};
+  const AppConfig c = parse_args(2, const_cast<char**>(argv));
+  CHECK(c.selftest_cfg);
+  CHECK_FALSE(c.show_lobby);
+  CHECK_FALSE(c.exclusive_fullscreen);
+  CHECK(c.frames_limited);
+  CHECK(c.smoke_frames >= 60);
 }
 
 

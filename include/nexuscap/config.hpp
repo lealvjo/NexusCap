@@ -3,6 +3,7 @@
 #include <cstring>
 #include <string>
 
+#include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/dlss_options.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/settings_store.hpp"
@@ -63,6 +64,7 @@ struct AppConfig {
   bool fg_auto_start = false;
   std::string fg_path;  // optional override of LosslessScaling.exe
   bool selftest_fg = false;
+  bool selftest_cfg = false;  // --selftest-cfg: desenha o CFG da sessão e valida o draw data
 
   HotkeyConfig hotkeys{};
 };
@@ -314,6 +316,83 @@ inline int session_exit_code_after_esc(bool session_from_lobby) {
   return session_from_lobby ? kSessionExitBackToLobby : 0;
 }
 
+// CFG na captura (Ctrl+M) pediu reinício: sai da sessão, salva e volta com --autostart.
+inline constexpr int kSessionExitRelaunch = 101;
+
+// Esc com o CFG aberto fecha só o menu; sem menu, volta ao lobby.
+enum class SessionEscAction { CloseCfg, BackToLobby };
+inline SessionEscAction session_esc_action(bool cfg_open) {
+  return cfg_open ? SessionEscAction::CloseCfg : SessionEscAction::BackToLobby;
+}
+
+// Com o menu aberto o ImGui tem o teclado — A / PgDn / Delete / F11 não podem disparar.
+inline bool session_hotkeys_blocked_while_cfg_open(bool cfg_open) { return cfg_open; }
+
+// O que a mudança feita no CFG da sessão custa.
+enum class SessionCfgApply {
+  Live,
+  RelaunchMotor,
+  RelaunchPassCount,
+  RelaunchFeedScale,
+  RelaunchPreset,
+  RelaunchNr,
+};
+
+// Preset e NR no 1x tambem reiniciam: o pulso OFF→ON invertia a imagem vs a UI.
+inline bool session_cfg_preset_applies_live(bool /*multipass_stack*/) { return false; }
+
+inline SessionCfgApply plan_session_cfg_preset_apply(bool /*multipass_stack*/) {
+  return SessionCfgApply::RelaunchPreset;
+}
+
+inline SessionCfgApply plan_session_cfg_apply(bool renodx_stack, int pass_before, int pass_after,
+                                              int scale_loaded, int scale_after) {
+  if (nr_pass_count_change_needs_relaunch(pass_before, pass_after)) return SessionCfgApply::RelaunchMotor;
+  // Mesmo motor, mas o multipass não relê o PassCount sem processo novo.
+  if (!nr_pass_count_change_applies_live(pass_before, pass_after)) {
+    return SessionCfgApply::RelaunchPassCount;
+  }
+  if (feed_scale_change_needs_relaunch(renodx_stack, scale_loaded, scale_after)) {
+    return SessionCfgApply::RelaunchFeedScale;
+  }
+  return SessionCfgApply::Live;
+}
+
+inline bool session_cfg_apply_needs_relaunch(SessionCfgApply a) { return a != SessionCfgApply::Live; }
+
+// Reinício da sessão sempre volta para a captura, nunca para o lobby.
+inline const char* session_cfg_relaunch_args() { return "--autostart"; }
+
+// Delete / Ctrl+M ligam e desligam o NR em qualquer Pass Count. Sem pulso: grava e reinicia.
+inline bool session_cfg_nr_toggle_allowed(bool renodx_stack, bool /*multipass_stack*/) {
+  return renodx_stack;
+}
+
+inline SessionCfgApply plan_session_cfg_nr_apply(bool renodx_stack, bool multipass_stack) {
+  if (!session_cfg_nr_toggle_allowed(renodx_stack, multipass_stack)) return SessionCfgApply::Live;
+  return SessionCfgApply::RelaunchNr;
+}
+
+// Aviso de reinício: sessão, teardown e boot do processo novo mostram o mesmo texto.
+inline std::string session_restart_notice_title() { return "Reiniciando o NexusCap"; }
+inline std::string session_restart_notice_detail(SessionCfgApply a) {
+  switch (a) {
+    case SessionCfgApply::RelaunchMotor:
+      return "Trocando o motor DLSS 5 — volto para a sessao";
+    case SessionCfgApply::RelaunchPassCount:
+      return "Aplicando o Pass Count — volto para a sessao";
+    case SessionCfgApply::RelaunchFeedScale:
+      return "Aplicando a escala do Feed — volto para a sessao";
+    case SessionCfgApply::RelaunchPreset:
+      return "Aplicando o preset visual — volto para a sessao";
+    case SessionCfgApply::RelaunchNr:
+      return "Aplicando o Neural Rendering — volto para a sessao";
+    default:
+      return "Volto para a sessao";
+  }
+}
+inline bool restart_notice_visible_at_boot(bool autostart) { return autostart; }
+
 // Esc in lobby chrome: never quits. Gear/hotkey capture may consume Esc locally.
 enum class LobbyEscAction { None, CloseGear, CancelHotkeyCapture };
 inline LobbyEscAction lobby_esc_action(bool gear_open, bool capturing_hotkey) {
@@ -356,9 +435,28 @@ inline std::string session_notice_dlss5_motor_swap(int from_pass, int to_pass) {
   return std::string("Trocando motor DLSS 5 — ") + nr_pass_count_label(from_pass) + " → " +
          nr_pass_count_label(to_pass) + " (reinicio)";
 }
+inline std::string session_notice_nr_pass_count_apply(int from_pass, int to_pass) {
+  return std::string("Aplicando Pass Count — ") + nr_pass_count_label(from_pass) + " → " +
+         nr_pass_count_label(to_pass) + " (reinicio)";
+}
+inline std::string session_notice_preset_apply(int from_preset, int to_preset) {
+  return std::string("Aplicando preset — ") + renodx_visual_preset_name(from_preset) + " → " +
+         renodx_visual_preset_name(to_preset) + " (reinicio)";
+}
+inline std::string session_notice_nr_apply(bool want_on) {
+  return std::string("Aplicando Neural Rendering — ") + (want_on ? "ON" : "OFF") + " (reinicio)";
+}
 inline std::string session_notice_nr_hotkey_unavailable(int pass_count) {
   return std::string("Neural Rendering sempre ON em ") + nr_pass_count_label(pass_count) +
          " — on/off pelo Home do RenoDX";
+}
+inline std::string session_notice_cfg_open(int vk_cfg, bool cfg_ctrl) {
+  std::string key = cfg_ctrl ? std::string("Ctrl+") : std::string();
+  key += vk_display_name(vk_cfg);
+  return "CFG aberto — " + key + " ou Esc fecha";
+}
+inline std::string session_notice_cfg_closed() {
+  return "CFG fechado — ajustes mantidos";
 }
 inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
   return std::string("Aplicando escala do Feed — ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +
@@ -416,6 +514,15 @@ inline void apply_session_nr_runtime_to_config(bool nr_on, AppConfig& cfg) {
 
 inline bool session_nr_hotkey_allowed(EnhanceBackend enhance) {
   return enhance == EnhanceBackend::Renodx;
+}
+
+// CFG da sessão → disco. O processo novo (--autostart) lê isto para voltar igual.
+inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettings& s) {
+  s.renodx_preset = clamp_renodx_visual_preset(cfg.renodx_preset);
+  s.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
+  s.scale_percent = clamp_scale_percent(cfg.scale_percent);
+  apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, s);
+  apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == EnhanceBackend::Renodx, s);
 }
 
 // Lobby checkbox = RenoDX stack (not NR runtime). NR on/off is Delete / status line.

@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `3.1.0` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `3.1.1` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-3.1.0.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-3.1.1.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-3.1.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
+1. Instalar `NexusCap-Setup-3.1.1.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -43,28 +43,36 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-3.1.0.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-3.1.1.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
 5. **Frame Gen (opcional):** instale Lossless Scaling na Steam; no CFG, Page Down liga/desliga. Se o exe não for achado, use **Pasta** e aponte `LosslessScaling.exe`.
-6. **Iniciar** — Esc volta ao lobby. **Ctrl+Espaço** (atalho configurável) mostra/esconde o overlay HUD. Use **Abrir logs** no CFG se precisar de suporte.
+6. **Iniciar** — Esc volta ao lobby. **Ctrl+M** abre o CFG por cima do jogo (ajusta sem sair da captura) e **Ctrl+Espaço** mostra/esconde o overlay HUD (os dois atalhos são configuráveis). Use **Abrir logs** no CFG se precisar de suporte.
 7. **Reportar bug / Reportar performance** (checkboxes abaixo do VSYNC, off por padrão): geram `.txt` leves em `report/` e `performance/` ao lado do exe — úteis para suporte / colar numa IA.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
 
+### Novidades 3.1.1
+
+- **NR on/off em todos os modos:** Delete ou Ctrl+M no 1x, 1,5x, 2x e 3x grava e reinicia de volta na sessão (sem pulso ao vivo).
+- **Preset visual** também reinicia no 1x — o ciclo OFF→ON invertia a imagem e o check.
+- **1,75x removido** (pedia baixar a resolução do Feed).
+
 ### Novidades 3.1
 
+- **CFG na captura (`Ctrl+M`):** o menu abre por cima do jogo, com mouse. Frame Gen entra ao vivo. **NR on/off** e o **preset visual** gravam e reiniciam — voltam para a sessão. **Esc** fecha o menu; **Esc** de novo volta ao lobby.
+- **Reinício avisado:** mudar o **Pass Count**, o **preset visual**, o **NR**, ou aplicar nova **escala do Feed** reinicia o app — o addon lê essas coisas só no boot. O aviso "Reiniciando o NexusCap" fica na tela durante a contagem, o teardown e o boot do processo novo, e a sessão volta onde estava (nunca no lobby).
 - Pitch 3.1: HDMI de qualquer consola, Frame Gen até 4x se o Lossless Scaling estiver na Steam (integra sozinho, perfil de mira/HUD), stills **STABLE** em 1440p.
 - Se um modo pesar: escala do Feed (onde o DLSS trabalha) ou modo da placa (o HDMI que ela anuncia). Ex.: placa até 4K30, preferência 2K60.
 - Tabela de latência inclui **3x** (~33 ms, ~27 fps). **2x** ~25 ms / ~40 fps. **1,5x** continua o modo justo (~7 ms, ~60 fps).
 
 ### Novidades 3.0
 
-- **Pass Count 1x / 1,5x / 2x / 3x:** a mesma resolução nativa (não baixamos a escala por ti). **1x** e **1,5x** travam a ~60 fps no 1440p60; o **1,5x é o modo justo** — mais limpo, sem perder o ritmo. **2x / 3x** existem se quiseres ir além: são mais pesados e o extra quase não se vê (look mais descaracterizado). Escala do Feed continua **manual**.
+- **Pass Count 1x / 1,5x / 2x / 3x:** **1x** e **1,5x** ficam nativos a ~60 fps. **2x / 3x** nativos caem de fps. Escala do Feed continua **manual**.
 - **Escala DLSS5 (Feed):** lobby sempre 100% (menus nítidos); escala na captura via reinício; mínimo efetivo 50% no Feed.
 - **Overlay:** cadeia captura → trabalho → saída; estado DLSS5 visível.
-- **1x:** Delete liga/desliga NR; **1,5x/2x/3x:** NR sempre ON (on/off pelo Home).
+- **NR on/off:** Delete ou Ctrl+M em qualquer Pass Count (reinicia e volta para a sessão).
 
 ### Qualidade e latência (3.0)
 
@@ -259,7 +267,7 @@ Placa HDMI (DShow)
 | **RenoDX / Neural Rendering** | Checkbox + presets Default / Natural / Cinematic; Delete liga/desliga NR. |
 | **Sincronizar imagem** | Default **ON** (VSYNC). Off = TEAR / Present livre. |
 | **Abrir logs** | Pasta `%LOCALAPPDATA%\NexusCap\logs`. |
-| **Atalhos** | Remapeáveis. |
+| **Atalhos** | Remapeáveis, incluindo o **Menu na captura** (`Ctrl+M`). |
 
 Avisos leves (lobby toast + HUD na sessão): ao **ligar FG**, ao **subir** o multiplicador (2→3→4), e ao **ligar/desligar** Neural Rendering. Na sessão o tip aparece mesmo se o HUD estiver oculto.
 
@@ -336,9 +344,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 3.1.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 3.1.1
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 3.1.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 3.1.1
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.
@@ -378,13 +386,14 @@ build\Release\NexusCap.exe --selftest-fg --fake-capture
 | `--device <nome>` | Filtro dispositivo |
 | `--windowed` | Janela |
 | `--smoke` / `--frames N` / `--fake-capture` | Testes |
-| `--selftest-cap` / `--selftest-dlss` / `--selftest-fg` | Selftests |
+| `--selftest-cap` / `--selftest-dlss` / `--selftest-fg` / `--selftest-cfg` | Selftests |
 
 ### Hotkeys padrão (CFG remapeia)
 
 | Tecla | Ação |
 |-------|------|
-| Esc | Sessão → lobby |
+| Esc | CFG aberto → fecha o menu; sem menu, sessão → lobby |
+| Ctrl+M | CFG na captura (por cima do jogo) |
 | F3 | HUD |
 | F4 | Analyze |
 | F5 | Streamline DLSS (se não for RenoDX) |

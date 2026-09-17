@@ -48,6 +48,7 @@ add_library(nexuscap_core STATIC
   src/session_report.cpp
   src/dlss5_bridge.cpp
   src/lobby_imgui.cpp
+  src/session_cfg.cpp
   src/system_metrics.cpp
 )
 target_include_directories(nexuscap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -99,10 +100,12 @@ add_test(NAME smoke COMMAND NexusCap --smoke --frames 120 --log-dir ${CMAKE_BINA
 add_test(NAME smoke_fg_off COMMAND NexusCap --smoke --fake-capture --fg-x 1 --frames 60 --log-dir ${CMAKE_BINARY_DIR}/logs-smoke-fg)
 add_test(NAME smoke_no_lobby COMMAND NexusCap --smoke --no-lobby --fg-x 1 --frames 60 --log-dir ${CMAKE_BINARY_DIR}/logs-smoke-nolobby)
 add_test(NAME selftest_fg COMMAND NexusCap --selftest-fg --fake-capture --windowed --log-dir ${CMAKE_BINARY_DIR}/logs-selftest-fg)
+add_test(NAME selftest_cfg COMMAND NexusCap --selftest-cfg --fake-capture --windowed --log-dir ${CMAKE_BINARY_DIR}/logs-selftest-cfg)
 set_tests_properties(smoke PROPERTIES TIMEOUT 30)
 set_tests_properties(smoke_fg_off PROPERTIES TIMEOUT 30)
 set_tests_properties(smoke_no_lobby PROPERTIES TIMEOUT 30)
 set_tests_properties(selftest_fg PROPERTIES TIMEOUT 45)
+set_tests_properties(selftest_cfg PROPERTIES TIMEOUT 45)
 
 # Copy Streamline runtime next to NexusCap.exe
 if(NEXUSCAP_HAVE_STREAMLINE)

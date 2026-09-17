@@ -133,6 +133,26 @@ private:
   bool visible_ = false;
 };
 
+// "Reiniciando o NexusCap" — janela sem owner que sobrevive ao teardown da sessão e
+// reaparece no processo novo (--autostart) até o primeiro frame. Sem ela a tela apagava
+// e parecia que o app tinha fechado sozinho.
+class RestartNotice {
+public:
+  ~RestartNotice() { destroy(); }
+  bool show(HINSTANCE hi, const std::string& title, const std::string& detail);
+  void destroy();
+  void pump() const;  // repinta enquanto a sessão está sendo desmontada
+  bool visible() const { return hwnd_ != nullptr; }
+
+private:
+  static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+  void paint(HDC hdc) const;
+
+  HWND hwnd_ = nullptr;
+  std::wstring title_;
+  std::wstring detail_;
+};
+
 // Painel "Infos GPU / CPU" — aparece só quando o toggle do lobby está ligado.
 class HwInfoPanel {
 public:
@@ -200,6 +220,12 @@ public:
   // Under RenoDX the app RT stays native and the scale lives in the Feed — report that
   // one in the HUD, otherwise the overlay shows 100% while DLSS5 works at 50%.
   void set_hud_work_scale_percent(int percent) { hud_work_scale_percent_ = percent; }
+  // CFG da sessão (ImGui): desenha no backbuffer logo antes do Present, como o mini overlay.
+  using UiDrawFn = void (*)(void* user);
+  void set_ui_draw_callback(UiDrawFn fn, void* user) {
+    ui_draw_ = fn;
+    ui_draw_user_ = user;
+  }
   // Espaco/intervalo reais no decode NV12 (mesmo contrato do preview CPU).
   void set_color_format(int space, int range);
   int color_space() const { return color_space_; }
@@ -229,6 +255,8 @@ private:
   int hud_work_scale_percent_ = 0;  // 0 = HUD follows the app RT scale
   int color_space_ = 0;
   int color_range_ = 0;
+  UiDrawFn ui_draw_ = nullptr;
+  void* ui_draw_user_ = nullptr;
   IFrameEnhance* enhance_ = nullptr;
   struct Impl;
   Impl* impl_ = nullptr;

@@ -381,9 +381,11 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   const int work_w = scaled_extent(frame.width, scale_percent_);
   const int work_h = scaled_extent(frame.height, scale_percent_);
   if (!create_color_rt(work_w, work_h, err)) return false;
-  overlay.scale_percent = scale_percent_;
-  overlay.work_w = work_w;
-  overlay.work_h = work_h;
+  // HUD reports the DLSS5 work resolution (Feed) when it owns the scale, not this RT.
+  const int hud_scale = hud_work_scale_percent_ > 0 ? clamp_scale_percent(hud_work_scale_percent_) : scale_percent_;
+  overlay.scale_percent = hud_scale;
+  overlay.work_w = scaled_extent(frame.width, hud_scale);
+  overlay.work_h = scaled_extent(frame.height, hud_scale);
 
   const size_t y_size = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height);
   if (frame.nv12.size() < y_size + y_size / 2) {
@@ -626,12 +628,12 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       o.e2e_ms, o.present_ms, o.stalls_window, o.clusters, o.dropped, o.capture_w, o.capture_h, o.work_w,
       o.work_h, o.output_w, o.output_h, o.scale_percent, o.has_stats600, o.s600_fps, o.s600_p95_e2e,
       o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
-      o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps);
+      o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count);
   (void)line0;
   (void)line1;
 
   const int pad = 8;
-  const int graph_w = 270;  // +50% vs 180
+  const int graph_w = 220;
   const int gap = 8;
   const int bar_w = static_cast<int>(rc.right - rc.left);
   const int bar_h = static_cast<int>(rc.bottom - rc.top);
@@ -641,20 +643,24 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   const int gw = (std::min)(graph_w, bar_w - pad * 2);
   const int text_max_x = gx - gap;
   const int line_gap = 2;
-  const int y0 = (std::max)(2, (bar_h - (font_px * 2 + line_gap)) / 2);
-  const int y1 = y0 + font_px + line_gap;
+  const int rows = hud_mini_overlay_rows();
+  const int block_h = font_px * rows + line_gap * (rows - 1);
+  const int y0 = (std::max)(2, (bar_h - block_h) / 2);
 
-  // Prefer natural break at "ft …"; else wrap when the first row runs out of room.
-  int wrap = nseg;
-  for (int i = 0; i < nseg; ++i) {
-    if (std::strncmp(segs[i].text, "ft ", 3) == 0) {
-      wrap = i;
-      break;
-    }
-  }
+  int wrap_st = nseg;
+  int wrap_l600 = nseg;
+  mini_overlay_row_breaks(segs, nseg, &wrap_st, &wrap_l600);
+  // Do not start a painted row on the " · " separator.
+  auto skip_sep = [&](int i) -> int {
+    while (i < nseg && std::strcmp(segs[i].text, " · ") == 0) ++i;
+    return i;
+  };
+  wrap_st = skip_sep(wrap_st);
+  wrap_l600 = skip_sep(wrap_l600);
 
   auto paint_row = [&](int begin, int end, int text_y) {
     int x = pad;
+    begin = skip_sep(begin);
     for (int i = begin; i < end; ++i) {
       const std::wstring w = utf8_to_wide_hud(segs[i].text);
       if (w.empty()) continue;
@@ -673,8 +679,9 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       x += sz.cx;
     }
   };
-  paint_row(0, wrap, y0);
-  paint_row(wrap, nseg, y1);
+  paint_row(0, wrap_st, y0);
+  paint_row(wrap_st, wrap_l600, y0 + font_px + line_gap);
+  paint_row(wrap_l600, nseg, y0 + (font_px + line_gap) * 2);
 
   if (gw >= 64) {
     RECT graph_rc{gx, gy, gx + gw, gy + gh};
@@ -989,6 +996,11 @@ void MetricsHud::paint(HDC hdc) const {
       swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
     }
     swprintf(lines[n++], 180, L"frametime  %.2f ms   present %.2f", o.frame_ms, o.present_ms);
+    {
+      char stack[96]{};
+      format_dlss5_stack_hud_line(stack, sizeof(stack), o.renodx_on, o.feed_on, o.nr_pass_count);
+      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(stack).c_str());
+    }
     swprintf(lines[n++], 180, L"%s  Present(%u)", o.sync_image ? L"SYNC VSYNC" : L"SYNC TEAR",
              o.sync_image ? 1u : 0u);
     const int hw_start = n;
@@ -1051,9 +1063,10 @@ void MetricsHud::paint(HDC hdc) const {
            (o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos) ? L" (+NR/DLSS5)" : L"",
            o.sync_image ? L"VSYNC" : L"TEAR");
   if (o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos) {
-    swprintf(lines[6], 180, L"RenoDX  %s  preset=%s  [%s] %s", o.renodx_on ? L"ON" : L"off",
-             utf8_to_wide_hud(o.renodx_preset).c_str(), utf8_to_wide_hud(o.dlss_backend).c_str(),
-             utf8_to_wide_hud(o.dlss_status).c_str());
+    char stack[96]{};
+    format_dlss5_stack_hud_line(stack, sizeof(stack), o.renodx_on, o.feed_on, o.nr_pass_count);
+    swprintf(lines[6], 180, L"%s  preset=%s  [%s]", utf8_to_wide_hud(stack).c_str(),
+             utf8_to_wide_hud(o.renodx_preset).c_str(), utf8_to_wide_hud(o.dlss_status).c_str());
   } else {
     swprintf(lines[6], 180, L"DLSS    %s  mode=%s  %.2f ms  [%s] %s", o.dlss_on ? L"ON" : L"off",
              utf8_to_wide_hud(o.dlss_mode).c_str(), o.dlss_ms, utf8_to_wide_hud(o.dlss_backend).c_str(),
@@ -1607,7 +1620,8 @@ void LiveOverlay::present() const {
   const LiveConsole cons = clamp_live_console(console_);
   const std::wstring cons_w = utf8_to_wide_hud(live_console_label(cons));
   char dlss_buf[64]{};
-  format_live_dlss5_line(dlss_buf, sizeof(dlss_buf), state_.renodx_on || state_.dlss_on);
+  format_live_dlss5_line(dlss_buf, sizeof(dlss_buf), state_.renodx_on || state_.dlss_on, state_.nr_pass_count,
+                         state_.feed_on);
   const std::wstring dlss_w = utf8_to_wide_hud(dlss_buf);
   const double show_fps = state_.fps_smooth > 0 ? state_.fps_smooth : state_.fps;
   char fps_part[64]{};

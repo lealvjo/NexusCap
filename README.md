@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `2.4.1` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `3.0.0` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-2.4.1.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-3.0.0.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-2.4.1.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
+1. Instalar `NexusCap-Setup-3.0.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -43,7 +43,7 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-2.4.1.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-3.0.0.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -53,27 +53,43 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
 
-### Qualidade e latência (2.4.1)
+### Novidades 3.0
+
+- **Pass Count 1x / 1,5x / 2x / 3x:** a mesma resolução nativa (não baixamos a escala por ti). **1x** e **1,5x** travam a ~60 fps no 1440p60; o **1,5x é o modo justo** — mais limpo, sem perder o ritmo. **2x / 3x** existem se quiseres ir além: são mais pesados e o extra quase não se vê (look mais descaracterizado). Escala do Feed continua **manual**.
+- **Escala DLSS5 (Feed):** lobby sempre 100% (menus nítidos); escala na captura via reinício; mínimo efetivo 50% no Feed.
+- **Overlay:** cadeia captura → trabalho → saída; estado DLSS5 visível.
+- **1x:** Delete liga/desliga NR; **1,5x/2x/3x:** NR sempre ON (on/off pelo Home).
+
+### Qualidade e latência (3.0)
 
 - Captura **NV12-first**; rejeita downscale silencioso (ex.: 4K60 → 1080p) — sem fake/tela branca no lobby.
 - Lobby lista só modos que anunciam NV12; falha de open volta ao lobby (sem fallback fake).
 - Hitch / overlay **STABLE** escalam com o FPS da captura (`25×60/fps`) — sem falso instável em 30 fps.
 - **Latência no HUD (qualquer modo · escala/work 100%):**
-  - **`present` (+NR/DLSS5)** = processamento no Present **com enhance ligado** — tipicamente **~1,5–2 ms** (sessão real 1440p60).
+  - **`present` (+NR/DLSS5)** = processamento no Present **com enhance ligado** — no **1x** ~3,5 ms; no **1,5x** ~7 ms (ainda cabe nos ~16 ms @60).
   - **`cap`** = captura pura no app — tipicamente **~1 ms**.
-  - Os dois cabem folgados no intervalo do sinal (~16 ms @60 / ~33 ms @30).
+  - **2x** neste setup saiu a ~40 fps / present ~25 ms — por isso o 1,5x é o modo do dia a dia.
 - Mini overlay: `cap … · present …ms+NR` · HUD F3: `present … (+NR/DLSS5)`.
 - Instalador **Release** sem janela preta de CMD (só GUI).
 
-### Prints (God of War · 1440p60 · 100%)
+### Prints (HDMI de qualquer consola · sessão PS5 · God of War · 1440p60 · 100% · VSYNC · FG off)
+
+Sinal HDMI **direto de qualquer consola** (PS5, Xbox, Switch, outro HDMI), sem recapturar o PC. As stills deste pitch são de uma **sessão PS5**. A escada: o que dá para crescer, com desempenho. **1,5x é o modo justo.**
 
 | | |
 |---|---|
-| Sessão + HUD (NR ON, FG x4) | ![sessão NR](assets/pitch/print_session_nr_on.jpg) |
-| COM NR / DLSS5 | ![NR on](assets/pitch/print_compare_nr_on.jpg) |
-| SEM NR / DLSS5 | ![NR off](assets/pitch/print_compare_nr_off.jpg) |
+| UI da consola no mesmo HDMI (sessão PS5) | ![consola](assets/pitch/print_ps5_home.jpg) |
+| Sem DLSS / NR | ![sem NR](assets/pitch/print_compare_nroff.jpg) |
+| **1x** · 59,9 fps · stalls 0 | ![1x](assets/pitch/print_compare_1x.jpg) |
+| **1,5x** · 59,9 fps · stalls 0 · recomendado | ![1,5x](assets/pitch/print_compare_15x.jpg) |
+| **2x** · ~40 fps · pesado, pouco ganho | ![2x](assets/pitch/print_compare_2x.jpg) |
+| **3x** · ~27 fps · teto, ainda mais pesado | ![3x](assets/pitch/print_compare_3x.jpg) |
 
-- Stack enhance: **Krish `renodx-dlss5` + Feed + Bridge** (não usar builds ShortFuse / “super-anus”).
+Pitch em PDF: [`assets/pitch/NexusCap_Pitch.pdf`](assets/pitch/NexusCap_Pitch.pdf)
+
+- 1x e 1,5x: **mesma resolução, mesmo ~60 fps**. O 1,5x fica mais limpo (pele, cenário) sem perder o ritmo.
+- 2x e 3x: mais custo, pouco a ganhar, look mais descaracterizado.
+- Escala do Feed é escolha **manual** — os modos 1x/1,5x não baixam a res sozinhos.
 - Guardrail: mudanças de enhance não devem piorar nitidez nem `present_ms` vs 1.1.7.
 - Com RenoDX ligado, escala UI → `work_resolution` do Feed apenas (sem double-downsample no app).
 - **VSYNC default** (`Sincronizar imagem`) — TEAR+ALLOW_TEARING ficou mais “tremido” no A/B; Present(1) no Hz do monitor.
@@ -98,7 +114,7 @@ Muitos viewers “bonitos” **capturam a tela** (ou a janela de outro app) para
 **NexusCap não faz isso.** Ele lê o **HDMI da placa de captura** e desenha **ele mesmo** em D3D11. O enhance (RenoDX) e o Frame Gen entram **depois**, no Present — uma passagem limpa:
 
 ```text
-  console / PC ──HDMI──► placa ──DShow──► NexusCap (D3D11 Present)
+  consola (PS5 / Xbox / Switch / …) ──HDMI──► placa ──DShow──► NexusCap (D3D11 Present)
                                               │
                                               ├─ RenoDX / NR  (opcional)
                                               └─ Lossless FG  (opcional)
@@ -127,7 +143,7 @@ ImGui é só UI do lobby; o caminho quente (captura → Present) é C++ + D3D11.
 ```mermaid
 flowchart TB
   subgraph IN["Entrada"]
-    HDMI["Console / PC<br/>HDMI"]
+    HDMI["Qualquer consola<br/>HDMI"]
     CARD["Placa de captura<br/>DirectShow"]
     HDMI --> CARD
   end
@@ -314,9 +330,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 2.4.1
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 3.0.0
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 2.4.1
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 3.0.0
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

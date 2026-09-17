@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 
@@ -31,7 +32,7 @@ struct SessionUiFlags {
   bool preview_mute = false;  // lobby preview audio mute (icon on preview)
   bool bug_report = false;    // session → report/bug_TIMESTAMP.txt
   bool perf_report = false;   // session → performance/performance_TIMESTAMP.txt
-  // Secret live overlay (UI only if live.on gate unlocked). Console: ps5|xbox_ss|switch2.
+  // Live overlay. Console: ps5|xbox_ss|switch2.
   bool live_overlay = false;
   std::string live_console = "ps5";
 };
@@ -53,6 +54,8 @@ struct PersistedSettings {
   bool neural_rendering = true;
   // Gear: Default / Natural / Cinematic (RenoDX Home overlay names).
   int renodx_preset = 0;  // RenodxVisualPreset
+  // Pass Count (DirectNeuralRenderingPassCount). 1=stable; 2/3=multipass; heavier GPU.
+  int nr_pass_count = 1;
   // Origem (OBS-style). Defaults = validated HDMI path.
   int video_fourcc = 0;       // VideoFourcc::Nv12
   int color_space = 0;        // ColorSpace::Default (BT.709)
@@ -71,6 +74,96 @@ inline int clamp_renodx_visual_preset(int v) {
   if (v > 2) return 2;
   return v;
 }
+
+// Pass Count UI: 1=Krish, 2/3=multipass evaluates, 4=1.5x (same multipass motor, 1 evaluate).
+inline constexpr int kMaxNrPassCount = 4;
+
+inline int clamp_nr_pass_count(int v) {
+  if (v < 1) return 1;
+  if (v > kMaxNrPassCount) return kMaxNrPassCount;
+  return v;
+}
+
+// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1).
+inline int nr_reshade_pass_count(int ui) {
+  switch (clamp_nr_pass_count(ui)) {
+    case 2:
+      return 2;
+    case 3:
+      return 3;
+    case 4:
+      return 1;
+    default:
+      return 1;
+  }
+}
+
+inline const char* nr_pass_count_label(int v) {
+  switch (clamp_nr_pass_count(v)) {
+    case 2:
+      return "2x multipass";
+    case 3:
+      return "3x multipass";
+    case 4:
+      return "1,5x";
+    default:
+      return "1x estavel";
+  }
+}
+
+// Short HUD tag: "1x" / "1.5x" / "2x" / "3x".
+inline const char* nr_pass_count_short(int v) {
+  switch (clamp_nr_pass_count(v)) {
+    case 2:
+      return "2x";
+    case 3:
+      return "3x";
+    case 4:
+      return "1.5x";
+    default:
+      return "1x";
+  }
+}
+
+// 1 → Krish. 2/3/4 → addons-multipass (4 = 1.5x, one evaluate on that motor).
+inline bool nr_pass_count_uses_multipass_addon(int pass_count) {
+  const int v = clamp_nr_pass_count(pass_count);
+  return v >= 2;
+}
+
+inline const char* nr_dlss5_motor_name(int pass_count) {
+  return nr_pass_count_uses_multipass_addon(pass_count) ? "multipass" : "stable";
+}
+
+// Compact overlay line: "DLSS5 1x Feed·stable NR ON"
+inline void format_dlss5_stack_hud_line(char* out, size_t out_n, bool nr_on, bool feed_on, int pass_count) {
+  if (!out || out_n == 0) return;
+  std::snprintf(out, out_n, "DLSS5 %s Feed·%s NR %s", nr_pass_count_short(pass_count),
+                nr_dlss5_motor_name(pass_count), nr_on ? "ON" : "off");
+  (void)feed_on;
+}
+
+inline bool nr_pass_count_change_needs_relaunch(int before, int after) {
+  return nr_pass_count_uses_multipass_addon(before) != nr_pass_count_uses_multipass_addon(after);
+}
+
+enum class RenodxAddonSyncResult {
+  OkSame = 0,
+  OkSwapped = 1,
+  MissingVariant = 2,
+  WriteFailed = 3,
+};
+
+// Point ReShade AddonPath at addons-stable (1x) or addons-multipass (2x/3x) before load.
+// Stacks live in separate folders so only one renodx loads after restart.
+RenodxAddonSyncResult sync_renodx_addon_variant(const std::string& exe_dir, int pass_count);
+
+inline const char* renodx_addon_stack_rel(int pass_count) {
+  return nr_pass_count_uses_multipass_addon(pass_count) ? ".\\addons-multipass" : ".\\addons-stable";
+}
+
+// Spawn a new NexusCap.exe then return true (caller should ExitProcess).
+bool relaunch_current_process(const char* extra_args = nullptr);
 
 inline const char* renodx_visual_preset_name(int v) {
   switch (clamp_renodx_visual_preset(v)) {
@@ -196,41 +289,102 @@ inline int clamp_scale_percent(int p) {
 }
 
 // Generic key=value int rewriter (feed.cfg / ReShade.ini style).
+// Key must start at beginning of line (avoids "rebuild=" matching inside "warmup_rebuild=").
 inline std::string apply_keyed_int(std::string text, const std::string& key, int value) {
   const std::string line = key + std::to_string(value);
-  const auto pos = text.find(key);
-  if (pos != std::string::npos) {
-    const auto end = text.find_first_of("\r\n", pos);
-    text.replace(pos, (end == std::string::npos ? text.size() : end) - pos, line);
-  } else {
-    if (!text.empty() && text.back() != '\n') text.push_back('\n');
-    text += line;
-    text.push_back('\n');
+  std::size_t pos = 0;
+  while (pos <= text.size()) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos) break;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (at_line_start) {
+      const auto end = text.find_first_of("\r\n", found);
+      text.replace(found, (end == std::string::npos ? text.size() : end) - found, line);
+      return text;
+    }
+    pos = found + key.size();
   }
+  if (!text.empty() && text.back() != '\n') text.push_back('\n');
+  text += line;
+  text.push_back('\n');
   return text;
+}
+
+// ReShade keeps the same key in several sections (saved preset + live addon section).
+// Rewriting only the first match left the live section stale (e.g. PassCount=3 in the
+// preset while [RenoDX.DLSS5] still ran 1 pass), so rewrite every occurrence.
+inline std::string apply_keyed_int_all(std::string text, const std::string& key, int value) {
+  const std::string line = key + std::to_string(value);
+  std::size_t pos = 0;
+  bool hit = false;
+  while (pos <= text.size()) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos) break;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (!at_line_start) {
+      pos = found + key.size();
+      continue;
+    }
+    const auto end = text.find_first_of("\r\n", found);
+    text.replace(found, (end == std::string::npos ? text.size() : end) - found, line);
+    hit = true;
+    pos = found + line.size();
+  }
+  return hit ? text : apply_keyed_int(std::move(text), key, value);
 }
 
 inline std::string apply_keyed_value(std::string text, const std::string& key, const std::string& value) {
   const std::string line = key + value;
-  const auto pos = text.find(key);
-  if (pos != std::string::npos) {
-    const auto end = text.find_first_of("\r\n", pos);
-    text.replace(pos, (end == std::string::npos ? text.size() : end) - pos, line);
-  } else {
-    if (!text.empty() && text.back() != '\n') text.push_back('\n');
-    text += line;
-    text.push_back('\n');
+  std::size_t pos = 0;
+  while (pos <= text.size()) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos) break;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (at_line_start) {
+      const auto end = text.find_first_of("\r\n", found);
+      text.replace(found, (end == std::string::npos ? text.size() : end) - found, line);
+      return text;
+    }
+    pos = found + key.size();
   }
+  if (!text.empty() && text.back() != '\n') text.push_back('\n');
+  text += line;
+  text.push_back('\n');
   return text;
 }
 
-inline int parse_keyed_int(const std::string& text, const std::string& key, int fallback) {
+inline std::string apply_reshade_addon_path(std::string text, int pass_count) {
+  return apply_keyed_value(std::move(text), "AddonPath=", renodx_addon_stack_rel(pass_count));
+}
+
+inline std::string parse_reshade_addon_path(const std::string& text, const char* fallback = ".\\addons-stable") {
+  const std::string key = "AddonPath=";
   const auto pos = text.find(key);
-  if (pos == std::string::npos) return fallback;
+  if (pos == std::string::npos) return fallback ? fallback : "";
   const auto start = pos + key.size();
   const auto end = text.find_first_of("\r\n", start);
-  const std::string num = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
-  return std::atoi(num.c_str());
+  return text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+}
+
+inline bool reshade_addon_path_is_multipass(const std::string& text) {
+  return parse_reshade_addon_path(text).find("multipass") != std::string::npos;
+}
+
+inline int parse_keyed_int(const std::string& text, const std::string& key, int fallback) {
+  std::size_t pos = 0;
+  while (pos <= text.size()) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos) return fallback;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (at_line_start) {
+      const auto start = found + key.size();
+      const auto end = text.find_first_of("\r\n", start);
+      const std::string num = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+      return std::atoi(num.c_str());
+    }
+    pos = found + key.size();
+  }
+  return fallback;
 }
 
 // Capture signal → work resolution after lobby scale slider (25–100%).
@@ -258,10 +412,21 @@ inline double scale_pixel_ratio(int scale_percent) {
   return s * s;
 }
 
+// Measured on dlss5-feed: work_resolution below 50 is rejected and the feature silently
+// builds at 100% (overlay then "lies" about the scale). Never write below this floor.
+inline constexpr int kMinFeedWorkResolution = 50;
+
 // Keep RenoDX dlss5-feed.cfg work_resolution in sync with lobby scale (including 100%).
 // Bug: only writing when scale<100 left work_resolution=50 stuck → blur at "100%".
+// work_upscale=1 when below 100% so Feed actually downsamples then expands back.
+// rebuild=1 forces the Feed feature to rebuild (it caches work_resolution otherwise).
 inline std::string apply_feed_work_resolution(std::string text, int scale_percent) {
-  return apply_keyed_int(std::move(text), "work_resolution=", clamp_scale_percent(scale_percent));
+  int p = clamp_scale_percent(scale_percent);
+  if (p < kMinFeedWorkResolution) p = kMinFeedWorkResolution;
+  text = apply_keyed_int(std::move(text), "work_resolution=", p);
+  text = apply_keyed_int(std::move(text), "work_upscale=", p < 100 ? 1 : 0);
+  text = apply_keyed_int(std::move(text), "rebuild=", 1);
+  return text;
 }
 
 inline int parse_feed_work_resolution(const std::string& text, int fallback = 100) {
@@ -283,6 +448,122 @@ inline std::string apply_reshade_nr_preset(std::string text, int visual_preset) 
 
 inline int parse_reshade_nr_preset(const std::string& text, int fallback = 0) {
   return parse_keyed_int(text, "NRPreset=", fallback);
+}
+
+// Multipass stack — DirectNeuralRenderingPassCount (addons-multipass).
+// Lives in both [RENODX-DLSS-preset*] and the live [RenoDX.DLSS5] — all must match.
+inline std::string apply_reshade_nr_pass_count(std::string text, int passes) {
+  return apply_keyed_int_all(std::move(text), "DirectNeuralRenderingPassCount=", nr_reshade_pass_count(passes));
+}
+
+inline int parse_reshade_nr_pass_count(const std::string& text, int fallback = 1) {
+  const int raw = parse_keyed_int(text, "DirectNeuralRenderingPassCount=", fallback);
+  if (raw < 1) return 1;
+  if (raw > 3) return 3;  // INI never stores 4; 4 is UI-only (1.5x → INI 1)
+  return raw;
+}
+
+// Multipass registers two Home overlays (RenoDX DLSS + Neural Resolution). Keep NR panel collapsed.
+inline std::string collapse_reshade_imgui_window(std::string text, const char* title) {
+  if (!title || !title[0]) return text;
+  const std::string marker = std::string("[Window][") + title + "]";
+  const auto pos = text.find(marker);
+  if (pos == std::string::npos) return text;
+  const auto collapsed = text.find("Collapsed=", pos);
+  if (collapsed == std::string::npos) return text;
+  const auto next_window = text.find("[Window][", pos + marker.size());
+  if (next_window != std::string::npos && collapsed > next_window) return text;
+  const auto val = collapsed + 10;  // after Collapsed=
+  if (val < text.size() && (text[val] == '0' || text[val] == '1')) text[val] = '1';
+  return text;
+}
+
+inline std::string sanitize_multipass_home_windows(std::string text) {
+  text = collapse_reshade_imgui_window(std::move(text), "RenoDX-DLSSNR");
+  text = collapse_reshade_imgui_window(std::move(text), "RenoDX Neural Resolution");
+  const char* seed =
+      "[Window][RenoDX DLSS],Pos=8,,8,Size=520,,900,Collapsed=0,"
+      "[Window][RenoDX-DLSSNR],Pos=8,,8,Size=520,,900,Collapsed=1,"
+      "[Window][RenoDX Neural Resolution],Pos=8,,8,Size=520,,900,Collapsed=1";
+  if (text.find("[Window][RenoDX DLSS]") != std::string::npos ||
+      text.find("[Window][RenoDX-DLSSNR]") != std::string::npos ||
+      text.find("[Window][RenoDX Neural Resolution]") != std::string::npos) {
+    return text;
+  }
+  const auto w = text.find("Window=");
+  if (w == std::string::npos) {
+    if (!text.empty() && text.back() != '\n') text.push_back('\n');
+    text += "Window=";
+    text += seed;
+    text.push_back('\n');
+    return text;
+  }
+  const auto end = text.find_first_of("\r\n", w);
+  text.insert(end == std::string::npos ? text.size() : end, seed);
+  return text;
+}
+
+// Align DirectNeuralRendering* keys (Pass Count 2/3/4=1.5x).
+inline std::string apply_reshade_multipass_look_defaults(std::string text, int pass_count,
+                                                         int visual_preset = 0) {
+  // [RENODX-DLSS] global
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingDiffuseWhiteNits=", 500);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingDiffuseWhiteOverride=", 0);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingEncoding=", 0);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingHookPoint=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingRequireDlss=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingUiCorrectionMode=", 1);
+  // [RENODX-DLSS-preset1] look knobs
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingAutoMask=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingGlobalToneStrength=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingIntensity=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalStructureStrength=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalToneStrength=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingSkinStructureStrength=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingStyle=", renodx_nr_preset_index(visual_preset));
+  text = apply_reshade_nr_pass_count(std::move(text), pass_count);
+  // Keep legacy NR* block in sync for tools / dual-read / Krish.
+  text = apply_reshade_nr_preset(std::move(text), visual_preset);
+  text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", 500);
+  text = apply_keyed_int(std::move(text), "NRIntensity=", 1);
+  text = apply_keyed_int(std::move(text), "NRGlobalTone=", 1);
+  text = apply_keyed_int(std::move(text), "NRLocalTone=", 1);
+  text = apply_keyed_int(std::move(text), "NRLocalStructure=", 1);
+  text = apply_keyed_int(std::move(text), "NRAutoMask=", 1);
+  text = apply_keyed_int(std::move(text), "NRSkinStructure=", -1);
+  text = apply_keyed_int(std::move(text), "NRUICorrection=", 1);
+  text = apply_keyed_int(std::move(text), "NRStyle=", 0);
+  // Multipass: Delete is the real NRToggleKey (Bridge cannot inject GetAsyncKeyState).
+  text = apply_keyed_int(std::move(text), "NRToggleKey=", 0x2E);
+  text = sanitize_multipass_home_windows(std::move(text));
+  return text;
+}
+
+// Pass Count 1 (Krish): only legacy NR* — avoids poking DirectNeural* on the stable addon.
+inline std::string apply_reshade_stable_look_defaults(std::string text, int visual_preset = 0) {
+  text = apply_reshade_nr_preset(std::move(text), visual_preset);
+  text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", 500);
+  text = apply_keyed_int(std::move(text), "NRIntensity=", 1);
+  text = apply_keyed_int(std::move(text), "NRGlobalTone=", 1);
+  text = apply_keyed_int(std::move(text), "NRLocalTone=", 1);
+  text = apply_keyed_int(std::move(text), "NRLocalStructure=", 1);
+  text = apply_keyed_int(std::move(text), "NRAutoMask=", 1);
+  text = apply_keyed_int(std::move(text), "NRSkinStructure=", -1);
+  text = apply_keyed_int(std::move(text), "NRUICorrection=", 1);
+  text = apply_keyed_int(std::move(text), "NRStyle=", 0);
+  text = apply_keyed_int(std::move(text), "NREnableUpscaling=", 1);
+  text = apply_keyed_int(std::move(text), "NeuralUplift=", 1);
+  return text;
+}
+
+// Visual-preset writes must key off AddonPath, not PassCount: 1.5x is multipass + INI 1.
+inline std::string apply_reshade_look_for_current_stack(std::string text, int visual_preset) {
+  if (reshade_addon_path_is_multipass(text)) {
+    const int ini_passes = parse_reshade_nr_pass_count(text, 1);
+    return apply_reshade_multipass_look_defaults(std::move(text), ini_passes, visual_preset);
+  }
+  text = apply_reshade_stable_look_defaults(std::move(text), visual_preset);
+  return apply_keyed_int(std::move(text), "NRToggleKey=", 0x7C);  // VK_F13 / kRenodxNrInjectVk
 }
 
 // After gear Salvar / session start: feed + ReShade must match settings.renodx_preset.
@@ -370,6 +651,9 @@ inline int parse_reshade_nr_toggle_key(const std::string& text, int fallback = 0
   return parse_keyed_int(text, "NRToggleKey=", fallback);
 }
 
+// True when ReShade.ini AddonPath points at addons-multipass.
+bool renodx_active_addon_is_multipass(const std::string& exe_dir);
+
 // dlss5-feed.cfg enabled= — feeder pipeline. Must stay ON for the whole Renodx session:
 // feed does not hot-reload enabled=0→1 (Delete would only flip HUD / RenoDX flag).
 inline std::string apply_feed_enabled(std::string text, bool enabled) {
@@ -402,14 +686,44 @@ inline int lobby_preview_out_width(int frame_w, int max_w = kLobbyPreviewMaxWidt
 }
 
 // ReShade dxgi.dll + dlss5-feed hook Present for the whole process (lobby + session).
-// Session scale must NOT blur ImGui menu: lobby always forces feed to 100%.
+// The Feed locks work_resolution when the first swapchain appears (the lobby's) and keeps
+// it for the whole process, and it downsamples everything it presents — ImGui menus and
+// HUD included. So the lobby process stays at 100% (sharp menus) and a scaled session runs
+// in a relaunched process (--autostart), whose first swapchain is the capture window.
 inline constexpr int kLobbyFeedWorkResolution = 100;
 
 inline int feed_work_resolution_for_session(int scale_percent) {
-  return clamp_scale_percent(scale_percent);
+  const int p = clamp_scale_percent(scale_percent);
+  return p < kMinFeedWorkResolution ? kMinFeedWorkResolution : p;
 }
 
+// What the pipeline really renders at: Feed floor under RenoDX, app RT scale otherwise.
+inline int effective_scale_percent(bool renodx_stack, int ui_scale_percent) {
+  return renodx_stack ? feed_work_resolution_for_session(ui_scale_percent)
+                      : clamp_scale_percent(ui_scale_percent);
+}
+
+// True when the UI asks for less than the Feed can do (25–49% under RenoDX).
+inline bool feed_scale_below_floor(bool renodx_stack, int ui_scale_percent) {
+  return renodx_stack && clamp_scale_percent(ui_scale_percent) < kMinFeedWorkResolution;
+}
+
+// Feed snapshots work_resolution at addon load, so a scale picked in the lobby only lands
+// after a relaunch that re-seeds the cfg first.
+// Without RenoDX the renderer scales its own RT — no restart needed.
+inline bool feed_scale_change_needs_relaunch(bool renodx_stack, int loaded_scale, int want_scale) {
+  if (!renodx_stack) return false;
+  // Compare what the Feed actually builds at — 40% and 33% both floor to 50%, no restart.
+  return feed_work_resolution_for_session(loaded_scale) != feed_work_resolution_for_session(want_scale);
+}
+
+// Menus must never inherit the session scale — the Feed would blur the whole lobby.
 inline int feed_work_resolution_for_lobby() { return kLobbyFeedWorkResolution; }
+
+// work_resolution the process should boot with: session scale only when skipping the lobby.
+inline int feed_work_resolution_at_boot(bool lobby_first, int ui_scale_percent) {
+  return lobby_first ? feed_work_resolution_for_lobby() : feed_work_resolution_for_session(ui_scale_percent);
+}
 
 // Quick health for lobby first-run / Iniciar (exe_dir = folder next to NexusCap.exe).
 struct RuntimeHealth {
@@ -423,16 +737,14 @@ struct RuntimeHealth {
 RuntimeHealth check_runtime_health(const std::string& exe_dir);
 bool open_app_logs_folder();  // ShellExecute logs dir
 
-// Esc from a 50% session leaves feed@50 on disk — rewrite before lobby Present.
+// Back to 100% so the next lobby process presents menus at full resolution.
 inline std::string apply_lobby_feed_work_resolution(std::string text) {
   return apply_feed_work_resolution(std::move(text), feed_work_resolution_for_lobby());
 }
 
-// True when feed still carries session scale that would soften lobby UI Present.
-inline bool feed_leaks_session_scale_into_lobby(const std::string& feed_text, int session_scale_percent) {
-  const int session = feed_work_resolution_for_session(session_scale_percent);
-  if (session >= kLobbyFeedWorkResolution) return false;
-  return parse_feed_work_resolution(feed_text, 100) == session;
+// True when the cfg still carries a session scale that would soften the lobby Present.
+inline bool feed_leaks_session_scale_into_lobby(const std::string& feed_text) {
+  return parse_feed_work_resolution(feed_text, kLobbyFeedWorkResolution) != kLobbyFeedWorkResolution;
 }
 
 HotkeyConfig default_hotkeys();
@@ -457,11 +769,17 @@ bool load_settings(PersistedSettings& s, const std::string& path, std::string& e
 // Rewrite dlss5-feed.cfg work_resolution on disk. false if missing/unreadable.
 bool sync_feed_work_resolution_file(const std::string& path, int scale_percent);
 
+// Feed lives under AddonPath (addons-stable / addons-multipass); keep root + both stacks in sync.
+bool sync_feed_work_resolution_in_dir(const std::string& exe_dir, int scale_percent);
+
 // DLSS5MGF.ini Techniques: full chain for session/live preview, empty for idle lobby.
 bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_live_preview);
 
 // Write renodx_preset into dlss5-feed.cfg + ReShade.ini next to the exe.
 bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset);
+
+// Pass Count + look defaults. 1x keeps Krish NR*; 2x/3x writes DirectNeural* in ReShade.ini.
+bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int visual_preset = 0);
 
 // Persist Neural Rendering on/off (independent of Frame Gen). Updates feed+ReShade.
 bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on, bool feed_on);

@@ -13,7 +13,7 @@
 
 namespace nexuscap {
 
-// Secret live overlay — unlocked only when %LOCALAPPDATA%\NexusCap\live.on exists.
+// Live overlay — always available (no live.on gate). Console colors for stream branding.
 enum class LiveConsole : int {
   Ps5 = 0,
   XboxSs = 1,
@@ -88,8 +88,9 @@ inline bool live_mode_unlocked_at(const std::string& path) {
 
 inline bool live_mode_unlocked() { return live_mode_unlocked_at(live_on_path()); }
 
-inline bool live_overlay_active(bool unlocked, bool live_overlay_flag) {
-  return unlocked && live_overlay_flag;
+// Overlay live follows the checkbox; live.on is optional legacy unlock only.
+inline bool live_overlay_active(bool /*unlocked*/, bool live_overlay_flag) {
+  return live_overlay_flag;
 }
 
 // Cap FPS alone, or "cap | FG" when Frame Gen is on (same split idea as session HUD).
@@ -105,9 +106,10 @@ inline void format_live_fps_line(char* out, size_t out_n, double fps_cap, double
   }
 }
 
-inline void format_live_dlss5_line(char* out, size_t out_n, bool dlss5_on) {
+inline void format_live_dlss5_line(char* out, size_t out_n, bool dlss5_on, int pass_count = 1,
+                                  bool feed_on = true) {
   if (!out || out_n == 0) return;
-  std::snprintf(out, out_n, "DLSS 5 %s", dlss5_on ? "ON" : "OFF");
+  format_dlss5_stack_hud_line(out, out_n, dlss5_on, feed_on, pass_count);
 }
 
 }  // namespace nexuscap

@@ -687,15 +687,16 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(a, "60.0") != nullptr);
   CHECK(std::strstr(a, "120.0") != nullptr);
   CHECK(std::strstr(a, "cap|FG") != nullptr);
-  CHECK(std::strstr(a, "NR ON") != nullptr);
+  CHECK(std::strstr(a, "DLSS5") != nullptr);
+  CHECK(std::strstr(a, "1x") != nullptr);
   CHECK(std::strstr(a, "VSYNC") != nullptr);
   CHECK(std::strstr(a, "present 2.2ms+NR") != nullptr);
   CHECK(std::strstr(a, "cap 8.5") != nullptr);
-  CHECK(std::strstr(a, "st2/cl1") != nullptr);
-  CHECK(std::strstr(a, "frm 900") != nullptr);
-  CHECK(std::strstr(a, "drop 5") != nullptr);
-  CHECK(std::strstr(a, "2560x1440>2560x1440>2560x1440@100%") != nullptr);
-  // Line break: frametime / L600 / HW on second row.
+  CHECK(std::strstr(a, "2560x1440>2560x1440@100%>out 1:1") != nullptr);
+  CHECK(std::strstr(a, "st2/cl1") == nullptr);  // stalls live on row 1 so the sparkline cannot clip them
+  CHECK(std::strstr(b, "st2/cl1") != nullptr);
+  CHECK(std::strstr(b, "frm 900") != nullptr);
+  CHECK(std::strstr(b, "drop 5") != nullptr);
   CHECK(std::strstr(b, "ft 16.7") != nullptr);
   CHECK(std::strstr(b, "avg 16.6") != nullptr);
   CHECK(std::strstr(b, "p95 17.0") != nullptr);
@@ -719,7 +720,7 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   bool saw_cyan_gpu = false;
   for (int i = 0; i < nseg; ++i) {
     if (std::strstr(segs[i].text, "60.0") && segs[i].g >= 240) saw_green_fps = true;
-    if (std::strstr(segs[i].text, "NR ON") && segs[i].b >= 240) saw_purple_nr = true;
+    if (std::strstr(segs[i].text, "DLSS5") && segs[i].b >= 240) saw_purple_nr = true;
     if (std::strstr(segs[i].text, "i5-11400F") && segs[i].r >= 240 && segs[i].g >= 200) saw_yellow_cpu = true;
     if (std::strstr(segs[i].text, "RTX 5070") && segs[i].b >= 240) saw_cyan_gpu = true;
   }
@@ -731,9 +732,11 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   format_mini_overlay_lines(a, sizeof(a), b, sizeof(b), 59.9, 0.0, false, 2, false, false, 16.6, 16.6, 16.6,
                             16.6, true, 12.0, 3.0, 0, 0, 0, 2560, 1440, 1280, 720, 2560, 1440, 50);
   CHECK(std::strstr(a, "NR off") != nullptr);
+  CHECK(std::strstr(a, "DLSS5") != nullptr);
   CHECK(std::strstr(a, "TEAR") != nullptr);
   CHECK(std::strstr(a, "FG x2 off") != nullptr);
-  CHECK(std::strstr(a, "2560x1440>1280x720>2560x1440@50%") != nullptr);
+  CHECK(std::strstr(a, "2560x1440>1280x720@50%>out 1:1") != nullptr);
+  CHECK(std::strstr(b, "st0/cl0") != nullptr);
   CHECK(std::strstr(b, "L600") != nullptr);
 
   // Legacy one-liner still includes key tokens.
@@ -758,10 +761,12 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   s.height = 1440;
   auto hud = make_lobby_hud_preview_lines(s, 60.0);
   CHECK(hud.count == 2);
-  CHECK(lobby_hud_contains(hud, "NR ON"));
+  CHECK(lobby_hud_contains(hud, "DLSS5"));
+  CHECK(lobby_hud_contains(hud, "1x"));
+  CHECK(lobby_hud_contains(hud, "Feed"));
   CHECK(lobby_hud_contains(hud, "i5-11400F"));
   CHECK(lobby_hud_contains(hud, "RTX 5070"));
-  CHECK(lobby_hud_preview_lines(true, true, false, true) == 2);
+  CHECK(lobby_hud_preview_lines(true, true, false, true) == 3);
   CHECK(hud_uses_mini_overlay(true, true));
   CHECK_FALSE(hud_uses_advanced_metrics(true, true, true));
 }
@@ -961,6 +966,18 @@ TEST_CASE("scaled_extent and pixel ratio for work resolution") {
   CHECK(scale_pixel_ratio(75) < scale_pixel_ratio(100));
 }
 
+TEST_CASE("apply_keyed_int does not match rebuild inside warmup_rebuild") {
+  std::string feed =
+      "warmup_rebuild=180\nrebuild=0\nwork_resolution=100\nwork_upscale=0\n";
+  feed = apply_feed_work_resolution(std::move(feed), 75);
+  CHECK(feed.find("warmup_rebuild=180") != std::string::npos);
+  CHECK(feed.find("rebuild=1") != std::string::npos);
+  CHECK(feed.find("work_resolution=75") != std::string::npos);
+  CHECK(feed.find("work_upscale=1") != std::string::npos);
+  // Must not have corrupted the warmup line into "warmup_1" / similar.
+  CHECK(feed.find("warmup_rebuild=1\n") == std::string::npos);
+}
+
 TEST_CASE("feed work_resolution sync restores 100% after 50% (blur regression)") {
   const std::string stuck50 =
       "enabled=1\nmode=2\nwork_resolution=50\nwork_upscale=0\nwork_sharpness=0.30\n";
@@ -971,9 +988,12 @@ TEST_CASE("feed work_resolution sync restores 100% after 50% (blur regression)")
   CHECK(parse_feed_work_resolution(fixed) == 100);
   CHECK(fixed.find("work_resolution=100") != std::string::npos);
   CHECK(fixed.find("work_resolution=50") == std::string::npos);
+  CHECK(fixed.find("work_upscale=0") != std::string::npos);
+  CHECK(fixed.find("rebuild=1") != std::string::npos);
 
   const std::string to75 = apply_feed_work_resolution(fixed, 75);
   CHECK(parse_feed_work_resolution(to75) == 75);
+  CHECK(to75.find("work_upscale=1") != std::string::npos);
 
   // Missing key gets appended.
   const std::string bare = apply_feed_work_resolution("enabled=1\n", 100);
@@ -989,7 +1009,7 @@ TEST_CASE("feed work_resolution always matches UI scale (critical blur path)") {
   const int sequence[] = {50, 100, 50, 75, 100, 100};
   for (int ui_scale : sequence) {
     feed = apply_feed_work_resolution(std::move(feed), ui_scale);
-    CHECK(parse_feed_work_resolution(feed) == clamp_scale_percent(ui_scale));
+    CHECK(parse_feed_work_resolution(feed) == feed_work_resolution_for_session(ui_scale));
   }
 
   // CRLF line endings (Windows editors).
@@ -997,10 +1017,10 @@ TEST_CASE("feed work_resolution always matches UI scale (critical blur path)") {
   CHECK(parse_feed_work_resolution(crlf) == 100);
   CHECK(crlf.find("work_resolution=100") != std::string::npos);
 
-  // Out-of-range UI scale clamps before writing feed.
+  // Out-of-range UI scale clamps before writing feed; under 50% the Feed floor wins.
   CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 200)) == 100);
-  CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 10)) == 25);
-  CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 25)) == 25);
+  CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 10)) == kMinFeedWorkResolution);
+  CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=50\n", 25)) == kMinFeedWorkResolution);
 
   // Mismatch detector: feed@50 + UI@100 is the bug condition.
   const int feed_v = 50;
@@ -1017,46 +1037,52 @@ TEST_CASE("renderer work size at 100% equals signal (no silent downsample)") {
   CHECK(scaled_extent(2560, 100) == scaled_extent(2560, clamp_scale_percent(100)));
 }
 
-TEST_CASE("Esc back to lobby must not keep session feed scale (menu blur)") {
-  // Scenario: open@100 → Esc → set 50% → Iniciar OK → Esc → lobby must be sharp.
-  // ReShade hooks lobby Present; feed@50 would blur the whole ImGui menu.
+// Feed downsamples everything it presents: menus stay at 100%, session gets the scale in
+// its own process (--autostart), and Esc restores 100% for the next lobby.
+TEST_CASE("Esc back to lobby restores 100% feed (menus stay sharp)") {
   CHECK(feed_work_resolution_for_lobby() == 100);
   CHECK(feed_work_resolution_for_session(50) == 50);
   CHECK(feed_work_resolution_for_session(100) == 100);
-  CHECK(feed_work_resolution_for_lobby() != feed_work_resolution_for_session(50));
+  // Boot: lobby first → 100%; straight into capture → session scale.
+  CHECK(feed_work_resolution_at_boot(true, 50) == 100);
+  CHECK(feed_work_resolution_at_boot(false, 50) == 50);
+  CHECK(feed_work_resolution_at_boot(false, 25) == kMinFeedWorkResolution);
+  // Leaving a scaled session needs a relaunch so the menu process locks 100%.
+  CHECK(feed_scale_change_needs_relaunch(true, 50, kLobbyFeedWorkResolution));
+  CHECK_FALSE(feed_scale_change_needs_relaunch(true, 100, kLobbyFeedWorkResolution));
+  CHECK_FALSE(feed_scale_change_needs_relaunch(false, 50, kLobbyFeedWorkResolution));
 
-  // Session left feed at 50 while settings still say 50% — lobby rewrite ignores that.
   std::string feed =
-      "enabled=1\nmode=2\nhdr=-1\nwork_resolution=50\nwork_upscale=0\nwork_sharpness=0.30\n";
+      "enabled=1\nmode=2\nhdr=-1\nwork_resolution=100\nwork_upscale=0\nwork_sharpness=0.30\nrebuild=0\n";
   const int session_scale = 50;
-  CHECK(feed_leaks_session_scale_into_lobby(feed, session_scale));
+  CHECK_FALSE(feed_leaks_session_scale_into_lobby(feed));
 
-  feed = apply_lobby_feed_work_resolution(std::move(feed));
-  CHECK(parse_feed_work_resolution(feed) == kLobbyFeedWorkResolution);
-  CHECK_FALSE(feed_leaks_session_scale_into_lobby(feed, session_scale));
-  // Persisted session scale stays 50 — only the feed for Present is isolated.
+  // Session scale on disk would blur the next lobby Present.
+  feed = apply_feed_work_resolution(std::move(feed), session_scale);
+  CHECK(parse_feed_work_resolution(feed) == 50);
+  CHECK(feed.find("work_upscale=1") != std::string::npos);
+  CHECK(feed.find("rebuild=1") != std::string::npos);
+  CHECK(feed_leaks_session_scale_into_lobby(feed));
   CHECK(feed_work_resolution_for_session(session_scale) == 50);
 
-  // Next Iniciar applies session scale again.
-  feed = apply_feed_work_resolution(std::move(feed), feed_work_resolution_for_session(50));
-  CHECK(parse_feed_work_resolution(feed) == 50);
-  CHECK(feed_leaks_session_scale_into_lobby(feed, 50));
   feed = apply_lobby_feed_work_resolution(std::move(feed));
   CHECK(parse_feed_work_resolution(feed) == 100);
+  CHECK(feed.find("work_upscale=0") != std::string::npos);
+  CHECK_FALSE(feed_leaks_session_scale_into_lobby(feed));
 
-  // Full loop: 100 → 50 session → lobby → 50 session → lobby
+  // Full cycle: lobby 100% → session 50% → Esc 100% → session 50% again.
   int ui = 100;
-  feed = apply_feed_work_resolution(std::move(feed), feed_work_resolution_for_session(ui));
+  feed = apply_feed_work_resolution(std::move(feed), feed_work_resolution_at_boot(true, ui));
   CHECK(parse_feed_work_resolution(feed) == 100);
   ui = 50;
   feed = apply_feed_work_resolution(std::move(feed), feed_work_resolution_for_session(ui));
   CHECK(parse_feed_work_resolution(feed) == 50);
   feed = apply_lobby_feed_work_resolution(std::move(feed));
   CHECK(parse_feed_work_resolution(feed) == 100);
+  CHECK_FALSE(feed_leaks_session_scale_into_lobby(feed));
   feed = apply_feed_work_resolution(std::move(feed), feed_work_resolution_for_session(ui));
   CHECK(parse_feed_work_resolution(feed) == 50);
-  feed = apply_lobby_feed_work_resolution(std::move(feed));
-  CHECK(parse_feed_work_resolution(feed) == 100);
+  CHECK(feed_leaks_session_scale_into_lobby(feed));
 }
 
 TEST_CASE("settings ini round-trip") {
@@ -1230,6 +1256,122 @@ TEST_CASE("gear renodx preset change+save reflects in feed and ReShade") {
   apply_persisted_to_config(cinema, cfg);
   CHECK(cfg.renodx_preset == 2);
   CHECK(cfg.exclusive_fullscreen == cinema.ui.fullscreen);
+}
+
+TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
+  CHECK(clamp_nr_pass_count(0) == 1);
+  CHECK(clamp_nr_pass_count(1) == 1);
+  CHECK(clamp_nr_pass_count(2) == 2);
+  CHECK(clamp_nr_pass_count(3) == 3);
+  CHECK(clamp_nr_pass_count(4) == 4);
+  CHECK(clamp_nr_pass_count(9) == 4);
+  CHECK(nr_reshade_pass_count(1) == 1);
+  CHECK(nr_reshade_pass_count(2) == 2);
+  CHECK(nr_reshade_pass_count(3) == 3);
+  CHECK(nr_reshade_pass_count(4) == 1);  // 1.5x writes INI PassCount=1
+  CHECK(std::string(nr_pass_count_label(1)).find("1x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_label(2)).find("2x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_label(3)).find("3x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_label(4)).find("1,5x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_short(4)) == "1.5x");
+  CHECK_FALSE(nr_pass_count_uses_multipass_addon(1));
+  CHECK(nr_pass_count_uses_multipass_addon(2));
+  CHECK(nr_pass_count_uses_multipass_addon(3));
+  CHECK(nr_pass_count_uses_multipass_addon(4));
+  CHECK(nr_pass_count_change_needs_relaunch(1, 2));
+  CHECK(nr_pass_count_change_needs_relaunch(1, 4));
+  CHECK(nr_pass_count_change_needs_relaunch(4, 1));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(4, 2));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 3));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 1));
+
+  {
+    std::string win =
+        "Window=[Window][RenoDX DLSS],Pos=8,,8,Size=100,,100,Collapsed=0,"
+        "[Window][RenoDX-DLSSNR],Pos=8,,8,Size=100,,100,Collapsed=0,"
+        "[Window][RenoDX Neural Resolution],Pos=1,,1,Size=10,,10,Collapsed=0\n";
+    win = sanitize_multipass_home_windows(std::move(win));
+    CHECK(win.find("[Window][RenoDX-DLSSNR],Pos=8,,8,Size=100,,100,Collapsed=1") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX Neural Resolution],Pos=1,,1,Size=10,,10,Collapsed=1") !=
+          std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS],Pos=8,,8,Size=100,,100,Collapsed=0") != std::string::npos);
+  }
+
+  PersistedSettings s = default_settings();
+  CHECK(s.nr_pass_count == 1);
+  s.nr_pass_count = 2;
+  const std::string ini = serialize_settings_ini(s);
+  CHECK(ini.find("nr_pass_count=2") != std::string::npos);
+  PersistedSettings loaded;
+  REQUIRE(parse_settings_ini(ini, loaded));
+  CHECK(loaded.nr_pass_count == 2);
+  s.nr_pass_count = 4;
+  const std::string ini15 = serialize_settings_ini(s);
+  CHECK(ini15.find("nr_pass_count=4") != std::string::npos);
+  PersistedSettings loaded15;
+  REQUIRE(parse_settings_ini(ini15, loaded15));
+  CHECK(loaded15.nr_pass_count == 4);
+
+  AppConfig cfg;
+  apply_persisted_to_config(loaded, cfg);
+  CHECK(cfg.nr_pass_count == 2);
+
+  std::string reshade = "EnableHooks=2\nNRPreset=0\nNeuralUplift=1\n";
+  reshade = apply_reshade_nr_pass_count(std::move(reshade), 3);
+  CHECK(parse_reshade_nr_pass_count(reshade) == 3);
+  CHECK(reshade.find("DirectNeuralRenderingPassCount=3") != std::string::npos);
+  reshade = apply_reshade_nr_pass_count(std::move(reshade), 4);
+  CHECK(parse_reshade_nr_pass_count(reshade) == 1);
+  CHECK(reshade.find("DirectNeuralRenderingPassCount=1") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingPassCount=4") == std::string::npos);
+
+  reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 2, /*visual=*/0);
+  CHECK(parse_reshade_nr_pass_count(reshade) == 2);
+  CHECK(reshade.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingRequireDlss=1") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingSkinStructureStrength=1") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingStyle=0") != std::string::npos);
+  reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 1, /*Cinematic=*/2);
+  CHECK(reshade.find("DirectNeuralRenderingStyle=1") != std::string::npos);
+  reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 4, /*visual=*/0);
+  CHECK(parse_reshade_nr_pass_count(reshade) == 1);
+  CHECK(reshade.find("DirectNeuralRenderingPassCount=4") == std::string::npos);
+  CHECK(reshade.find("AddonPath=") == std::string::npos);  // look defaults don't touch stack path
+
+  {
+    std::string look = "AddonPath=.\\addons-multipass\nDirectNeuralRenderingPassCount=1\nNRToggleKey=124\n";
+    look = apply_reshade_look_for_current_stack(std::move(look), 0);
+    CHECK(reshade_addon_path_is_multipass(look));
+    CHECK(parse_reshade_nr_pass_count(look) == 1);
+    CHECK(look.find("NRToggleKey=46") != std::string::npos);  // Delete, not F13
+    CHECK(look.find("NRToggleKey=124") == std::string::npos);
+    CHECK(look.find("DirectNeuralRenderingIntensity=1") != std::string::npos);
+  }
+  {
+    std::string look = "AddonPath=.\\addons-stable\nDirectNeuralRenderingPassCount=1\nNRToggleKey=46\n";
+    look = apply_reshade_look_for_current_stack(std::move(look), 0);
+    CHECK_FALSE(reshade_addon_path_is_multipass(look));
+    CHECK(look.find("NRToggleKey=124") != std::string::npos);
+  }
+
+#ifdef NEXUSCAP_SOURCE_DIR
+  const std::string setup_path = std::string(NEXUSCAP_SOURCE_DIR) + "/tools/setup_renodx.ps1";
+  std::ifstream in(setup_path, std::ios::binary);
+  REQUIRE(in);
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const std::string setup = ss.str();
+  CHECK(setup.find("renodx-multipass") != std::string::npos);
+  CHECK(setup.find("renodx-stable") != std::string::npos);
+  CHECK(setup.find("DirectNeuralRenderingPassCount=1") != std::string::npos);
+  CHECK(setup.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(setup.find("[RENODX-DLSS]") != std::string::npos);
+  CHECK(setup.find("[RENODX-DLSS-preset1]") != std::string::npos);
+  CHECK(setup.find("addons-stable") != std::string::npos);
+  CHECK(setup.find("addons-multipass") != std::string::npos);
+  CHECK(setup.find("AddonPath=.\\addons-stable") != std::string::npos);
+#endif
 }
 
 TEST_CASE("fullscreen checkbox save reflects exclusive_fullscreen on Iniciar") {
@@ -1411,6 +1553,8 @@ TEST_CASE("hud_panel size compact vs advanced metrics") {
   CHECK(hud_panel_width(true) > hud_panel_width(false));
   CHECK(hud_panel_height(true) > hud_panel_height(false));
   CHECK(hud_panel_height(true, true) == 780);
+  CHECK(hud_mini_overlay_rows() == 3);
+  CHECK(hud_mini_overlay_height() >= hud_mini_overlay_font_px() * 3 + 16);
   CHECK(hw_info_panel_width() == 360);
   CHECK(hw_info_panel_height() == 152);
   CHECK(kSysMetricsLineCount == 5);
@@ -1424,8 +1568,8 @@ TEST_CASE("lobby hud preview lines follow Sessao toggles") {
   CHECK(lobby_hud_preview_lines(true, true) > lobby_hud_preview_lines(true, false));
   CHECK(lobby_hud_preview_lines(true, false, true) == 11);  // + 5 Infos GPU/CPU lines
   CHECK(lobby_hud_preview_lines(true, true, true) == 13);
-  CHECK(lobby_hud_preview_lines(true, false, false, true) == 2);  // mini = two dense rows
-  CHECK(lobby_hud_preview_lines(true, true, true, true) == 2);   // mini wins over ADV+HW line count
+  CHECK(lobby_hud_preview_lines(true, false, false, true) == 3);  // mini = three dense rows
+  CHECK(lobby_hud_preview_lines(true, true, true, true) == 3);   // mini wins over ADV+HW line count
 }
 
 TEST_CASE("hw_info toggle persists and shows preview line") {
@@ -1897,17 +2041,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(2, 4, 1));
-  CHECK_FALSE(app_version_is(2, 0, 1));
-  CHECK(std::string(kAppVersion) == "2.4.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v2.4.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.4.1");
+  CHECK(app_version_is(3, 0, 0));
+  CHECK_FALSE(app_version_is(2, 4, 1));
+  CHECK(std::string(kAppVersion) == "3.0.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.0.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.0.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("2.4.1") != std::string::npos);
+  CHECK(lobby_t.find("3.0.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("2.4.1") != std::string::npos);
+  CHECK(sess_t.find("3.0.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2594,12 +2738,13 @@ TEST_CASE("live console enum parse/label/color") {
   CHECK(clamp_live_console(99) == LiveConsole::Ps5);
 }
 
-TEST_CASE("live mode gate requires file path") {
+TEST_CASE("live mode gate file helpers still work; overlay active follows flag") {
   CHECK_FALSE(live_mode_unlocked_at(""));
   CHECK_FALSE(live_mode_unlocked_at("C:\\this\\path\\should\\not\\exist\\live.on"));
-  CHECK_FALSE(live_overlay_active(false, true));
-  CHECK_FALSE(live_overlay_active(true, false));
+  CHECK_FALSE(live_overlay_active(false, false));
+  CHECK(live_overlay_active(false, true));  // no longer gated by live.on
   CHECK(live_overlay_active(true, true));
+  CHECK_FALSE(live_overlay_active(true, false));
 
   namespace fs = std::filesystem;
   const auto dir = fs::temp_directory_path() / "nexuscap_live_gate_test";
@@ -2616,15 +2761,19 @@ TEST_CASE("live mode gate requires file path") {
 }
 
 TEST_CASE("live fps line shows FG bar when on") {
-  char line[64]{};
+  char line[96]{};
   format_live_fps_line(line, sizeof(line), 60.0, 240.0, true, 4);
   CHECK(std::string(line) == "60.0 | 240.0");
   format_live_fps_line(line, sizeof(line), 59.9, 0.0, false, 2);
   CHECK(std::string(line) == "59.9");
-  format_live_dlss5_line(line, sizeof(line), true);
-  CHECK(std::string(line) == "DLSS 5 ON");
-  format_live_dlss5_line(line, sizeof(line), false);
-  CHECK(std::string(line) == "DLSS 5 OFF");
+  format_live_dlss5_line(line, sizeof(line), true, 1, true);
+  CHECK(std::string(line).find("1x") != std::string::npos);
+  CHECK(std::string(line).find("stable") != std::string::npos);
+  CHECK(std::string(line).find("ON") != std::string::npos);
+  format_live_dlss5_line(line, sizeof(line), false, 2, true);
+  CHECK(std::string(line).find("2x") != std::string::npos);
+  CHECK(std::string(line).find("multipass") != std::string::npos);
+  CHECK(std::string(line).find("off") != std::string::npos);
 }
 
 TEST_CASE("apply_persisted copies live overlay flags") {
@@ -2637,14 +2786,177 @@ TEST_CASE("apply_persisted copies live overlay flags") {
   CHECK(cfg.live_console == static_cast<int>(LiveConsole::Switch2));
 }
 
-TEST_CASE("unlocked false keeps live setting inert for overlay_active") {
-  // Setting may persist on disk, but without live.on the overlay must stay inactive.
+TEST_CASE("live overlay active follows setting without live.on") {
   PersistedSettings s = default_settings();
   s.ui.live_overlay = true;
   AppConfig cfg;
   apply_persisted_to_config(s, cfg);
   CHECK(cfg.live_overlay);
-  CHECK_FALSE(live_overlay_active(false, cfg.live_overlay));
+  CHECK(live_overlay_active(false, cfg.live_overlay));
+}
+
+TEST_CASE("dlss5 motor swap notice names both engines") {
+  const std::string msg = session_notice_dlss5_motor_swap(1, 2);
+  CHECK(msg.find("Trocando motor DLSS 5") != std::string::npos);
+  CHECK(msg.find("1x") != std::string::npos);
+  CHECK(msg.find("2x") != std::string::npos);
+}
+
+// Feed reads dlss5-feed.cfg once per process — a new scale only lands after relaunch.
+TEST_CASE("feed scale change needs relaunch only under RenoDX") {
+  CHECK(feed_scale_change_needs_relaunch(true, 100, 50));
+  CHECK(feed_scale_change_needs_relaunch(true, 50, 100));
+  CHECK_FALSE(feed_scale_change_needs_relaunch(true, 50, 50));
+  // Both floor to 50% in the Feed — restarting would change nothing.
+  CHECK_FALSE(feed_scale_change_needs_relaunch(true, 40, 33));
+  // No RenoDX: renderer scales its own RT, no restart.
+  CHECK_FALSE(feed_scale_change_needs_relaunch(false, 100, 50));
+  const std::string msg = session_notice_feed_scale_apply(100, 50);
+  CHECK(msg.find("100%") != std::string::npos);
+  CHECK(msg.find("50%") != std::string::npos);
+}
+
+// Measured: multipass RenoDX ignores NRToggleKey, so Delete must not fake an "off" HUD.
+TEST_CASE("NR hotkey only claimed on the stable stack") {
+  CHECK(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/false));
+  CHECK_FALSE(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/true));
+  CHECK_FALSE(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(2)));
+  CHECK_FALSE(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(4)));
+  CHECK(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(1)));
+  const std::string msg15 = session_notice_nr_hotkey_unavailable(4);
+  CHECK(msg15.find("1,5x") != std::string::npos);
+  CHECK(msg15.find("Home") != std::string::npos);
+}
+
+// ReShade keeps PassCount in the saved preset AND in the live addon section.
+TEST_CASE("pass count rewrites every ReShade section") {
+  const std::string ini =
+      "[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\nDirectNeuralRenderingStyle=0\n\n"
+      "[RenoDX.DLSS5]\nDirectNeuralRenderingPassCount=1\nNeuralUplift=1\n";
+  const std::string out = apply_reshade_nr_pass_count(ini, 3);
+  CHECK(out.find("DirectNeuralRenderingPassCount=1") == std::string::npos);
+  std::size_t hits = 0;
+  for (std::size_t p = out.find("DirectNeuralRenderingPassCount=3"); p != std::string::npos;
+       p = out.find("DirectNeuralRenderingPassCount=3", p + 1)) {
+    ++hits;
+  }
+  CHECK(hits == 2);
+  CHECK(out.find("DirectNeuralRenderingStyle=0") != std::string::npos);
+  CHECK(out.find("NeuralUplift=1") != std::string::npos);
+  CHECK(parse_reshade_nr_pass_count(out) == 3);
+  // Missing key still gets appended once.
+  CHECK(parse_reshade_nr_pass_count(apply_reshade_nr_pass_count("[RenoDX.DLSS5]\n", 2)) == 2);
+}
+
+// Measured: dlss5-feed rejects work_resolution < 50 and builds at 100% instead.
+TEST_CASE("feed work_resolution floors at 50 percent") {
+  CHECK(feed_work_resolution_for_session(100) == 100);
+  CHECK(feed_work_resolution_for_session(67) == 67);
+  CHECK(feed_work_resolution_for_session(50) == 50);
+  CHECK(feed_work_resolution_for_session(40) == kMinFeedWorkResolution);
+  CHECK(feed_work_resolution_for_session(kMinScalePercent) == kMinFeedWorkResolution);
+  CHECK(parse_feed_work_resolution(apply_feed_work_resolution("work_resolution=100\n", 33), 0) == 50);
+  // Overlay must report what the Feed builds, not what the slider asked for.
+  CHECK(effective_scale_percent(true, 33) == 50);
+  CHECK(effective_scale_percent(false, 33) == 33);  // no RenoDX → renderer really scales
+  CHECK(feed_scale_below_floor(true, 49));
+  CHECK_FALSE(feed_scale_below_floor(true, 50));
+  CHECK_FALSE(feed_scale_below_floor(false, 25));
+}
+
+TEST_CASE("--autostart keeps lobby settings seeding and skips the menu once") {
+  const char* argv[] = {"NexusCap.exe", "--autostart"};
+  const AppConfig c = parse_args(2, const_cast<char**>(argv));
+  CHECK(c.autostart);
+  CHECK(c.show_lobby);  // settings still seed cfg; main skips the first run_lobby
+}
+
+TEST_CASE("mini overlay 3-row breaks keep stalls off the clipped FPS row") {
+  MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+  char a[8]{}, b[8]{};
+  const int n = format_mini_overlay_segments(
+      segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 0.0, false, 2, true, true, 16.7, 16.6, 17.0,
+      18.0, true, 8.5, 2.2, 7, 1, 3, 2560, 1440, 1280, 720, 2560, 1440, 50, true, 59.9, 2.0, 2.1, 4, "Default",
+      nullptr, 0, 900, 20.0, nullptr, 60.0, 1);
+  int wrap_st = -1;
+  int wrap_l600 = -1;
+  mini_overlay_row_breaks(segs, n, &wrap_st, &wrap_l600);
+  CHECK(wrap_st > 0);
+  CHECK(wrap_st < wrap_l600);
+  CHECK(wrap_l600 < n);
+  CHECK(mini_overlay_seg_is_stalls(segs[wrap_st]));
+  CHECK(std::strstr(segs[wrap_st].text, "st7/cl1") != nullptr);
+  CHECK(mini_overlay_seg_is_l600(segs[wrap_l600]));
+  // FPS / res / VSYNC stay on row 0; stalls never share that row (sparkline used to clip them).
+  bool row0_has_res = false;
+  bool row0_has_stalls = false;
+  bool row1_has_ft = false;
+  for (int i = 0; i < wrap_st; ++i) {
+    if (std::strstr(segs[i].text, "2560x1440")) row0_has_res = true;
+    if (mini_overlay_seg_is_stalls(segs[i])) row0_has_stalls = true;
+  }
+  for (int i = wrap_st; i < wrap_l600; ++i) {
+    if (std::strncmp(segs[i].text, "ft ", 3) == 0) row1_has_ft = true;
+  }
+  CHECK(row0_has_res);
+  CHECK_FALSE(row0_has_stalls);
+  CHECK(row1_has_ft);
+}
+
+TEST_CASE("3.0 HUD stack line names motor and pass count") {
+  char line[96]{};
+  format_dlss5_stack_hud_line(line, sizeof(line), true, true, 1);
+  CHECK(std::strstr(line, "1x") != nullptr);
+  CHECK(std::strstr(line, "stable") != nullptr);
+  CHECK(std::strstr(line, "NR ON") != nullptr);
+  format_dlss5_stack_hud_line(line, sizeof(line), false, true, 2);
+  CHECK(std::strstr(line, "2x") != nullptr);
+  CHECK(std::strstr(line, "multipass") != nullptr);
+  CHECK(std::strstr(line, "NR off") != nullptr);
+  format_dlss5_stack_hud_line(line, sizeof(line), true, true, 4);
+  CHECK(std::strstr(line, "1.5x") != nullptr);
+  CHECK(std::strstr(line, "multipass") != nullptr);
+  CHECK(std::strstr(line, "1x") == nullptr);  // must not look like Krish 1x
+}
+
+TEST_CASE("1.5x mini overlay names multipass motor not 1x stable") {
+  MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+  char a[8]{}, b[8]{};
+  const int n = format_mini_overlay_segments(
+      segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 0.0, false, 2, true, true, 16.7, 16.6, 17.0,
+      18.0, true, 8.5, 2.2, 0, 0, 0, 2560, 1440, 2560, 1440, 2560, 1440, 100, true, 59.9, 2.0, 2.1, 0, "Default",
+      nullptr, 0, 900, 20.0, nullptr, 60.0, 4);
+  bool found_15 = false;
+  bool found_motor = false;
+  bool found_1x_token = false;
+  for (int i = 0; i < n; ++i) {
+    if (std::strstr(segs[i].text, "1.5x")) found_15 = true;
+    if (std::strstr(segs[i].text, "multipass")) found_motor = true;
+    if (std::strstr(segs[i].text, "1x") && std::strstr(segs[i].text, "1.5x") == nullptr) found_1x_token = true;
+    if (std::strstr(segs[i].text, "stable")) found_1x_token = true;
+  }
+  CHECK(found_15);
+  CHECK(found_motor);
+  CHECK_FALSE(found_1x_token);
+}
+
+TEST_CASE("apply_keyed_int_all rewrites every occurrence") {
+  const std::string in = "DirectNeuralRenderingPassCount=1\nkeep=1\nDirectNeuralRenderingPassCount=1\n";
+  const std::string out = apply_keyed_int_all(in, "DirectNeuralRenderingPassCount=", 2);
+  CHECK(out.find("DirectNeuralRenderingPassCount=1") == std::string::npos);
+  CHECK(out.find("keep=1") != std::string::npos);
+  std::size_t hits = 0;
+  for (std::size_t p = out.find("DirectNeuralRenderingPassCount=2"); p != std::string::npos;
+       p = out.find("DirectNeuralRenderingPassCount=2", p + 1)) {
+    ++hits;
+  }
+  CHECK(hits == 2);
+}
+
+TEST_CASE("feed boot scale is 100 in lobby and session scale when autostart") {
+  CHECK(feed_work_resolution_at_boot(/*lobby_first=*/true, 50) == 100);
+  CHECK(feed_work_resolution_at_boot(/*lobby_first=*/false, 50) == 50);
+  CHECK(feed_work_resolution_at_boot(false, 25) == kMinFeedWorkResolution);
 }
 
 

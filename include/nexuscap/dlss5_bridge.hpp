@@ -180,6 +180,12 @@ inline int parse_reshade_nr_last_toggled(const std::string& log_text) {
   return last;
 }
 
+// Measured on the multipass build: it never reads NRToggleKey (its ReShade sections
+// [RENODX-DLSS]* carry no key binding) and an injected edge produces no log line, no state
+// change and no frame-cost change — NR runs for the whole session there. Only the stable
+// build toggles by key ("NR toggled ON via 0x7C" in ReShade.log).
+inline bool renodx_stack_supports_nr_hotkey(bool multipass_stack) { return !multipass_stack; }
+
 // FG HUD: only claim ON if LS process is alive; OFF only if none remain.
 inline bool fg_overlay_on_confirmed(bool want_on, unsigned running_ls) {
   if (want_on) return running_ls > 0;
@@ -207,7 +213,12 @@ int peek_reshade_nr_toggled_since(const std::string& exe_dir, std::streamoff log
 
 NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_on, double now_ms);
 
+// Fake NRToggleKey edge. Krish: Bridge GetAsyncKeyState inject. Multipass: real VK_F13 SendInput
+// (addon has NRToggleKey but does not import GetAsyncKeyState for Bridge).
+bool inject_nr_toggle_key(int vk = kRenodxNrInjectVk);
+
 // Apply want_on: sync NeuralUplift + Bridge pulse if runtime differs.
+// Multipass: SendInput NRToggleKey instead of Bridge.
 // If async_out != nullptr: pulse without blocking and fill pending (HUD updates on poll).
 // If async_out == nullptr: wait for ReShade.log line (lobby/boot; may hitch briefly).
 bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on,
@@ -217,5 +228,9 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
 // Lobby live preview: sync visual preset + apply NR (reload cycle when already ON).
 bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
                                     bool* runtime_on);
+
+// Sync Pass Count + look defaults + reload NR so RenoDX re-reads.
+bool apply_lobby_nr_pass_count_live(const std::string& exe_dir, int pass_count, bool want_nr,
+                                    bool* runtime_on, int visual_preset = 0);
 
 }  // namespace nexuscap

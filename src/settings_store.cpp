@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -108,8 +109,12 @@ RuntimeHealth check_runtime_health(const std::string& exe_dir) {
   if (!exe_dir.empty()) {
     const std::string base = exe_dir.back() == '\\' || exe_dir.back() == '/' ? exe_dir : exe_dir + "\\";
     h.has_dxgi = file_exists_utf8(base + "dxgi.dll");
-    h.has_renodx = file_exists_utf8(base + "renodx-dlss5.addon64");
-    h.has_feed = file_exists_utf8(base + "dlss5-feed.addon64");
+    h.has_renodx = file_exists_utf8(base + "addons-stable\\renodx-dlss5.addon64") ||
+                    file_exists_utf8(base + "addons-multipass\\renodx-dlss5.addon64") ||
+                    file_exists_utf8(base + "renodx-dlss5.addon64");
+    h.has_feed = file_exists_utf8(base + "dlss5-feed.addon64") ||
+                 file_exists_utf8(base + "addons-stable\\dlss5-feed.addon64") ||
+                 file_exists_utf8(base + "addons-multipass\\dlss5-feed.addon64");
   }
   return h;
 }
@@ -155,6 +160,7 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "enhance_renodx=" << (s.enhance_renodx ? 1 : 0) << "\n";
   o << "neural_rendering=" << (s.neural_rendering ? 1 : 0) << "\n";
   o << "renodx_preset=" << clamp_renodx_visual_preset(s.renodx_preset) << "\n";
+  o << "nr_pass_count=" << clamp_nr_pass_count(s.nr_pass_count) << "\n";
   o << "video_fourcc=" << clamp_video_fourcc(s.video_fourcc) << "\n";
   o << "color_space=" << clamp_color_space(s.color_space) << "\n";
   o << "color_range=" << clamp_color_range(s.color_range) << "\n";
@@ -222,6 +228,7 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       } else if (key == "enhance_renodx") s.enhance_renodx = (val != "0" && val != "false");
       else if (key == "neural_rendering") s.neural_rendering = (val != "0" && val != "false");
       else if (key == "renodx_preset") s.renodx_preset = clamp_renodx_visual_preset(std::atoi(val.c_str()));
+      else if (key == "nr_pass_count") s.nr_pass_count = clamp_nr_pass_count(std::atoi(val.c_str()));
       else if (key == "video_fourcc") s.video_fourcc = clamp_video_fourcc(std::atoi(val.c_str()));
       else if (key == "color_space") s.color_space = clamp_color_space(std::atoi(val.c_str()));
       else if (key == "color_range") s.color_range = clamp_color_range(std::atoi(val.c_str()));
@@ -331,6 +338,33 @@ bool sync_feed_work_resolution_file(const std::string& path, int scale_percent) 
   return true;
 }
 
+namespace {
+
+std::vector<std::string> feed_cfg_candidates(const std::string& exe_dir) {
+  return {
+      exe_dir + "\\dlss5-feed.cfg",
+      exe_dir + "\\addons-stable\\dlss5-feed.cfg",
+      exe_dir + "\\addons-multipass\\dlss5-feed.cfg",
+  };
+}
+
+template <typename Fn>
+bool for_each_feed_cfg(const std::string& exe_dir, Fn&& fn) {
+  bool any = false;
+  for (const auto& path : feed_cfg_candidates(exe_dir)) {
+    if (fn(path)) any = true;
+  }
+  return any;
+}
+
+}  // namespace
+
+bool sync_feed_work_resolution_in_dir(const std::string& exe_dir, int scale_percent) {
+  return for_each_feed_cfg(exe_dir, [&](const std::string& path) {
+    return sync_feed_work_resolution_file(path, scale_percent);
+  });
+}
+
 bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_live_preview) {
   const std::string path = exe_dir + "\\DLSS5MGF.ini";
   std::ifstream in(path);
@@ -346,30 +380,24 @@ bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_l
 
 bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset) {
   const int v = clamp_renodx_visual_preset(visual_preset);
-  bool any = false;
-  const std::string feed_path = exe_dir + "\\dlss5-feed.cfg";
-  {
+  bool any = for_each_feed_cfg(exe_dir, [&](const std::string& feed_path) {
     std::ifstream in(feed_path);
-    if (in) {
-      std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-      in.close();
-      text = apply_renodx_visual_preset_to_feed(std::move(text), v);
-      std::ofstream out(feed_path, std::ios::trunc);
-      if (out) {
-        out << text;
-        any = true;
-      }
-    }
-  }
+    if (!in) return false;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    text = apply_renodx_visual_preset_to_feed(std::move(text), v);
+    std::ofstream out(feed_path, std::ios::trunc);
+    if (!out) return false;
+    out << text;
+    return true;
+  });
   const std::string reshade_path = exe_dir + "\\ReShade.ini";
   {
     std::ifstream in(reshade_path);
     if (in) {
       std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
       in.close();
-      text = apply_renodx_visual_preset_to_reshade(std::move(text), v);
-      // Bridge injects F13 into RenoDX; UI Delete calls Bridge (avoids double-toggle).
-      text = apply_reshade_nr_toggle_key(std::move(text), kRenodxNrInjectVk);
+      text = apply_reshade_look_for_current_stack(std::move(text), v);
       std::ofstream out(reshade_path, std::ios::trunc);
       if (out) {
         out << text;
@@ -380,22 +408,99 @@ bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_pres
   return any;
 }
 
-bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on, bool feed_on) {
-  bool any = false;
-  const std::string feed_path = exe_dir + "\\dlss5-feed.cfg";
-  {
-    std::ifstream in(feed_path);
-    if (in) {
-      std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-      in.close();
-      text = apply_feed_enabled(std::move(text), feed_on);
-      std::ofstream out(feed_path, std::ios::trunc);
-      if (out) {
-        out << text;
-        any = true;
-      }
-    }
+RenodxAddonSyncResult sync_renodx_addon_variant(const std::string& exe_dir, int pass_count) {
+  const int p = clamp_nr_pass_count(pass_count);
+  const std::string stack_dir =
+      exe_dir + (nr_pass_count_uses_multipass_addon(p) ? "\\addons-multipass" : "\\addons-stable");
+  if (!file_exists_utf8(stack_dir + "\\renodx-dlss5.addon64")) {
+    return RenodxAddonSyncResult::MissingVariant;
   }
+
+  const std::string reshade_path = exe_dir + "\\ReShade.ini";
+  std::ifstream in(reshade_path);
+  if (!in) return RenodxAddonSyncResult::WriteFailed;
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+
+  const std::string want_path = renodx_addon_stack_rel(p);
+  const bool same = parse_reshade_addon_path(text) == want_path;
+  text = apply_reshade_addon_path(std::move(text), p);
+  std::ofstream out(reshade_path, std::ios::trunc);
+  if (!out) return RenodxAddonSyncResult::WriteFailed;
+  out << text;
+  return same ? RenodxAddonSyncResult::OkSame : RenodxAddonSyncResult::OkSwapped;
+}
+
+bool relaunch_current_process(const char* extra_args) {
+  wchar_t exe[MAX_PATH]{};
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH) || !exe[0]) return false;
+  std::wstring cmd = L"\"";
+  cmd += exe;
+  cmd += L"\"";
+  if (extra_args && *extra_args) {
+    cmd += L' ';
+    for (const char* p = extra_args; *p; ++p) cmd += static_cast<wchar_t>(*p);  // ASCII flags only
+  }
+  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+  buf.push_back(L'\0');
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  const BOOL ok =
+      CreateProcessW(exe, buf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);
+  if (!ok) return false;
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  return true;
+}
+
+bool renodx_active_addon_is_multipass(const std::string& exe_dir) {
+  const std::string reshade_path = exe_dir + "\\ReShade.ini";
+  std::ifstream in(reshade_path);
+  if (in) {
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    if (reshade_addon_path_is_multipass(text)) return true;
+    if (text.find("AddonPath=") != std::string::npos) return false;
+  }
+  return file_exists_utf8(exe_dir + "\\addons-multipass\\renodx-dlss5.addon64");
+}
+
+bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int visual_preset) {
+  const int p = clamp_nr_pass_count(pass_count);
+  (void)sync_renodx_addon_variant(exe_dir, p);
+  const std::string reshade_path = exe_dir + "\\ReShade.ini";
+  std::ifstream in(reshade_path);
+  if (!in) return false;
+  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  text = apply_reshade_addon_path(std::move(text), p);
+  if (nr_pass_count_uses_multipass_addon(p)) {
+    text = apply_reshade_multipass_look_defaults(std::move(text), p, visual_preset);
+  } else {
+    text = apply_reshade_stable_look_defaults(std::move(text), visual_preset);
+    text = apply_reshade_nr_pass_count(std::move(text), 1);
+    // Krish: Bridge injects F13 — user Delete must not double-toggle RenoDX key.
+    text = apply_reshade_nr_toggle_key(std::move(text), kRenodxNrInjectVk);
+  }
+  std::ofstream out(reshade_path, std::ios::trunc);
+  if (!out) return false;
+  out << text;
+  return true;
+}
+
+bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on, bool feed_on) {
+  bool any = for_each_feed_cfg(exe_dir, [&](const std::string& feed_path) {
+    std::ifstream in(feed_path);
+    if (!in) return false;
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    text = apply_feed_enabled(std::move(text), feed_on);
+    std::ofstream out(feed_path, std::ios::trunc);
+    if (!out) return false;
+    out << text;
+    return true;
+  });
   const std::string reshade_path = exe_dir + "\\ReShade.ini";
   {
     std::ifstream in(reshade_path);
@@ -403,7 +508,10 @@ bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on,
       std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
       in.close();
       text = apply_reshade_neural_uplift(std::move(text), nr_on);
-      text = apply_reshade_nr_toggle_key(std::move(text), kRenodxNrInjectVk);
+      // Stable: Bridge uses F13. Multipass: keep Delete (do not overwrite look defaults).
+      if (!renodx_active_addon_is_multipass(exe_dir)) {
+        text = apply_reshade_nr_toggle_key(std::move(text), kRenodxNrInjectVk);
+      }
       std::ofstream out(reshade_path, std::ios::trunc);
       if (out) {
         out << text;

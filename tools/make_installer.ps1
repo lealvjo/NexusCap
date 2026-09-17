@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "2.4.1",
+  [string]$Version = "3.0.0",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -105,7 +105,6 @@ if (Test-Path $logoIco) {
 
 $runtimeFiles = @(
   "dxgi.dll",
-  "renodx-dlss5.addon64",
   "dlss5-feed.addon64",
   "dlss5-bridge.addon64",
   "nvngx_dlss.dll",
@@ -123,9 +122,52 @@ foreach ($f in $runtimeFiles) {
   $src = Join-Path $Release $f
   if (Test-Path -LiteralPath $src) {
     Copy-Item -LiteralPath $src -Destination (Join-Path $Stage $f) -Force
-  } elseif ($f -in @("dxgi.dll", "renodx-dlss5.addon64", "dlss5-feed.addon64", "dlss5-bridge.addon64")) {
+  } elseif ($f -in @("dxgi.dll", "dlss5-feed.addon64", "dlss5-bridge.addon64")) {
     $missingCritical += $f
   }
+}
+
+foreach ($stack in @("addons-stable", "addons-multipass")) {
+  $srcDir = Join-Path $Release $stack
+  if (Test-Path -LiteralPath $srcDir) {
+    $dstDir = Join-Path $Stage $stack
+    New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
+    # Addon binaries + full NGX copies (isolated motors — no shared hardlinks).
+    foreach ($f in @("renodx-dlss5.addon64", "dlss5-feed.addon64", "dlss5-bridge.addon64", "dlss5-feed.cfg")) {
+      $src = Join-Path $srcDir $f
+      if (Test-Path -LiteralPath $src) {
+        Copy-Item -LiteralPath $src -Destination (Join-Path $dstDir $f) -Force
+      } elseif ($f -eq "renodx-dlss5.addon64") {
+        $missingCritical += "$stack\$f"
+      } elseif ($f -eq "dlss5-feed.cfg") {
+        $fallback = Join-Path $Stage "dlss5-feed.cfg"
+        if (-not (Test-Path -LiteralPath $fallback)) { $fallback = $DefaultsFeed }
+        if (Test-Path -LiteralPath $fallback) {
+          Copy-Item -LiteralPath $fallback -Destination (Join-Path $dstDir $f) -Force
+        }
+      }
+    }
+    # Full copy NGX into each stack so motors never share/conflict on the same files.
+    foreach ($ngx in @("nvngx_dlss.dll", "nvngx_dlssnr.dll")) {
+      $src = Join-Path $Stage $ngx
+      $dst = Join-Path $dstDir $ngx
+      if (-not (Test-Path -LiteralPath $src)) { continue }
+      Copy-Item -LiteralPath $src -Destination $dst -Force
+    }
+  } else {
+    $missingCritical += "$stack\renodx-dlss5.addon64"
+  }
+}
+
+foreach ($leak in @(
+  "renodx-dlss5.addon64",
+  "renodx-dlss5.stable.addon64",
+  "renodx-dlss5.multipass.addon64",
+  "renodx-dlss5.stable.sidecar",
+  "renodx-dlss5.multipass.sidecar"
+)) {
+  $p = Join-Path $Stage $leak
+  if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
 }
 
 if ($missingCritical.Count -gt 0) {

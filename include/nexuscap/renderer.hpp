@@ -85,9 +85,11 @@ struct OverlayState {
   double s600_p95_present = 0;
   double s600_max_interval = 0;
   uint64_t s600_stalls = 0;
-  // Secret live overlay (right edge). When active, mini/ADV HUD share is suppressed.
+  // Live overlay (right edge). When active, mini/ADV HUD share is suppressed.
   bool live_overlay = false;
   int live_console = 0;  // LiveConsole
+  int nr_pass_count = 1;
+  bool feed_on = true;
 };
 
 class MetricsHud {
@@ -195,6 +197,9 @@ public:
   bool vsync() const { return vsync_; }
   void set_scale_percent(int percent);  // 25–100; lower = softer image, less GPU work
   int scale_percent() const { return scale_percent_; }
+  // Under RenoDX the app RT stays native and the scale lives in the Feed — report that
+  // one in the HUD, otherwise the overlay shows 100% while DLSS5 works at 50%.
+  void set_hud_work_scale_percent(int percent) { hud_work_scale_percent_ = percent; }
   // Espaco/intervalo reais no decode NV12 (mesmo contrato do preview CPU).
   void set_color_format(int space, int range);
   int color_space() const { return color_space_; }
@@ -221,6 +226,7 @@ private:
   uint32_t swap_flags_ = 0;
   bool vsync_ = false;
   int scale_percent_ = 100;
+  int hud_work_scale_percent_ = 0;  // 0 = HUD follows the app RT scale
   int color_space_ = 0;
   int color_range_ = 0;
   IFrameEnhance* enhance_ = nullptr;

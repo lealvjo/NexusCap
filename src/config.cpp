@@ -24,6 +24,8 @@ AppConfig parse_args(int argc, char** argv) {
       c.fake_capture = true;
     } else if (a == "--no-lobby") {
       c.show_lobby = false;
+    } else if (a == "--autostart") {
+      c.autostart = true;  // lobby settings still seed cfg; first lobby pass is skipped
     } else if (a == "--selftest-cap" || a == "--selftest-vedo") {
       c.selftest_cap = true;
       c.exclusive_fullscreen = false;
@@ -102,6 +104,7 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.fps = s.fps;
   cfg.scale_percent = clamp_scale_percent(s.scale_percent);
   cfg.renodx_preset = clamp_renodx_visual_preset(s.renodx_preset);
+  cfg.nr_pass_count = clamp_nr_pass_count(s.nr_pass_count);
   cfg.video_fourcc = clamp_video_fourcc(s.video_fourcc);
   cfg.color_space = clamp_color_space(s.color_space);
   cfg.color_range = clamp_color_range(s.color_range);

@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <string>
 
+#include "nexuscap/settings_store.hpp"
+
 namespace nexuscap {
 
 enum class FgStatus {
@@ -136,6 +138,27 @@ inline void mini_seg_set(MiniOverlaySeg& s, const char* text, unsigned char r, u
 
 inline void mini_seg_sep(MiniOverlaySeg& s) { mini_seg_set(s, " · ", 80, 95, 115); }
 
+// 3-row mini bar: row0 = FPS…present, row1 = stalls+ft, row2 = L600+HW.
+// Stalls used to sit at the end of row0 and were clipped by the sparkline.
+inline bool mini_overlay_seg_is_stalls(const MiniOverlaySeg& s) {
+  return s.text[0] == 's' && s.text[1] == 't' && s.text[2] >= '0' && s.text[2] <= '9';
+}
+inline bool mini_overlay_seg_is_l600(const MiniOverlaySeg& s) {
+  return std::strncmp(s.text, "L600", 4) == 0;
+}
+inline void mini_overlay_row_breaks(const MiniOverlaySeg* segs, int n, int* wrap_stalls, int* wrap_l600) {
+  int ws = n;
+  int wl = n;
+  if (segs) {
+    for (int i = 0; i < n; ++i) {
+      if (ws == n && mini_overlay_seg_is_stalls(segs[i])) ws = i;
+      if (wl == n && mini_overlay_seg_is_l600(segs[i])) wl = i;
+    }
+  }
+  if (wrap_stalls) *wrap_stalls = ws;
+  if (wrap_l600) *wrap_l600 = wl;
+}
+
 inline unsigned mini_hw_token_rgb(const char* tok, unsigned char& r, unsigned char& g, unsigned char& b) {
   if (!tok || !tok[0]) return 0;
   // Power
@@ -180,7 +203,8 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                                         double s600_p95_present = 0, uint64_t s600_stalls = 0,
                                         const char* renodx_preset = nullptr, const char* hw_compact = nullptr,
                                         double dlss_ms = 0, uint64_t frames = 0, double s600_max_interval = 0,
-                                        const char* fg_backend = nullptr, double target_fps = 0) {
+                                        const char* fg_backend = nullptr, double target_fps = 0,
+                                        int nr_pass_count = 1) {
   if (line0 && n0) line0[0] = '\0';
   if (line1 && n1) line1[0] = '\0';
   int n = 0;
@@ -203,17 +227,38 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
     push(fg_extra, 120, 255, 200);
   }
 
+  // Signal → DLSS5 work → output. Kept right after FPS: it used to sit after the counters
+  // and fell off the right edge of the bar, so the scale looked like it never changed.
+  char res_part[96]{};
+  if (capture_w > 0 && capture_h > 0) {
+    const int ww = work_w > 0 ? work_w : capture_w;
+    const int wh = work_h > 0 ? work_h : capture_h;
+    const int ow = output_w > 0 ? output_w : capture_w;
+    const int oh = output_h > 0 ? output_h : capture_h;
+    const int sp = scale_percent > 0 ? scale_percent : 100;
+    if (ow == capture_w && oh == capture_h) {
+      std::snprintf(res_part, sizeof(res_part), "%dx%d>%dx%d@%d%%>out 1:1", capture_w, capture_h, ww, wh, sp);
+    } else {
+      std::snprintf(res_part, sizeof(res_part), "%dx%d>%dx%d@%d%%>%dx%d", capture_w, capture_h, ww, wh, sp, ow,
+                    oh);
+    }
+  }
   push_sep();
-  char nr_part[48]{};
+  push(res_part[0] ? res_part : "-", 120, 220, 255);
+
+  push_sep();
+  char nr_part[64]{};
   const char* preset = (renodx_preset && renodx_preset[0]) ? renodx_preset : "";
+  const char* pass = nr_pass_count_short(nr_pass_count);
+  const char* motor = nr_dlss5_motor_name(nr_pass_count);
   if (dlss5_on && preset[0] && dlss_ms > 0.01) {
-    std::snprintf(nr_part, sizeof(nr_part), "NR ON/%s %.1fms", preset, dlss_ms);
+    std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s NR/%s %.1fms", pass, preset, dlss_ms);
   } else if (dlss5_on && preset[0]) {
-    std::snprintf(nr_part, sizeof(nr_part), "NR ON/%s", preset);
+    std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s Feed·%s NR/%s", pass, motor, preset);
   } else if (dlss5_on && dlss_ms > 0.01) {
-    std::snprintf(nr_part, sizeof(nr_part), "NR ON %.1fms", dlss_ms);
+    std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s NR %.1fms", pass, dlss_ms);
   } else {
-    std::snprintf(nr_part, sizeof(nr_part), "NR %s", dlss5_on ? "ON" : "off");
+    std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s Feed·%s NR %s", pass, motor, dlss5_on ? "ON" : "off");
   }
   push(nr_part, dlss5_on ? 180 : 140, dlss5_on ? 160 : 150, dlss5_on ? 255 : 170);
 
@@ -241,25 +286,6 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                 static_cast<unsigned long long>(stalls), static_cast<unsigned long long>(clusters),
                 static_cast<unsigned long long>(frames), static_cast<unsigned long long>(dropped));
   push(cnt, 255, 180, 120);
-
-  char res_part[96]{};
-  if (capture_w > 0 && capture_h > 0) {
-    const int ww = work_w > 0 ? work_w : capture_w;
-    const int wh = work_h > 0 ? work_h : capture_h;
-    const int ow = output_w > 0 ? output_w : capture_w;
-    const int oh = output_h > 0 ? output_h : capture_h;
-    const int sp = scale_percent > 0 ? scale_percent : 100;
-    // Always show signal → work → output (+ scale) so the mini bar makes the 3 stages obvious.
-    if (target_fps > 0.5) {
-      std::snprintf(res_part, sizeof(res_part), "%dx%d>%dx%d>%dx%d@%d%%/%.0f", capture_w, capture_h, ww, wh,
-                    ow, oh, sp, target_fps);
-    } else {
-      std::snprintf(res_part, sizeof(res_part), "%dx%d>%dx%d>%dx%d@%d%%", capture_w, capture_h, ww, wh, ow, oh,
-                    sp);
-    }
-  }
-  push_sep();
-  push(res_part[0] ? res_part : "-", 120, 220, 255);
 
   push_sep();
   char ft_part[112]{};
@@ -320,14 +346,9 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   if (line0 && n0 > 0) line0[0] = '\0';
   if (line1 && n1 > 0) line1[0] = '\0';
   if (segs && n > 0) {
-    // Break after resolution: line0 = FPS…res · line1 = frametime + L600 + HW.
-    int wrap = n;
-    for (int i = 0; i < n; ++i) {
-      if (std::strncmp(segs[i].text, "ft ", 3) == 0) {
-        wrap = i;
-        break;
-      }
-    }
+    // Line0 = FPS…present (must stay short); stalls+ft+L600+HW on line1 for 2-string callers.
+    int wrap_st = n;
+    mini_overlay_row_breaks(segs, n, &wrap_st, nullptr);
     auto join_range = [](char* dst, size_t dst_n, const MiniOverlaySeg* s, int begin, int end) {
       if (!dst || dst_n == 0) return;
       size_t used = 0;
@@ -340,13 +361,13 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
         dst[used] = '\0';
       }
     };
-    join_range(line0, n0, segs, 0, wrap);
-    join_range(line1, n1, segs, wrap, n);
+    join_range(line0, n0, segs, 0, wrap_st);
+    join_range(line1, n1, segs, wrap_st, n);
   }
   return n;
 }
 
-// Mini overlay: two dense top-bar lines (ADV on L0, FT/L600/HW on L1) so nothing is clipped.
+// Mini overlay: row0 FPS…present; row1 stalls+ft (+ L600/HW in the 2-string API).
 inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_t n1, double fps_cap,
                                       double fps_fg_est, bool fg_on, int fg_mult, bool dlss5_on,
                                       bool sync_image, double frame_ms, double ft_avg_ms, double ft_p95_ms,
@@ -358,14 +379,15 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                       double s600_p95_present = 0, uint64_t s600_stalls = 0,
                                       const char* renodx_preset = nullptr, const char* hw_compact = nullptr,
                                       double dlss_ms = 0, uint64_t frames = 0, double s600_max_interval = 0,
-                                      const char* fg_backend = nullptr, double target_fps = 0) {
+                                      const char* fg_backend = nullptr, double target_fps = 0,
+                                      int nr_pass_count = 1) {
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
   format_mini_overlay_segments(segs, kMiniOverlayMaxSegs, line0, n0, line1, n1, fps_cap, fps_fg_est, fg_on,
                                fg_mult, dlss5_on, sync_image, frame_ms, ft_avg_ms, ft_p95_ms, ft_max_ms,
                                ft_stable, e2e_ms, present_ms, stalls, clusters, dropped, capture_w, capture_h,
                                work_w, work_h, output_w, output_h, scale_percent, has_stats600, s600_fps,
                                s600_p95_e2e, s600_p95_present, s600_stalls, renodx_preset, hw_compact, dlss_ms,
-                               frames, s600_max_interval, fg_backend, target_fps);
+                               frames, s600_max_interval, fg_backend, target_fps, nr_pass_count);
 }
 
 // Back-compat one-liner.
@@ -376,12 +398,12 @@ inline void format_mini_overlay_line(char* out, size_t out_n, double fps_cap, do
                                     int scale_percent = 100) {
   if (!out || out_n == 0) return;
   char a[512]{};
-  char b[8]{};
+  char b[512]{};
   format_mini_overlay_lines(a, sizeof(a), b, sizeof(b), fps_cap, fps_fg_est, fg_on, fg_mult, dlss5_on,
                             /*sync_image=*/true, frame_ms, frame_ms, frame_ms, frame_ms, true, e2e_ms,
                             /*present=*/0, stalls, clusters, /*dropped=*/0, capture_w, capture_h, work_w,
                             work_h, output_w, output_h, scale_percent);
-  std::snprintf(out, out_n, "%s", a);
+  std::snprintf(out, out_n, "%s%s", a, b);
 }
 
 inline void format_session_hud_fg_status_line(char* out, size_t out_n, bool fg_on, int fg_mult,

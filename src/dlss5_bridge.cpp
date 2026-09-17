@@ -121,6 +121,16 @@ bool dlss5_bridge_pulse_nr() {
   return api().submit(&cmd) != 0;
 }
 
+bool inject_nr_toggle_key(int vk) {
+  if (vk <= 0) vk = kRenodxNrInjectVk;
+  INPUT down{};
+  down.type = INPUT_KEYBOARD;
+  down.ki.wVk = static_cast<WORD>(vk);
+  INPUT up = down;
+  up.ki.dwFlags = KEYEVENTF_KEYUP;
+  return SendInput(1, &down, sizeof(INPUT)) == 1 && SendInput(1, &up, sizeof(INPUT)) == 1;
+}
+
 bool dlss5_bridge_pulse_nr_confirmed(uint32_t timeout_ms) {
   if (!resolve_bridge()) return false;
   Dlss5BridgeStatus before{};
@@ -177,6 +187,13 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
   const NeuralRuntimePlan plan = plan_neural_runtime(want_on, *runtime_on);
   const bool files_ok = sync_neural_rendering_enabled_files(exe_dir, plan.sync_files_enabled, feed_on);
   if (plan.need_bridge_pulse) {
+    // Multipass build has no NRToggleKey: injecting an edge changed nothing (no RenoDX log
+    // line, no frame-cost change) while the HUD went "off" — NR is on for the whole session.
+    if (renodx_active_addon_is_multipass(exe_dir)) {
+      *runtime_on = true;
+      if (async_out) async_out->active = false;
+      return files_ok;
+    }
     if (!dlss5_bridge_available()) return false;
     const std::string log_path = exe_dir + "\\ReShade.log";
     const std::streamoff log_sz = file_size_off(log_path);
@@ -207,6 +224,20 @@ bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_prese
                                     bool* runtime_on) {
   if (!runtime_on) return false;
   const bool files_ok = sync_renodx_visual_preset_files(exe_dir, visual_preset);
+  if (want_nr && *runtime_on) {
+    if (!apply_neural_rendering_state(exe_dir, false, runtime_on)) return false;
+    if (!apply_neural_rendering_state(exe_dir, true, runtime_on)) return false;
+    *runtime_on = true;
+    return files_ok;
+  }
+  if (!apply_neural_rendering_state(exe_dir, want_nr, runtime_on)) return files_ok && !want_nr;
+  return files_ok;
+}
+
+bool apply_lobby_nr_pass_count_live(const std::string& exe_dir, int pass_count, bool want_nr,
+                                    bool* runtime_on, int visual_preset) {
+  if (!runtime_on) return false;
+  const bool files_ok = sync_nr_pass_count_files(exe_dir, pass_count, visual_preset);
   if (want_nr && *runtime_on) {
     if (!apply_neural_rendering_state(exe_dir, false, runtime_on)) return false;
     if (!apply_neural_rendering_state(exe_dir, true, runtime_on)) return false;

@@ -590,23 +590,23 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
                               ImVec2 band_min, ImVec2 band_max, ImVec2 img_min, ImVec2 img_max) {
   if (!settings.ui.show_fps) return;
   // Live overlay owns session HUD — keep lobby preview clear of mini/ADV twin.
-  if (live_mode_unlocked() && settings.ui.live_overlay) return;
+  if (settings.ui.live_overlay) return;
 
   LobbyHudPreviewLines hud = make_lobby_hud_preview_lines(settings, preview.fps_ema);
   if (hud.count <= 0) return;
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
 
-  // Mini overlay preview: 2-line ADV+HW + sparkline (matches session HUD).
+  // Mini overlay preview: 3-line bar matching session HUD (stalls on row 2).
   if (settings.ui.mini_overlay) {
-    const float bar_h = 100.f;  // two text rows
+    const float bar_h = static_cast<float>(hud_mini_overlay_height());
     ImVec2 p0(img_min.x, img_min.y);
     ImVec2 p1(img_max.x, img_min.y + bar_h);
     dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
-    const float graph_w = 240.f;
+    const float graph_w = 220.f;
     const float gx = (std::max)(p0.x + 8.f, p1.x - 8.f - graph_w);
     const float gy = p0.y + 9.f;
-    const float gh = 82.f;
+    const float gh = bar_h - 16.f;
     const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 16.f));
 
     const float fps = preview.fps_ema > 1.0 ? static_cast<float>(preview.fps_ema) : 0.f;
@@ -638,22 +638,26 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
         true, ft, ft * 0.15f, 0, 0, 0, settings.width, settings.height, scaled_extent(settings.width, scale),
         scaled_extent(settings.height, scale), settings.width, settings.height, scale, false, 0, 0, 0, 0,
         renodx_visual_preset_name(settings.renodx_preset), hw_compact[0] ? hw_compact : nullptr, 0, 0, 0,
-        nullptr, settings.fps);
+        nullptr, settings.fps, settings.nr_pass_count);
 
-    const float font_sz = 27.f;
+    const float font_sz = static_cast<float>(hud_mini_overlay_font_px());
     const float line_gap = 2.f;
-    const float y0 = p0.y + (bar_h - (font_sz * 2.f + line_gap)) * 0.5f;
-    const float y1 = y0 + font_sz + line_gap;
+    const int rows = hud_mini_overlay_rows();
+    const float block_h = font_sz * static_cast<float>(rows) + line_gap * static_cast<float>(rows - 1);
+    const float y0 = p0.y + (bar_h - block_h) * 0.5f;
     const float text_max_x = gx - 8.f;
-    int wrap = nseg;
-    for (int i = 0; i < nseg; ++i) {
-      if (std::strncmp(segs[i].text, "ft ", 3) == 0) {
-        wrap = i;
-        break;
-      }
-    }
+    int wrap_st = nseg;
+    int wrap_l600 = nseg;
+    mini_overlay_row_breaks(segs, nseg, &wrap_st, &wrap_l600);
+    auto skip_sep = [&](int i) -> int {
+      while (i < nseg && std::strcmp(segs[i].text, " · ") == 0) ++i;
+      return i;
+    };
+    wrap_st = skip_sep(wrap_st);
+    wrap_l600 = skip_sep(wrap_l600);
     auto paint_row = [&](int begin, int end, float y) {
       float x = p0.x + 8.f;
+      begin = skip_sep(begin);
       for (int i = begin; i < end; ++i) {
         if (!segs[i].text[0]) continue;
         const ImU32 col = IM_COL32(segs[i].r, segs[i].g, segs[i].b, 255);
@@ -670,8 +674,9 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
         x += w;
       }
     };
-    paint_row(0, wrap, y0);
-    paint_row(wrap, nseg, y1);
+    paint_row(0, wrap_st, y0);
+    paint_row(wrap_st, wrap_l600, y0 + font_sz + line_gap);
+    paint_row(wrap_l600, nseg, y0 + (font_sz + line_gap) * 2.f);
 
     if (gw >= 48.f) {
       dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + gw, gy + gh), IM_COL32(20, 24, 30, 220), 2.f);
@@ -783,10 +788,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
     const auto exe_dir = std::filesystem::path(exe_path).parent_path();
     renodx_dir_ok = prepare_renodx_runtime_dirs(exe_dir.string());
-    const auto feed_cfg = exe_dir / "dlss5-feed.cfg";
-    if (std::filesystem::exists(feed_cfg)) {
-      sync_feed_work_resolution_file(feed_cfg.string(), feed_work_resolution_for_lobby());
-    }
+    sync_feed_work_resolution_in_dir(exe_dir.string(), feed_work_resolution_for_lobby());
     // Idle lobby: drop Techniques when RenoDX off; keep full chain for live preview.
     sync_mgf_techniques_for_phase(exe_dir.string(), settings.enhance_renodx);
     const bool want_nr = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
@@ -919,9 +921,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   restart_preview();
 
   float scale_f = static_cast<float>(clamp_scale_percent(settings.scale_percent));
+  // The lobby process always boots the Feed at 100% (menus would be downsampled too), so
+  // any scale below that only takes effect in the relaunched session process.
+  const int feed_loaded_scale = feed_work_resolution_for_lobby();
   bool gear_was_open = false;
   std::string lobby_toast;
   double lobby_toast_until = 0.0;
+  bool motor_swap_pending = false;
+  double motor_swap_until = 0.0;
+  std::string motor_swap_title = "Trocando motor DLSS 5";
+  std::string motor_swap_line;
+  std::string motor_swap_args;  // "--autostart" resumes the session after the restart
   auto push_lobby_toast = [&](std::string msg) {
     if (msg.empty()) return;
     lobby_toast = std::move(msg);
@@ -1294,31 +1304,29 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
     ImGui::TextDisabled(settings.ui.sync_image ? "  -> SYNC VSYNC" : "  -> SYNC TEAR");
-    if (live_mode_unlocked()) {
-      ImGui::Checkbox("Overlay live", &settings.ui.live_overlay);
-      if (settings.ui.live_overlay) {
-        LiveConsole cur = parse_live_console(settings.ui.live_console);
-        const char* preview = live_console_label(cur);
-        auto console_imcol = [](LiveConsole c) -> ImVec4 {
-          const COLORREF rgb = live_console_color(c);
-          return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
-        };
-        ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
-        const bool open = ImGui::BeginCombo("Console##live", preview);
-        ImGui::PopStyleColor();
-        if (open) {
-          const LiveConsole opts[] = {LiveConsole::Ps5, LiveConsole::XboxSs, LiveConsole::Switch2};
-          for (LiveConsole o : opts) {
-            const bool selected = (o == cur);
-            ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
-            if (ImGui::Selectable(live_console_label(o), selected)) {
-              settings.ui.live_console = live_console_key(o);
-            }
-            ImGui::PopStyleColor();
-            if (selected) ImGui::SetItemDefaultFocus();
+    ImGui::Checkbox("Overlay live", &settings.ui.live_overlay);
+    if (settings.ui.live_overlay) {
+      LiveConsole cur = parse_live_console(settings.ui.live_console);
+      const char* preview = live_console_label(cur);
+      auto console_imcol = [](LiveConsole c) -> ImVec4 {
+        const COLORREF rgb = live_console_color(c);
+        return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
+      };
+      ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
+      const bool open = ImGui::BeginCombo("Console##live", preview);
+      ImGui::PopStyleColor();
+      if (open) {
+        const LiveConsole opts[] = {LiveConsole::Ps5, LiveConsole::XboxSs, LiveConsole::Switch2};
+        for (LiveConsole o : opts) {
+          const bool selected = (o == cur);
+          ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
+          if (ImGui::Selectable(live_console_label(o), selected)) {
+            settings.ui.live_console = live_console_key(o);
           }
-          ImGui::EndCombo();
+          ImGui::PopStyleColor();
+          if (selected) ImGui::SetItemDefaultFocus();
         }
+        ImGui::EndCombo();
       }
     }
     ImGui::Checkbox("Reportar bug", &settings.ui.bug_report);
@@ -1364,8 +1372,29 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           settings.fps = modes[static_cast<size_t>(mode_idx)].fps;
         }
         settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
-        g_start_requested = true;
-        g_lobby_running = false;
+        {
+          wchar_t exe_path[MAX_PATH]{};
+          GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+          sync_feed_work_resolution_in_dir(std::filesystem::path(exe_path).parent_path().string(),
+                                           feed_work_resolution_for_session(settings.scale_percent));
+        }
+        if (feed_scale_change_needs_relaunch(settings.enhance_renodx, feed_loaded_scale,
+                                             settings.scale_percent)) {
+          // Feed already snapshotted the old work_resolution — restart, then resume the session.
+          std::string serr;
+          save_settings(settings, settings_default_path(), serr);
+          motor_swap_title = "Aplicando escala do Feed";
+          motor_swap_line = std::to_string(effective_scale_percent(true, feed_loaded_scale)) + "%  \xE2\x86\x92  " +
+                            std::to_string(effective_scale_percent(true, settings.scale_percent)) + "%";
+          motor_swap_args = "--autostart";
+          motor_swap_pending = true;
+          motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+          push_lobby_toast(session_notice_feed_scale_apply(effective_scale_percent(true, feed_loaded_scale),
+                                                          effective_scale_percent(true, settings.scale_percent)));
+        } else {
+          g_start_requested = true;
+          g_lobby_running = false;
+        }
       }
       ImGui::PopStyleColor();
     }
@@ -1433,18 +1462,28 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::Separator();
         ImGui::TextUnformatted("Escala de resolucao (trabalho GPU)");
         int scale_i = clamp_scale_percent(settings.scale_percent);
-        if (ImGui::SliderInt("##scale", &scale_i, kMinScalePercent, kMaxScalePercent, "%d%%")) {
-          settings.scale_percent = clamp_scale_percent(scale_i);
-        } else {
-          settings.scale_percent = clamp_scale_percent(scale_i);
-        }
+        // Writing the cfg here would not reach this process' Feed (locked at 100%) and would
+        // leave a scaled cfg behind if the app is killed — Iniciar writes it before relaunch.
+        ImGui::SliderInt("##scale", &scale_i, kMinScalePercent, kMaxScalePercent, "%d%%");
+        settings.scale_percent = clamp_scale_percent(scale_i);
         scale_f = static_cast<float>(settings.scale_percent);
-        const int work_w = scaled_extent(settings.width, settings.scale_percent);
-        const int work_h = scaled_extent(settings.height, settings.scale_percent);
-        const int pct_pix = static_cast<int>(scale_pixel_ratio(settings.scale_percent) * 100.0 + 0.5);
-        ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.f, 1.f), "Trabalho Feed/NR: %dx%d", work_w, work_h);
+        const int eff_scale = effective_scale_percent(settings.enhance_renodx, settings.scale_percent);
+        const int work_w = scaled_extent(settings.width, eff_scale);
+        const int work_h = scaled_extent(settings.height, eff_scale);
+        const int pct_pix = static_cast<int>(scale_pixel_ratio(eff_scale) * 100.0 + 0.5);
+        ImGui::TextColored(ImVec4(0.45f, 0.85f, 1.f, 1.f), "Trabalho Feed/NR: %dx%d (%d%%)", work_w, work_h,
+                           eff_scale);
         if (settings.enhance_renodx) {
-          ImGui::TextDisabled("Com RenoDX: Present nativo; escala so no Feed (sem double-downsample).");
+          ImGui::TextDisabled("Escala entra no DLSS 5 (Feed); captura e saida ficam nativas.");
+          ImGui::TextDisabled("Menus ficam sempre em 100% — a escala vale na captura.");
+          if (feed_scale_below_floor(true, settings.scale_percent)) {
+            ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "Feed nao aceita abaixo de %d%% — usando %d%%",
+                               kMinFeedWorkResolution, eff_scale);
+          }
+          if (feed_scale_change_needs_relaunch(true, feed_loaded_scale, settings.scale_percent)) {
+            ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "Feed ativo em %d%% — Iniciar aplica %d%% (reinicio)",
+                               effective_scale_percent(true, feed_loaded_scale), eff_scale);
+          }
         } else {
           ImGui::TextDisabled("Sinal %dx%d  ·  pixels RGB ~%d%%  ·  min %d%%", settings.width, settings.height,
                               pct_pix, kMinScalePercent);
@@ -1511,6 +1550,60 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                             renodx_nr_preset_index(settings.renodx_preset),
                             renodx_feed_model_preset(settings.renodx_preset));
         ImGui::TextDisabled("Mesmo look no Iniciar — janela ou tela cheia.");
+
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Pass Count (NR multipass)");
+        const int pass_before = clamp_nr_pass_count(settings.nr_pass_count);
+        int pass_i = pass_before;
+        if (ImGui::RadioButton("1x##nrpass", pass_i == 1)) pass_i = 1;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("1,5x##nrpass", pass_i == 4)) pass_i = 4;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("2x##nrpass", pass_i == 2)) pass_i = 2;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("3x##nrpass", pass_i == 3)) pass_i = 3;
+        settings.nr_pass_count = clamp_nr_pass_count(pass_i);
+        if (settings.nr_pass_count != pass_before) {
+          wchar_t exe_path[MAX_PATH]{};
+          GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+          const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+          const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
+          const bool writable = prepare_renodx_runtime_dirs(exe_dir);
+          const bool need_relaunch =
+              nr_pass_count_change_needs_relaunch(pass_before, settings.nr_pass_count);
+          if (!writable) {
+            push_lobby_toast(renodx_write_denied_notice());
+          } else if (need_relaunch) {
+            // Krish ↔ multipass: show hold notice, then relaunch (avoids "bugou" flash).
+            std::string serr;
+            save_settings(settings, settings_default_path(), serr);
+            (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
+            motor_swap_title = "Trocando motor DLSS 5";
+            motor_swap_line = std::string(nr_pass_count_label(pass_before)) + "  \xE2\x86\x92  " +
+                              nr_pass_count_label(settings.nr_pass_count);
+            motor_swap_args.clear();
+            motor_swap_pending = true;
+            motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+            push_lobby_toast(session_notice_dlss5_motor_swap(pass_before, settings.nr_pass_count));
+          } else {
+            // 1,5x ↔ 2x ↔ 3x: same multipass addon — INI + NR reload only.
+            apply_lobby_nr_pass_count_live(exe_dir, settings.nr_pass_count, want, &nr_runtime_on,
+                                           settings.renodx_preset);
+            cfg.nr_runtime_on = nr_runtime_on;
+            push_lobby_toast(std::string("Pass Count: ") + nr_pass_count_label(settings.nr_pass_count));
+            if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
+              nr_boot_retries = 120;
+            }
+          }
+        }
+        ImGui::TextDisabled("1,5x: mesma res e ~60 fps que o 1x (recomendado).");
+        ImGui::TextDisabled("2x/3x: mais pesados, pouco ganho, look mais processado.");
+        ImGui::TextDisabled("Escala do Feed e manual se quiseres menos carga.");
+        if (!renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(settings.nr_pass_count))) {
+          ImGui::TextDisabled("1,5x/2x/3x: NR sempre ON (sem NRToggleKey) — on/off pelo Home.");
+        } else {
+          ImGui::TextDisabled("1x: Delete liga/desliga o NR na captura.");
+        }
         ImGui::EndDisabled();
 
         ImGui::Separator();
@@ -1555,6 +1648,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         auto persist_gear = [&]() {
           settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
           settings.renodx_preset = clamp_renodx_visual_preset(settings.renodx_preset);
+          settings.nr_pass_count = clamp_nr_pass_count(settings.nr_pass_count);
           if (!settings.enhance_renodx) settings.neural_rendering = false;
           std::string serr;
           save_settings(settings, settings_default_path(), serr);
@@ -1562,6 +1656,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset);
+          sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
                                        feed_pipeline_on_for_renodx(settings.enhance_renodx));
@@ -1609,6 +1704,31 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       lobby_toast.clear();
     }
 
+    // Hold screen while swapping Krish ↔ multipass so restart does not look like a crash.
+    if (motor_swap_pending) {
+      const ImGuiViewport* tv = ImGui::GetMainViewport();
+      ImGui::SetNextWindowPos(ImVec2(tv->WorkPos.x + tv->WorkSize.x * 0.5f, tv->WorkPos.y + tv->WorkSize.y * 0.45f),
+                              ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+      ImGui::SetNextWindowBgAlpha(0.96f);
+      ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.10f, 0.16f, 0.98f));
+      ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.95f, 0.70f, 0.25f, 0.95f));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.f);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28.f, 20.f));
+      if (ImGui::Begin("##motor_swap", nullptr,
+                       ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav)) {
+        ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "%s", motor_swap_title.c_str());
+        ImGui::Spacing();
+        ImGui::TextUnformatted(motor_swap_line.c_str());
+        ImGui::TextDisabled("Feed + RenoDX reiniciam — aguarde…");
+        const double left = (std::max)(0.0, motor_swap_until - ImGui::GetTime());
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.f, 1.f), "%.1fs", left);
+      }
+      ImGui::End();
+      ImGui::PopStyleVar(2);
+      ImGui::PopStyleColor(2);
+    }
+
     ImGui::Render();
     const float clear[4] = {0.06f, 0.07f, 0.10f, 1.f};
     g_dx.ctx->OMSetRenderTargets(1, &g_dx.rtv, nullptr);
@@ -1616,6 +1736,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
     // Uncapped Present — vsync Present(1) + full-res CPU preview decode locked ~30 fps.
     g_dx.swap->Present(0, 0);
+
+    if (motor_swap_pending && ImGui::GetTime() >= motor_swap_until) {
+      motor_swap_pending = false;
+      // Release the capture device before the new process claims it (exclusive).
+      preview.stop();
+      lobby_audio.stop();
+      if (relaunch_current_process(motor_swap_args.empty() ? nullptr : motor_swap_args.c_str())) {
+        ExitProcess(0);
+      }
+      push_lobby_toast("Falha ao reiniciar — feche e abra o NexusCap");
+    }
   }
 
   // Free capture device BEFORE session start (device exclusive).

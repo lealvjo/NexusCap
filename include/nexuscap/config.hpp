@@ -28,6 +28,7 @@ struct AppConfig {
   bool show_overlay = true;
   bool frames_limited = false;  // true when --frames was passed (auto-quit)
   bool show_lobby = true;       // false with --no-lobby / --smoke / selftests
+  bool autostart = false;       // --autostart: seed from settings, skip lobby once (feed scale relaunch)
   bool advanced_metrics = false;
   bool mini_overlay = false;    // Steam Deck-style top bar
   bool hw_info = false;  // painel Infos GPU/CPU
@@ -35,10 +36,11 @@ struct AppConfig {
   bool sync_image = true;  // vsync Present — default after 2.0.1 A/B (TEAR felt shakier)
   bool bug_report = false;
   bool perf_report = false;
-  bool live_overlay = false;  // secret right-side overlay (requires live.on)
+  bool live_overlay = false;  // right-side live overlay (console + DLSS5 stack)
   int live_console = 0;       // LiveConsole: 0=ps5, 1=xbox_ss, 2=switch2
   int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // Default / Natural / Cinematic
+  int nr_pass_count = 1;    // 1=Krish, 2/3=multipass evaluates, 4=1.5x (multipass motor, 1 pass)
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
   // Live RenoDX NR (Bridge). Carried lobby↔session — NOT the same as neural_rendering on disk.
   // Resetting this to false while RenoDX is still ON causes a boot pulse that inverts HUD vs image.
@@ -93,8 +95,9 @@ inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
   if (hw_info) h += 5 * 28;
   return h;
 }
-inline int hud_mini_overlay_height() { return 104; }  // 2 text rows + pad (was 77 one-liner)
+inline int hud_mini_overlay_height() { return 140; }  // 3 text rows so stalls/L600 are not clipped
 inline int hud_mini_overlay_font_px() { return 27; }  // +50% vs 18
+inline int hud_mini_overlay_rows() { return 3; }
 
 // When mini overlay is on, multi-line compact/advanced HUD is suppressed.
 inline bool hud_uses_mini_overlay(bool show_fps, bool mini_overlay) { return show_fps && mini_overlay; }
@@ -129,7 +132,7 @@ inline constexpr int kAppIconResourceId = 101;
 inline int lobby_hud_preview_lines(bool show_fps, bool advanced_metrics, bool hw_info = false,
                                    bool mini_overlay = false) {
   if (!show_fps) return 0;
-  if (mini_overlay) return 2;  // ADV row + FT/L600/HW row
+  if (mini_overlay) return hud_mini_overlay_rows();  // FPS+res / stalls+ft / L600+HW
   int n = advanced_metrics ? 8 : 6;
   if (hw_info) n += kSysMetricsLineCount;
   return n;
@@ -183,7 +186,7 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
         dlss5, s.ui.sync_image, ft, ft, ft, ft, true, ft, /*present=*/ft * 0.15f, 0, 0, 0, s.width, s.height,
         scaled_extent(s.width, scale), scaled_extent(s.height, scale), s.width, s.height, scale, false, 0, 0,
         0, 0, renodx_visual_preset_name(s.renodx_preset), hw_compact, /*dlss_ms=*/0, /*frames=*/0,
-        /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps);
+        /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps, s.nr_pass_count);
     out.count = out.line[1][0] ? 2 : 1;
     return out;
   }
@@ -205,8 +208,18 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     }
     std::snprintf(out.line[n++], 128, "frametime  %.1f ms", ft);
     std::snprintf(out.line[n++], 128, "FG  %s  x%d   scale %d%%", s.fg_enabled ? "ON" : "off", fgx, scale);
-    std::snprintf(out.line[n++], 128, "RenoDX %s  %s  %s", s.enhance_renodx ? "ON" : "off",
-                  renodx_visual_preset_name(s.renodx_preset), s.ui.fullscreen ? "fullscreen" : "windowed");
+    {
+      char stack[96]{};
+      format_dlss5_stack_hud_line(stack, sizeof(stack), s.enhance_renodx && s.neural_rendering, s.enhance_renodx,
+                                  s.nr_pass_count);
+      if (!s.enhance_renodx) {
+        std::snprintf(out.line[n++], 128, "RenoDX off  %s  %s", renodx_visual_preset_name(s.renodx_preset),
+                      s.ui.fullscreen ? "fullscreen" : "windowed");
+      } else {
+        std::snprintf(out.line[n++], 128, "%s  %s  %s", stack, renodx_visual_preset_name(s.renodx_preset),
+                      s.ui.fullscreen ? "fullscreen" : "windowed");
+      }
+    }
     std::snprintf(out.line[n++], 128, "%s   RGB work ~%d%%", s.ui.sync_image ? "SYNC VSYNC" : "SYNC TEAR",
                   static_cast<int>(scale_pixel_ratio(scale) * 100.0 + 0.5));
     if (s.ui.hw_info) {
@@ -227,9 +240,20 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     }
     std::snprintf(out.line[n++], 128, "frametime  %.1f ms", ft);
     std::snprintf(out.line[n++], 128, "FG %s x%d  scale %d%%", s.fg_enabled ? "ON" : "off", fgx, scale);
-    std::snprintf(out.line[n++], 128, "RenoDX %s %s  %s  %s", s.enhance_renodx ? "ON" : "off",
-                  renodx_visual_preset_name(s.renodx_preset), s.ui.fullscreen ? "fullscreen" : "windowed",
-                  s.ui.sync_image ? "SYNC VSYNC" : "SYNC TEAR");
+    {
+      char stack[96]{};
+      format_dlss5_stack_hud_line(stack, sizeof(stack), s.enhance_renodx && s.neural_rendering, s.enhance_renodx,
+                                  s.nr_pass_count);
+      if (!s.enhance_renodx) {
+        std::snprintf(out.line[n++], 128, "RenoDX off %s  %s  %s", renodx_visual_preset_name(s.renodx_preset),
+                      s.ui.fullscreen ? "fullscreen" : "windowed",
+                      s.ui.sync_image ? "SYNC VSYNC" : "SYNC TEAR");
+      } else {
+        std::snprintf(out.line[n++], 128, "%s  %s  %s  %s", stack, renodx_visual_preset_name(s.renodx_preset),
+                      s.ui.fullscreen ? "fullscreen" : "windowed",
+                      s.ui.sync_image ? "SYNC VSYNC" : "SYNC TEAR");
+      }
+    }
     if (s.ui.hw_info) {
       SystemMetricsSample blank;
       char hw[kSysMetricsLineCount][64]{};
@@ -300,6 +324,8 @@ inline LobbyEscAction lobby_esc_action(bool gear_open, bool capturing_hotkey) {
 
 // Soft on-screen tips while playing (FG / Neural Rendering hotkeys).
 inline constexpr double kSessionNoticeTtlMs = 3200.0;
+// Delay before Krish↔multipass relaunch so the swap does not look like a crash.
+inline constexpr double kDlss5MotorSwapHoldSec = 2.2;
 
 inline std::string session_notice_fg_on() {
   return "Frame Gen ON — latencia / artefatos podem subir";
@@ -325,6 +351,18 @@ inline std::string session_notice_fg_applying() {
 }
 inline std::string session_notice_fg_confirmed_on(int mult) {
   return std::string("Frame Gen ON — Confirmado x") + std::to_string(clamp_fg_multiplier(mult));
+}
+inline std::string session_notice_dlss5_motor_swap(int from_pass, int to_pass) {
+  return std::string("Trocando motor DLSS 5 — ") + nr_pass_count_label(from_pass) + " → " +
+         nr_pass_count_label(to_pass) + " (reinicio)";
+}
+inline std::string session_notice_nr_hotkey_unavailable(int pass_count) {
+  return std::string("Neural Rendering sempre ON em ") + nr_pass_count_label(pass_count) +
+         " — on/off pelo Home do RenoDX";
+}
+inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
+  return std::string("Aplicando escala do Feed — ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +
+         std::to_string(clamp_scale_percent(to_pct)) + "% (reinicio)";
 }
 
 // Split "titulo — detalhe" so HUD/toast never clip the second half.

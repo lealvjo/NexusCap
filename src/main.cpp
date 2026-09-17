@@ -47,6 +47,7 @@ std::atomic<bool> g_toggle_fg{false};
 std::atomic<bool> g_toggle_nr{false};
 // RenoDX runtime NR — carry from lobby via cfg.nr_runtime_on (same process often keeps NR ON).
 bool g_nr_runtime_on = false;
+bool g_renodx_multipass = false;  // active stack (AddonPath) — multipass owns NR, no hotkey
 int g_nr_boot_retries = 0;
 double g_nr_toggle_last_ms = 0;  // Delete debounce (bit30 + time)
 nexuscap::NrConfirmPending g_nr_confirm{};  // async log ACK — no Present freeze
@@ -187,14 +188,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     if (cfg.enhance == EnhanceBackend::Renodx) {
       const fs::path feed_cfg = exe_dir / "dlss5-feed.cfg";
-      if (fs::exists(feed_cfg)) {
-        std::ifstream in(feed_cfg);
-        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        in.close();
-        const int before = parse_feed_work_resolution(text, 100);
+      const bool any_feed = fs::exists(feed_cfg) || fs::exists(exe_dir / "addons-stable" / "dlss5-feed.cfg") ||
+                            fs::exists(exe_dir / "addons-multipass" / "dlss5-feed.cfg");
+      if (any_feed) {
+        int before = 100;
+        if (fs::exists(feed_cfg)) {
+          std::ifstream in(feed_cfg);
+          std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+          in.close();
+          before = parse_feed_work_resolution(text, 100);
+        }
         const int want = feed_work_resolution_for_session(cfg.scale_percent);
-        if (sync_feed_work_resolution_file(feed_cfg.string(), want)) {
-          append_log(cfg.log_dir, "scale feed work_resolution " + std::to_string(before) + "→" +
+        if (sync_feed_work_resolution_in_dir(exe_dir.string(), want)) {
+          append_log(cfg.log_dir, "scale feed work_resolution " + std::to_string(before) + " -> " +
                                       std::to_string(want) + " (session ui=" + std::to_string(cfg.scale_percent) + ")");
           if (before != want) {
             std::printf("renodx feed work_resolution %d → %d (session scale)\n", before, want);
@@ -205,6 +211,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         append_log(cfg.log_dir, std::string("renodx preset → ") + renodx_visual_preset_name(cfg.renodx_preset));
         std::printf("renodx preset: %s (NR=%d)\n", renodx_visual_preset_name(cfg.renodx_preset),
                     renodx_nr_preset_index(cfg.renodx_preset));
+      }
+      if (sync_nr_pass_count_files(exe_dir.string(), cfg.nr_pass_count, cfg.renodx_preset)) {
+        append_log(cfg.log_dir, std::string("nr pass count → ") + std::to_string(clamp_nr_pass_count(cfg.nr_pass_count)));
+        std::printf("nr pass count: %d (%s)\n", clamp_nr_pass_count(cfg.nr_pass_count),
+                    nr_pass_count_label(cfg.nr_pass_count));
       }
     }
 
@@ -262,7 +273,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   renderer.set_vsync(cfg.sync_image);
   // v2.0: RenoDX → Present native; UI scale only drives Feed work_resolution.
   const bool renodx_stack = (cfg.enhance == EnhanceBackend::Renodx);
+  {
+    wchar_t exe_path_stack[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe_path_stack, MAX_PATH);
+    g_renodx_multipass =
+        renodx_stack && renodx_active_addon_is_multipass(fs::path(exe_path_stack).parent_path().string());
+    if (g_renodx_multipass) g_nr_runtime_on = true;  // multipass NR cannot be turned off
+  }
   renderer.set_scale_percent(app_present_scale_percent(renodx_stack, cfg.scale_percent));
+  // RenoDX: app RT native, Feed does the scaling — HUD must show the Feed resolution.
+  renderer.set_hud_work_scale_percent(renodx_stack ? effective_scale_percent(true, cfg.scale_percent) : 0);
   renderer.set_color_format(cfg.color_space, cfg.color_range);
 
   std::unique_ptr<IFrameEnhance> enhance;
@@ -285,8 +305,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
       fs::path exe_dir = fs::path(exe_path).parent_path();
       const bool has_dxgi = fs::exists(exe_dir / "dxgi.dll");
-      const bool has_renodx = fs::exists(exe_dir / "renodx-dlss5.addon64");
-      const bool has_feed = fs::exists(exe_dir / "dlss5-feed.addon64");
+      const auto has_renodx_stack = [&](const char* sub) {
+        return fs::exists(exe_dir / sub / "renodx-dlss5.addon64");
+      };
+      const bool has_renodx = has_renodx_stack("addons-stable") || has_renodx_stack("addons-multipass") ||
+                              fs::exists(exe_dir / "renodx-dlss5.addon64");
+      const bool has_feed = fs::exists(exe_dir / "dlss5-feed.addon64") ||
+                            fs::exists(exe_dir / "addons-stable" / "dlss5-feed.addon64") ||
+                            fs::exists(exe_dir / "addons-multipass" / "dlss5-feed.addon64");
       std::printf("enhance: backend=renodx (ReShade) dxgi=%d renodx=%d feed=%d\n", has_dxgi ? 1 : 0,
                   has_renodx ? 1 : 0, has_feed ? 1 : 0);
       if (!has_dxgi || !has_renodx || !has_feed) {
@@ -492,12 +518,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.advanced_metrics = cfg.advanced_metrics;
   overlay.mini_overlay = cfg.mini_overlay;
   overlay.visible = cfg.show_overlay;
-  overlay.scale_percent = cfg.scale_percent;
-  // HUD work size = Feed contract (UI scale), not app RT (native under RenoDX).
-  overlay.work_w = scaled_extent(info.width > 0 ? info.width : cap_w, cfg.scale_percent);
-  overlay.work_h = scaled_extent(info.height > 0 ? info.height : cap_h, cfg.scale_percent);
+  // HUD work size = what the Feed really builds (floors at 50% under RenoDX), not the
+  // requested UI scale — otherwise the overlay reports a scale the Feed refused.
+  const int shown_scale = effective_scale_percent(renodx_stack, cfg.scale_percent);
+  overlay.scale_percent = shown_scale;
+  overlay.work_w = scaled_extent(info.width > 0 ? info.width : cap_w, shown_scale);
+  overlay.work_h = scaled_extent(info.height > 0 ? info.height : cap_h, shown_scale);
   overlay.renodx_on = g_nr_runtime_on;
   overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset);
+  overlay.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
+  overlay.feed_on = (cfg.enhance == EnhanceBackend::Renodx);
   overlay.sync_image = cfg.sync_image;
   overlay.hw_info = cfg.hw_info;
   const bool live_unlocked = live_mode_unlocked();
@@ -581,7 +611,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       snap.width = info.width;
       snap.height = info.height;
       snap.fps = cfg.fps;
-      snap.scale_percent = cfg.scale_percent;
+      snap.scale_percent = effective_scale_percent(renodx_stack, cfg.scale_percent);
       snap.sync_image = cfg.sync_image;
       snap.fullscreen = cfg.exclusive_fullscreen;
       snap.show_fps = cfg.show_overlay;
@@ -763,6 +793,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         append_log(cfg.log_dir, "nr toggle blocked: RenoDX not loaded this session");
         bug_exc("nr_toggle", "blocked: RenoDX not loaded this session");
         session_notice.push(session_notice_nr_off(), clock.now_ms());
+      } else if (!renodx_stack_supports_nr_hotkey(g_renodx_multipass)) {
+        // Faking the flip here made the HUD say "NR off" while DLSS5 kept running.
+        append_log(cfg.log_dir, "nr toggle unavailable (multipass build has no NRToggleKey)");
+        session_notice.push(session_notice_nr_hotkey_unavailable(cfg.nr_pass_count), clock.now_ms());
+        g_nr_toggle_last_ms = now_nr;
       } else {
         wchar_t exe_path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
@@ -998,6 +1033,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       overlay.dlss_on = g_nr_runtime_on;
       overlay.dlss_backend = "renodx+feed";
       overlay.dlss_status = g_nr_runtime_on ? "nr-on" : "nr-off";
+      overlay.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
+      overlay.feed_on = true;
     }
     last_dlss_ms = overlay.dlss_ms;
     overlay.present_ms = present_ms;
@@ -1194,10 +1231,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       wchar_t exe_path[MAX_PATH]{};
       GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
       const fs::path exe_dir = fs::path(exe_path).parent_path();
-      const fs::path feed_cfg = exe_dir / "dlss5-feed.cfg";
-      if (fs::exists(feed_cfg)) {
-        sync_feed_work_resolution_file(feed_cfg.string(), feed_work_resolution_for_lobby());
-        append_log(cfg.log_dir, "lobby feed work_resolution → 100 (isolate from session scale)");
+      const int lobby_feed = feed_work_resolution_for_lobby();
+      if (sync_feed_work_resolution_in_dir(exe_dir.string(), lobby_feed)) {
+        append_log(cfg.log_dir, "lobby feed work_resolution -> " + std::to_string(lobby_feed) +
+                                    " (ui=" + std::to_string(cfg.scale_percent) +
+                                    "; Feed locks at first swapchain)");
       }
       sync_mgf_techniques_for_phase(exe_dir.string(), cfg.enhance == EnhanceBackend::Renodx);
     }
@@ -1266,6 +1304,23 @@ int main(int argc, char** argv) {
     std::string err;
     nexuscap::load_settings(settings, nexuscap::settings_default_path(), err);
   }
+  // Before ReShade loads: Pass Count 1 → addons-stable, 2/3/4 → addons-multipass (AddonPath).
+  {
+    const auto ar = nexuscap::sync_renodx_addon_variant(base.string(), settings.nr_pass_count);
+    if (ar == nexuscap::RenodxAddonSyncResult::OkSwapped) {
+      std::printf("renodx addon: %s\n",
+                  nexuscap::nr_pass_count_uses_multipass_addon(settings.nr_pass_count) ? "multipass"
+                                                                                       : "stable");
+    } else if (ar == nexuscap::RenodxAddonSyncResult::MissingVariant) {
+      std::printf("renodx addon: stack missing (run tools\\setup_renodx.ps1)\n");
+    }
+    (void)nexuscap::sync_nr_pass_count_files(base.string(), settings.nr_pass_count, settings.renodx_preset);
+    // Feed locks work_resolution at the first swapchain: 100% when the lobby opens first
+    // (sharp menus), session scale when we boot straight into capture (--autostart).
+    const bool lobby_first = cfg.show_lobby && !cfg.autostart;
+    (void)nexuscap::sync_feed_work_resolution_in_dir(
+        base.string(), nexuscap::feed_work_resolution_at_boot(lobby_first, settings.scale_percent));
+  }
   // CLI overrides persisted where explicit.
   if (!cfg.show_lobby) {
     // keep cfg from CLI
@@ -1277,6 +1332,7 @@ int main(int argc, char** argv) {
     cfg.fps = settings.fps;
     cfg.scale_percent = settings.scale_percent;
     cfg.renodx_preset = nexuscap::clamp_renodx_visual_preset(settings.renodx_preset);
+    cfg.nr_pass_count = nexuscap::clamp_nr_pass_count(settings.nr_pass_count);
     cfg.video_fourcc = nexuscap::clamp_video_fourcc(settings.video_fourcc);
     cfg.color_space = nexuscap::clamp_color_space(settings.color_space);
     cfg.color_range = nexuscap::clamp_color_range(settings.color_range);
@@ -1288,6 +1344,9 @@ int main(int argc, char** argv) {
     cfg.hw_info = settings.ui.hw_info;
     cfg.hide_panel_on_capture = settings.ui.hide_panel_on_capture;
     cfg.sync_image = settings.ui.sync_image;
+    // Also needed for --autostart (lobby skipped): reports must survive a scale relaunch.
+    cfg.bug_report = settings.ui.bug_report;
+    cfg.perf_report = settings.ui.perf_report;
     cfg.live_overlay = settings.ui.live_overlay;
     cfg.live_console = static_cast<int>(nexuscap::parse_live_console(settings.ui.live_console));
     cfg.exclusive_fullscreen = settings.ui.fullscreen;
@@ -1317,8 +1376,11 @@ int main(int argc, char** argv) {
 
   // Lobby ↔ session loop: always open lobby first (maximized window). Esc from capture returns.
   g_session_from_lobby = true;
+  bool skip_lobby_once = cfg.autostart;  // relaunch for feed scale resumes straight into the session
   for (;;) {
-    if (!nexuscap::run_lobby(hi, cfg, settings)) {
+    if (skip_lobby_once) {
+      skip_lobby_once = false;
+    } else if (!nexuscap::run_lobby(hi, cfg, settings)) {
       std::printf("lobby cancelled\n");
       return 0;
     }
@@ -1340,6 +1402,13 @@ int main(int argc, char** argv) {
       nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
     }
     if (rc != kExitBackToLobby) return rc;
+    // Session ran below 100%: this process' Feed is locked there and would blur the menus.
+    // The Esc path already rewrote the cfg to 100%, so a fresh process opens a sharp lobby.
+    if (nexuscap::feed_scale_change_needs_relaunch(cfg.enhance == nexuscap::EnhanceBackend::Renodx,
+                                                   cfg.scale_percent, nexuscap::kLobbyFeedWorkResolution)) {
+      std::printf("back to lobby: restarting so menus present at 100%%\n");
+      if (nexuscap::relaunch_current_process()) return 0;
+    }
     // Drop leftover Esc from "back to lobby" before the menu sees it.
     {
       MSG drain{};

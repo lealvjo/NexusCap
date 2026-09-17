@@ -112,6 +112,8 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.hw_info = s.ui.hw_info;
   cfg.hide_panel_on_capture = s.ui.hide_panel_on_capture;
   cfg.sync_image = s.ui.sync_image;
+  cfg.bug_report = s.ui.bug_report;
+  cfg.perf_report = s.ui.perf_report;
   cfg.hotkeys = s.hotkeys;
   // Keep preferred x2/x3/x4 armed even when checkbox is off (PageDn can enable).
   cfg.fg_multiplier = armed_fg_multiplier(s.fg_enabled, s.fg_multiplier);

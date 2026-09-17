@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "2.2.0",
+  [string]$Version = "2.3.0",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,

@@ -1,4 +1,6 @@
 #include "nexuscap/lobby.hpp"
+#include "nexuscap/audio.hpp"
+#include "nexuscap/audio_select.hpp"
 #include "nexuscap/capture.hpp"
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/clock.hpp"
@@ -558,6 +560,29 @@ void apply_window_app_icon(HWND hwnd, HINSTANCE hi) {
   SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
 }
 
+// Mute/unmute WASAPI preview — bottom-right of letterboxed image.
+void draw_preview_mute_button(PersistedSettings& settings, ImVec2 img_min, ImVec2 img_max) {
+  const float pad = 10.f;
+  const float sz = 28.f;
+  ImGui::SetCursorScreenPos(ImVec2(img_max.x - pad - sz, img_max.y - pad - sz));
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.f, 0.f, 0.f, 0.45f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.12f, 0.14f, 0.7f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.18f, 0.2f, 0.85f));
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
+  const char* label = settings.ui.preview_mute ? "M" : "S";
+  if (ImGui::Button(label, ImVec2(sz, sz))) {
+    settings.ui.preview_mute = !settings.ui.preview_mute;
+    std::string serr;
+    save_settings(settings, settings_default_path(), serr);
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+    ImGui::SetTooltip("%s", settings.ui.preview_mute ? "Som do preview (clique p/ ligar)"
+                                                     : "Som do preview (clique p/ mutar)");
+  }
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor(3);
+}
+
 // Live HUD on left black bar of letterboxed preview — bright text readable on black.
 void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPreview& preview,
                               ImVec2 band_min, ImVec2 band_max, ImVec2 img_min, ImVec2 img_max) {
@@ -568,16 +593,16 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
 
-  // Mini overlay preview: colored ADV+HW segments + sparkline (matches session HUD).
+  // Mini overlay preview: 2-line ADV+HW + sparkline (matches session HUD).
   if (settings.ui.mini_overlay) {
-    const float bar_h = 72.f;  // +50% vs 48
+    const float bar_h = 100.f;  // two text rows
     ImVec2 p0(img_min.x, img_min.y);
     ImVec2 p1(img_max.x, img_min.y + bar_h);
     dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
     const float graph_w = 240.f;
     const float gx = (std::max)(p0.x + 8.f, p1.x - 8.f - graph_w);
     const float gy = p0.y + 9.f;
-    const float gh = 54.f;
+    const float gh = 82.f;
     const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 16.f));
 
     const float fps = preview.fps_ema > 1.0 ? static_cast<float>(preview.fps_ema) : 0.f;
@@ -611,25 +636,38 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
         renodx_visual_preset_name(settings.renodx_preset), hw_compact[0] ? hw_compact : nullptr, 0, 0, 0,
         nullptr, settings.fps);
 
-    float x = p0.x + 8.f;
-    const float font_sz = 27.f;  // +50% vs 18
-    const float y = p0.y + (bar_h - font_sz) * 0.5f;
+    const float font_sz = 27.f;
+    const float line_gap = 2.f;
+    const float y0 = p0.y + (bar_h - (font_sz * 2.f + line_gap)) * 0.5f;
+    const float y1 = y0 + font_sz + line_gap;
     const float text_max_x = gx - 8.f;
+    int wrap = nseg;
     for (int i = 0; i < nseg; ++i) {
-      if (!segs[i].text[0]) continue;
-      const ImU32 col = IM_COL32(segs[i].r, segs[i].g, segs[i].b, 255);
-      const ImVec2 sz = ImGui::CalcTextSize(segs[i].text);
-      const float w = sz.x * (font_sz / ImGui::GetFontSize());
-      if (x >= text_max_x) break;
-      if (x + w > text_max_x) {
-        dl->PushClipRect(ImVec2(x, p0.y), ImVec2(text_max_x, p1.y), true);
-        dl->AddText(nullptr, font_sz, ImVec2(x, y), col, segs[i].text);
-        dl->PopClipRect();
+      if (std::strncmp(segs[i].text, "ft ", 3) == 0) {
+        wrap = i;
         break;
       }
-      dl->AddText(nullptr, font_sz, ImVec2(x, y), col, segs[i].text);
-      x += w;
     }
+    auto paint_row = [&](int begin, int end, float y) {
+      float x = p0.x + 8.f;
+      for (int i = begin; i < end; ++i) {
+        if (!segs[i].text[0]) continue;
+        const ImU32 col = IM_COL32(segs[i].r, segs[i].g, segs[i].b, 255);
+        const ImVec2 sz = ImGui::CalcTextSize(segs[i].text);
+        const float w = sz.x * (font_sz / ImGui::GetFontSize());
+        if (x >= text_max_x) break;
+        if (x + w > text_max_x) {
+          dl->PushClipRect(ImVec2(x, p0.y), ImVec2(text_max_x, p1.y), true);
+          dl->AddText(nullptr, font_sz, ImVec2(x, y), col, segs[i].text);
+          dl->PopClipRect();
+          break;
+        }
+        dl->AddText(nullptr, font_sz, ImVec2(x, y), col, segs[i].text);
+        x += w;
+      }
+    };
+    paint_row(0, wrap, y0);
+    paint_row(wrap, nseg, y1);
 
     if (gw >= 48.f) {
       dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + gw, gy + gh), IM_COL32(20, 24, 30, 220), 2.f);
@@ -788,6 +826,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   create_logo_srv(g_dx.device, &logo_srv, &logo_w, &logo_h);
 
   LobbyPreview preview;
+  AudioMonitor lobby_audio;
+  bool lobby_audio_want = false;
 
   std::vector<std::string> devices = list_video_capture_devices();
   int device_idx = 0;
@@ -898,6 +938,25 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     preview.set_visual_preview(settings.renodx_preset,
                                want_neural_rendering(settings.enhance_renodx, settings.neural_rendering));
     preview.tick();
+
+    // Preview audio: start/stop with live capture; mute zeros WASAPI frames (keeps path warm).
+    {
+      const bool want_audio = preview.live;
+      if (want_audio != lobby_audio_want) {
+        lobby_audio_want = want_audio;
+        if (want_audio) {
+          std::string aerr;
+          const std::string prefer =
+              is_auto_device(settings.device_name) ? std::string{} : settings.device_name;
+          if (!lobby_audio.start(prefer, aerr)) {
+            lobby_audio_want = false;
+          }
+        } else {
+          lobby_audio.stop();
+        }
+      }
+      if (lobby_audio.running()) lobby_audio.set_muted(settings.ui.preview_mute);
+    }
 
     // Lobby Present loads Bridge asynchronously — pulse only when carried runtime ≠ want.
     if (nr_boot_retries > 0) {
@@ -1160,7 +1219,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           ImGui::TextDisabled("  %s · %s · %s", video_fourcc_name(settings.video_fourcc),
                               color_space_name(settings.color_space), color_range_name(settings.color_range));
         }
-        if (hud_has_img) draw_hud_preview_overlay(settings, preview, band_min, band_max, img_min, img_max);
+        if (hud_has_img) {
+          draw_hud_preview_overlay(settings, preview, band_min, band_max, img_min, img_max);
+          draw_preview_mute_button(settings, img_min, img_max);
+        }
         if (!settings.ui.show_fps) {
           ImGui::SetCursorPos(ImVec2(12, 8));
           ImGui::TextColored(ImVec4(0.75f, 0.9f, 1.f, 1.f), "HUD off (marque Exibir FPS)");
@@ -1185,7 +1247,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     if (ImGui::Checkbox("Mini overlay (barra topo)", &settings.ui.mini_overlay)) {
       if (settings.ui.mini_overlay) settings.ui.advanced_metrics = false;
     }
-    ImGui::TextDisabled(settings.ui.mini_overlay ? "  -> 1 linha completa (ADV+HW+graph)"
+    ImGui::TextDisabled(settings.ui.mini_overlay ? "  -> 2 linhas (ADV + FT/HW/graph)"
                                                  : "  -> HUD multi-linha");
 
     ImGui::BeginDisabled(settings.ui.mini_overlay);
@@ -1199,6 +1261,12 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
     ImGui::TextDisabled(settings.ui.sync_image ? "  -> SYNC VSYNC" : "  -> SYNC TEAR");
+    ImGui::Checkbox("Reportar bug", &settings.ui.bug_report);
+    ImGui::TextDisabled(settings.ui.bug_report ? "  -> modo diagnostico (report/*.txt)"
+                                               : "  -> off (sem overhead)");
+    ImGui::Checkbox("Reportar performance", &settings.ui.perf_report);
+    ImGui::TextDisabled(settings.ui.perf_report ? "  -> snapshot p/ IA (performance/*.txt)"
+                                                : "  -> off (sem overhead)");
     ImGui::EndChild();
 
     // Footer sits directly under body; natural ItemSpacing.y is the only gap (already reserved).
@@ -1400,7 +1468,24 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         };
         hotkey_row("Frame Gen on/off", &settings.hotkeys.vk_fg_toggle);
         hotkey_row("Ciclo FG x2/x3/x4", &settings.hotkeys.vk_fg_cycle);
-        hotkey_row("HUD metricas", &settings.hotkeys.vk_hud);
+        {
+          ImGui::AlignTextToFramePadding();
+          ImGui::TextUnformatted("Overlay HUD");
+          ImGui::SameLine(220);
+          char buf[64];
+          if (settings.hotkeys.hud_ctrl) {
+            std::snprintf(buf, sizeof(buf), "Ctrl+%s##hud", vk_display_name(settings.hotkeys.vk_hud));
+          } else {
+            std::snprintf(buf, sizeof(buf), "%s##hud", vk_display_name(settings.hotkeys.vk_hud));
+          }
+          if (g_capture_vk_target == &settings.hotkeys.vk_hud) {
+            ImGui::Button("... pressione tecla ...", ImVec2(200, 0));
+          } else if (ImGui::Button(buf, ImVec2(200, 0))) {
+            g_capture_vk_target = &settings.hotkeys.vk_hud;
+          }
+          ImGui::SameLine();
+          ImGui::Checkbox("Ctrl##hud_ctrl", &settings.hotkeys.hud_ctrl);
+        }
         hotkey_row("Analyze", &settings.hotkeys.vk_analyze);
         hotkey_row("RenoDX overlay", &settings.hotkeys.vk_renodx);
         hotkey_row("Neural Rendering on/off", &settings.hotkeys.vk_nr_toggle);
@@ -1475,6 +1560,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
   // Free capture device BEFORE session start (device exclusive).
   preview.stop();
+  lobby_audio.stop();
   if (logo_srv) {
     logo_srv->Release();
     logo_srv = nullptr;

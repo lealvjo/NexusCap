@@ -611,7 +611,7 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
                                 FIXED_PITCH | FF_MODERN, L"Consolas");
   HFONT old = static_cast<HFONT>(SelectObject(hdc, mini_font));
   char line0[768]{};
-  char line1[8]{};
+  char line1[768]{};
   char hw_compact[200]{};
   format_sys_metrics_compact(hw_compact, sizeof(hw_compact), metrics_from_overlay(o));
   const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
@@ -625,6 +625,7 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
       o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps);
   (void)line0;
+  (void)line1;
 
   const int pad = 8;
   const int graph_w = 270;  // +50% vs 180
@@ -636,26 +637,41 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   const int gh = (std::max)(51, bar_h - 16);
   const int gw = (std::min)(graph_w, bar_w - pad * 2);
   const int text_max_x = gx - gap;
-  const int text_y = (std::max)(2, (bar_h - font_px) / 2);
+  const int line_gap = 2;
+  const int y0 = (std::max)(2, (bar_h - (font_px * 2 + line_gap)) / 2);
+  const int y1 = y0 + font_px + line_gap;
 
-  int x = pad;
+  // Prefer natural break at "ft …"; else wrap when the first row runs out of room.
+  int wrap = nseg;
   for (int i = 0; i < nseg; ++i) {
-    const std::wstring w = utf8_to_wide_hud(segs[i].text);
-    if (w.empty()) continue;
-    SIZE sz{};
-    GetTextExtentPoint32W(hdc, w.c_str(), static_cast<int>(w.size()), &sz);
-    if (x >= text_max_x) break;
-    if (x + sz.cx > text_max_x) {
-      RECT clip{x, 2, text_max_x, bar_h - 2};
-      SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
-      DrawTextW(hdc, w.c_str(), static_cast<int>(w.size()), &clip,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (std::strncmp(segs[i].text, "ft ", 3) == 0) {
+      wrap = i;
       break;
     }
-    SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
-    TextOutW(hdc, x, text_y, w.c_str(), static_cast<int>(w.size()));
-    x += sz.cx;
   }
+
+  auto paint_row = [&](int begin, int end, int text_y) {
+    int x = pad;
+    for (int i = begin; i < end; ++i) {
+      const std::wstring w = utf8_to_wide_hud(segs[i].text);
+      if (w.empty()) continue;
+      SIZE sz{};
+      GetTextExtentPoint32W(hdc, w.c_str(), static_cast<int>(w.size()), &sz);
+      if (x >= text_max_x) break;
+      if (x + sz.cx > text_max_x) {
+        RECT clip{x, text_y - 1, text_max_x, text_y + font_px + 1};
+        SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
+        DrawTextW(hdc, w.c_str(), static_cast<int>(w.size()), &clip,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        break;
+      }
+      SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
+      TextOutW(hdc, x, text_y, w.c_str(), static_cast<int>(w.size()));
+      x += sz.cx;
+    }
+  };
+  paint_row(0, wrap, y0);
+  paint_row(wrap, nseg, y1);
 
   if (gw >= 64) {
     RECT graph_rc{gx, gy, gx + gw, gy + gh};

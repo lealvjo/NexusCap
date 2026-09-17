@@ -13,6 +13,7 @@
 #include "nexuscap/lobby.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/renderer.hpp"
+#include "nexuscap/session_report.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/stats_window.hpp"
 #include "nexuscap/system_metrics.hpp"
@@ -94,7 +95,13 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // Stale / held Esc right after Iniciar — ignore.
         return 0;
       }
-      if (vk == g_hotkeys.vk_hud) g_overlay = !g_overlay;
+      // Bit 30 = auto-repeat KEYDOWN — one key = one overlay toggle.
+      const bool is_repeat = (lp & (1u << 30)) != 0;
+      const bool ctrl_down = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      if (!is_repeat &&
+          nexuscap::hud_hotkey_fired(vk, ctrl_down, g_hotkeys.vk_hud, g_hotkeys.hud_ctrl)) {
+        g_overlay = !g_overlay;
+      }
       if (vk == g_hotkeys.vk_analyze || vk == VK_INSERT || vk == 'A' || vk == 'a') g_analyze = !g_analyze;
       if (vk == g_hotkeys.vk_dlss) g_toggle_dlss = true;
       if (vk == g_hotkeys.vk_fg_toggle) g_toggle_fg = true;
@@ -499,6 +506,73 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     std::printf("hw info: off\n");
   }
 
+  SessionReportWriter bug_rep;
+  SessionReportWriter perf_rep;
+  uint64_t report_hitch_count = 0;
+  bool overlay_was = g_overlay.load();
+  {
+    wchar_t exe_path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    const std::string exe_dir = fs::path(exe_path).parent_path().string();
+
+    auto fill_snap = [&](SessionReportSnapshot& snap) {
+      snap.build = kAppAnalyzeBuild;
+      snap.device = info.device;
+      snap.width = info.width;
+      snap.height = info.height;
+      snap.fps = cfg.fps;
+      snap.scale_percent = cfg.scale_percent;
+      snap.sync_image = cfg.sync_image;
+      snap.fullscreen = cfg.exclusive_fullscreen;
+      snap.show_fps = cfg.show_overlay;
+      snap.mini_overlay = cfg.mini_overlay;
+      snap.advanced_metrics = cfg.advanced_metrics;
+      snap.hw_info = cfg.hw_info;
+      snap.fg_enabled = cfg.fg_auto_start;
+      snap.fg_multiplier = cfg.fg_multiplier;
+      snap.neural_rendering = cfg.neural_rendering;
+      snap.nr_runtime_on = g_nr_runtime_on;
+      snap.renodx_preset = cfg.renodx_preset;
+      snap.video_fourcc = cfg.video_fourcc;
+      snap.color_space = cfg.color_space;
+      snap.color_range = cfg.color_range;
+      snap.capture_buffering = cfg.capture_buffering;
+      snap.output_w = bw;
+      snap.output_h = bh;
+    };
+
+    auto start_one = [&](SessionReportKind kind, SessionReportWriter& w) {
+      SYSTEMTIME st{};
+      GetLocalTime(&st);
+      const std::string path =
+          make_session_report_path(exe_dir, kind, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
+                                   st.wSecond);
+      SessionReportSnapshot snap;
+      fill_snap(snap);
+      if (kind == SessionReportKind::Perf) {
+        snap.os_version = windows_version_string();
+        SystemMetricsSample hw{};
+        hw_sampler.sample(renderer.device(), hw);
+        snap.cpu_name = hw.cpu_name;
+        snap.gpu_name = hw.gpu_name;
+        snap.ram_total_mb = hw.ram_total_mb;
+        snap.vram_budget_mb = hw.vram_budget_mb;
+        collect_renodx_report_snippets(exe_dir, snap.reshade_snippet, snap.feed_snippet, snap.mgf_snippet);
+      }
+      w.start(kind, path, snap);
+      append_log(cfg.log_dir, std::string(session_report_subdir(kind)) + " -> " + path);
+      std::printf("%s report: %s\n", session_report_file_prefix(kind), path.c_str());
+    };
+
+    if (cfg.bug_report) start_one(SessionReportKind::Bug, bug_rep);
+    if (cfg.perf_report) start_one(SessionReportKind::Perf, perf_rep);
+  }
+
+  auto bug_exc = [&](const char* where, const std::string& msg) {
+    if (!bug_rep.active()) return;
+    bug_rep.note_exception(clock.now_ms(), where, msg.c_str());
+  };
+
   SessionControlPanel session_panel;
   const bool show_session_panel = session_shows_control_panel(cfg.hide_panel_on_capture);
   if (show_session_panel) {
@@ -566,6 +640,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     } else {
       std::fprintf(stderr, "fg auto-on: %s\n", ferr.c_str());
       append_log(cfg.log_dir, "fg auto-on fail: " + ferr);
+      bug_exc("fg_auto_on", ferr);
       if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
         session_notice.push(session_notice_fg_missing(), clock.now_ms());
       }
@@ -623,6 +698,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       } else if (!session_nr_hotkey_allowed(cfg.enhance)) {
         std::printf("nr toggle: RenoDX off — marque RenoDX no lobby (FG continua independente)\n");
         append_log(cfg.log_dir, "nr toggle blocked: RenoDX not loaded this session");
+        bug_exc("nr_toggle", "blocked: RenoDX not loaded this session");
         session_notice.push(session_notice_nr_off(), clock.now_ms());
       } else {
         wchar_t exe_path[MAX_PATH]{};
@@ -651,6 +727,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         } else {
           std::printf("nr toggle: falha ao pulsar Bridge\n");
           append_log(cfg.log_dir, "neural rendering pulse failed");
+          bug_exc("nr_pulse", "pulse failed");
         }
       }
     }
@@ -719,6 +796,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       } else if (!fg.request_toggle(hwnd, ferr)) {
         std::printf("fg toggle: %s\n", ferr.c_str());
         append_log(cfg.log_dir, "fg toggle fail: " + ferr);
+        bug_exc("fg_toggle", ferr);
         if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
           session_notice.push(session_notice_fg_missing(), clock.now_ms());
         } else {
@@ -752,6 +830,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (!fg.state().last_error.empty() && fg.state().status == FgStatus::Error) {
         session_notice.push("Frame Gen — " + fg.state().last_error, clock.now_ms());
         append_log(cfg.log_dir, "fg async fail: " + fg.state().last_error);
+        bug_exc("fg_async", fg.state().last_error);
       } else {
         std::printf("fg %s x%d\n", fg.state().active ? "ON" : "off", fg.state().multiplier);
         append_log(cfg.log_dir, std::string("fg ") + (fg.state().active ? "ON" : "off") + " x" +
@@ -845,6 +924,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     if (!renderer.present_frame(frame, overlay, present_ms, err)) {
       append_log(cfg.log_dir, "present error: " + err);
+      bug_exc("present", err);
+      if (perf_rep.active()) perf_rep.note_event(now, "present_error", err.c_str());
     }
     // Passthrough enhance overwrites dlss_* — keep RenoDX NR status authoritative for HUD.
     if (cfg.enhance == EnhanceBackend::Renodx) {
@@ -878,6 +959,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
     if (auto h = hitch.observe(presented, now, interval, 0, 0, present_ms)) {
       analyze.hitch(*h);
+      ++report_hitch_count;
+      {
+        char dbuf[96];
+        std::snprintf(dbuf, sizeof(dbuf), "interval_ms=%.2f", interval);
+        if (bug_rep.active()) bug_rep.note_event(now, "hitch", dbuf);
+        if (perf_rep.active()) perf_rep.note_event(now, "hitch", dbuf);
+      }
       if (auto c = clusters.on_hitch(*h)) {
         ++cluster_count;
         if (past_warmup) ++clusters_after_warmup;
@@ -886,6 +974,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         append_log(cfg.log_dir,
                    "CLUSTER n=" + std::to_string(c->n) + " gap_ms=" + std::to_string(c->gap_since_prev_cluster_ms) +
                        " fgap=" + std::to_string(c->frames_since_prev));
+        if (bug_rep.active()) bug_rep.note_event(now, "cluster", "");
+        if (perf_rep.active()) perf_rep.note_event(now, "cluster", "");
       }
     } else {
       clusters.note_quiet(now);
@@ -945,6 +1035,25 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     hud.update(overlay);
     if (session_panel.visible()) session_panel.reposition();
 
+    {
+      const bool ov = g_overlay.load();
+      if (ov != overlay_was) {
+        overlay_was = ov;
+        if (bug_rep.active()) bug_rep.note_event(now, "hud_toggle", ov ? "on" : "off");
+        if (perf_rep.active()) perf_rep.note_event(now, "hud_toggle", ov ? "on" : "off");
+      }
+      const bool have_hw = sample_hw;
+      auto tick_rep = [&](SessionReportWriter& w) {
+        if (!w.active()) return;
+        w.heartbeat(now, fps_smooth, overlay.e2e_ms, present_ms, overlay.ft_avg_ms, overlay.ft_p95_ms,
+                    slot.dropped(), stalls_since_600, report_hitch_count, overlay.fg_on, g_nr_runtime_on,
+                    overlay.cpu_percent, overlay.gpu_percent, have_hw, overlay.has_stats600,
+                    overlay.s600_p95_e2e, overlay.s600_p95_present);
+      };
+      tick_rep(bug_rep);
+      tick_rep(perf_rep);
+    }
+
     if ((cfg.smoke || cfg.frames_limited || cfg.selftest_dlss) &&
         static_cast<int>(steady_presented) >= cfg.smoke_frames) {
       g_running = false;
@@ -955,6 +1064,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   }
 
   cfg.nr_runtime_on = g_nr_runtime_on;
+
+  if (bug_rep.active()) {
+    bug_rep.end(clock.now_ms(), presented, 0, report_hitch_count, cluster_count);
+  }
+  if (perf_rep.active()) {
+    perf_rep.end(clock.now_ms(), presented, 0, report_hitch_count, cluster_count);
+  }
 
   session_panel.destroy();
   hud.destroy();

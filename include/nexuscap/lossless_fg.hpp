@@ -236,19 +236,20 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                 static_cast<unsigned long long>(frames), static_cast<unsigned long long>(dropped));
   push(cnt, 255, 180, 120);
 
-  char res_part[80]{};
+  char res_part[96]{};
   if (capture_w > 0 && capture_h > 0) {
     const int ww = work_w > 0 ? work_w : capture_w;
     const int wh = work_h > 0 ? work_h : capture_h;
     const int ow = output_w > 0 ? output_w : capture_w;
     const int oh = output_h > 0 ? output_h : capture_h;
-    if (ww != capture_w || wh != capture_h || ow != capture_w || oh != capture_h || scale_percent < 100) {
-      std::snprintf(res_part, sizeof(res_part), "%dx%d>%dx%d>%dx%d@%d%%", capture_w, capture_h, ww, wh, ow,
-                    oh, scale_percent > 0 ? scale_percent : 100);
-    } else if (target_fps > 0.5) {
-      std::snprintf(res_part, sizeof(res_part), "%dx%d@%.0f", capture_w, capture_h, target_fps);
+    const int sp = scale_percent > 0 ? scale_percent : 100;
+    // Always show signal → work → output (+ scale) so the mini bar makes the 3 stages obvious.
+    if (target_fps > 0.5) {
+      std::snprintf(res_part, sizeof(res_part), "%dx%d>%dx%d>%dx%d@%d%%/%.0f", capture_w, capture_h, ww, wh,
+                    ow, oh, sp, target_fps);
     } else {
-      std::snprintf(res_part, sizeof(res_part), "%dx%d", capture_w, capture_h);
+      std::snprintf(res_part, sizeof(res_part), "%dx%d>%dx%d>%dx%d@%d%%", capture_w, capture_h, ww, wh, ow, oh,
+                    sp);
     }
   }
   push_sep();
@@ -310,21 +311,36 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
     }
   }
 
-  if (line0 && n0 > 0 && segs && n > 0) {
-    size_t used = 0;
+  if (line0 && n0 > 0) line0[0] = '\0';
+  if (line1 && n1 > 0) line1[0] = '\0';
+  if (segs && n > 0) {
+    // Break after resolution: line0 = FPS…res · line1 = frametime + L600 + HW.
+    int wrap = n;
     for (int i = 0; i < n; ++i) {
-      const size_t len = std::strlen(segs[i].text);
-      if (used + len + 1 > n0) break;
-      std::memcpy(line0 + used, segs[i].text, len);
-      used += len;
-      line0[used] = '\0';
+      if (std::strncmp(segs[i].text, "ft ", 3) == 0) {
+        wrap = i;
+        break;
+      }
     }
+    auto join_range = [](char* dst, size_t dst_n, const MiniOverlaySeg* s, int begin, int end) {
+      if (!dst || dst_n == 0) return;
+      size_t used = 0;
+      dst[0] = '\0';
+      for (int i = begin; i < end; ++i) {
+        const size_t len = std::strlen(s[i].text);
+        if (used + len + 1 > dst_n) break;
+        std::memcpy(dst + used, s[i].text, len);
+        used += len;
+        dst[used] = '\0';
+      }
+    };
+    join_range(line0, n0, segs, 0, wrap);
+    join_range(line1, n1, segs, wrap, n);
   }
   return n;
 }
 
-// Mini overlay: ONE dense top-bar line with ADV+HW packed as complete as possible.
-// line1 kept for API compat (always empty).
+// Mini overlay: two dense top-bar lines (ADV on L0, FT/L600/HW on L1) so nothing is clipped.
 inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_t n1, double fps_cap,
                                       double fps_fg_est, bool fg_on, int fg_mult, bool dlss5_on,
                                       bool sync_image, double frame_ms, double ft_avg_ms, double ft_p95_ms,

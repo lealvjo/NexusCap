@@ -12,6 +12,7 @@
 #include "nexuscap/frame_slot.hpp"
 #include "nexuscap/hitch.hpp"
 #include "nexuscap/lossless_fg.hpp"
+#include "nexuscap/session_report.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/stats_window.hpp"
 #include "nexuscap/system_metrics.hpp"
@@ -21,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -582,9 +584,9 @@ TEST_CASE("session HUD shows real|FG dual FPS when FG on") {
   CHECK(std::strstr(fg, "->") != nullptr);
 }
 
-TEST_CASE("mini overlay one-line packs ADV fps fg nr sync ft last600 and hw") {
+TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   char a[768]{};
-  char b[8]{};
+  char b[768]{};
   SystemMetricsSample hw{};
   hw.cpu_name = "i5-11400F";
   hw.gpu_name = "RTX 5070";
@@ -607,7 +609,6 @@ TEST_CASE("mini overlay one-line packs ADV fps fg nr sync ft last600 and hw") {
   format_mini_overlay_lines(a, sizeof(a), b, sizeof(b), 60.0, 120.0, true, 2, true, true, 16.7, 16.6, 17.0,
                             18.0, true, 8.5, 2.2, 2, 1, 5, 2560, 1440, 2560, 1440, 2560, 1440, 100, true, 59.9,
                             2.0, 2.1, 0, "Default", hw_compact, 1.5, 900, 20.0, "lsfg3", 60.0);
-  CHECK(b[0] == '\0');
   CHECK(std::strstr(a, "60.0") != nullptr);
   CHECK(std::strstr(a, "120.0") != nullptr);
   CHECK(std::strstr(a, "cap|FG") != nullptr);
@@ -618,15 +619,16 @@ TEST_CASE("mini overlay one-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(a, "st2/cl1") != nullptr);
   CHECK(std::strstr(a, "frm 900") != nullptr);
   CHECK(std::strstr(a, "drop 5") != nullptr);
-  CHECK(std::strstr(a, "2560x1440") != nullptr);
-  CHECK(std::strstr(a, "ft 16.7") != nullptr);
-  CHECK(std::strstr(a, "avg 16.6") != nullptr);
-  CHECK(std::strstr(a, "p95 17.0") != nullptr);
-  CHECK(std::strstr(a, "STABLE") != nullptr);
-  CHECK(std::strstr(a, "L600") != nullptr);
-  CHECK(std::strstr(a, "i5-11400F") != nullptr);
-  CHECK(std::strstr(a, "RTX 5070") != nullptr);
-  CHECK(std::strstr(a, "120W") != nullptr);
+  CHECK(std::strstr(a, "2560x1440>2560x1440>2560x1440@100%") != nullptr);
+  // Line break: frametime / L600 / HW on second row.
+  CHECK(std::strstr(b, "ft 16.7") != nullptr);
+  CHECK(std::strstr(b, "avg 16.6") != nullptr);
+  CHECK(std::strstr(b, "p95 17.0") != nullptr);
+  CHECK(std::strstr(b, "STABLE") != nullptr);
+  CHECK(std::strstr(b, "L600") != nullptr);
+  CHECK(std::strstr(b, "i5-11400F") != nullptr);
+  CHECK(std::strstr(b, "RTX 5070") != nullptr);
+  CHECK(std::strstr(b, "120W") != nullptr);
   CHECK(std::strstr(a, "[lsfg3]") != nullptr);
   CHECK(std::strstr(a, "1.5ms") != nullptr);
 
@@ -657,7 +659,7 @@ TEST_CASE("mini overlay one-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(a, "TEAR") != nullptr);
   CHECK(std::strstr(a, "FG x2 off") != nullptr);
   CHECK(std::strstr(a, "2560x1440>1280x720>2560x1440@50%") != nullptr);
-  CHECK(std::strstr(a, "L600") != nullptr);
+  CHECK(std::strstr(b, "L600") != nullptr);
 
   // Legacy one-liner still includes key tokens.
   char line[512]{};
@@ -680,11 +682,11 @@ TEST_CASE("mini overlay one-line packs ADV fps fg nr sync ft last600 and hw") {
   s.width = 2560;
   s.height = 1440;
   auto hud = make_lobby_hud_preview_lines(s, 60.0);
-  CHECK(hud.count == 1);
+  CHECK(hud.count == 2);
   CHECK(lobby_hud_contains(hud, "NR ON"));
   CHECK(lobby_hud_contains(hud, "i5-11400F"));
   CHECK(lobby_hud_contains(hud, "RTX 5070"));
-  CHECK(lobby_hud_preview_lines(true, true, false, true) == 1);
+  CHECK(lobby_hud_preview_lines(true, true, false, true) == 2);
   CHECK(hud_uses_mini_overlay(true, true));
   CHECK_FALSE(hud_uses_advanced_metrics(true, true, true));
 }
@@ -1343,8 +1345,8 @@ TEST_CASE("lobby hud preview lines follow Sessao toggles") {
   CHECK(lobby_hud_preview_lines(true, true) > lobby_hud_preview_lines(true, false));
   CHECK(lobby_hud_preview_lines(true, false, true) == 11);  // + 5 Infos GPU/CPU lines
   CHECK(lobby_hud_preview_lines(true, true, true) == 13);
-  CHECK(lobby_hud_preview_lines(true, false, false, true) == 1);  // mini = one dense row
-  CHECK(lobby_hud_preview_lines(true, true, true, true) == 1);   // mini wins over ADV+HW line count
+  CHECK(lobby_hud_preview_lines(true, false, false, true) == 2);  // mini = two dense rows
+  CHECK(lobby_hud_preview_lines(true, true, true, true) == 2);   // mini wins over ADV+HW line count
 }
 
 TEST_CASE("hw_info toggle persists and shows preview line") {
@@ -1816,17 +1818,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(2, 2, 0));
+  CHECK(app_version_is(2, 3, 0));
   CHECK_FALSE(app_version_is(2, 0, 1));
-  CHECK(std::string(kAppVersion) == "2.2.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v2.2.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.2.0");
+  CHECK(std::string(kAppVersion) == "2.3.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v2.3.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-2.3.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("2.2.0") != std::string::npos);
+  CHECK(lobby_t.find("2.3.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("2.2.0") != std::string::npos);
+  CHECK(sess_t.find("2.3.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2381,3 +2383,118 @@ TEST_CASE("smoke implies no lobby") {
   CHECK(c.smoke);
   CHECK_FALSE(c.show_lobby);
 }
+
+TEST_CASE("hud hotkey default is Ctrl+Space") {
+  const HotkeyConfig h = default_hotkeys();
+  CHECK(h.vk_hud == 0x20);
+  CHECK(h.hud_ctrl);
+  CHECK(hud_hotkey_fired(0x20, true, h.vk_hud, h.hud_ctrl));
+  CHECK_FALSE(hud_hotkey_fired(0x20, false, h.vk_hud, h.hud_ctrl));
+  CHECK_FALSE(hud_hotkey_fired(0x72, true, h.vk_hud, h.hud_ctrl));
+  CHECK(std::string(vk_display_name(0x20)) == "Espaco");
+}
+
+TEST_CASE("session report paths are unique by timestamp and kind") {
+  const std::string bug_a = make_session_report_path("C:\\NexusCap", SessionReportKind::Bug, 2026, 9, 16, 21, 5, 30);
+  const std::string bug_b = make_session_report_path("C:\\NexusCap", SessionReportKind::Bug, 2026, 9, 16, 21, 5, 31);
+  const std::string perf =
+      make_session_report_path("C:\\NexusCap", SessionReportKind::Perf, 2026, 9, 16, 21, 5, 30);
+  CHECK(bug_a.find("\\report\\bug_20260916_210530.txt") != std::string::npos);
+  CHECK(bug_b.find("bug_20260916_210531.txt") != std::string::npos);
+  CHECK(perf.find("\\performance\\performance_20260916_210530.txt") != std::string::npos);
+  CHECK(bug_a != bug_b);
+  CHECK(bug_a != perf);
+}
+
+TEST_CASE("bug_report and perf_report persist and map to AppConfig") {
+  CHECK_FALSE(default_settings().ui.bug_report);
+  CHECK_FALSE(default_settings().ui.perf_report);
+
+  PersistedSettings s = default_settings();
+  s.ui.bug_report = true;
+  s.ui.perf_report = true;
+  s.hotkeys.vk_hud = 0x20;
+  s.hotkeys.hud_ctrl = true;
+  const std::string ini = serialize_settings_ini(s);
+  CHECK(ini.find("bug_report=1") != std::string::npos);
+  CHECK(ini.find("perf_report=1") != std::string::npos);
+  CHECK(ini.find("hud_ctrl=1") != std::string::npos);
+
+  PersistedSettings out;
+  CHECK(parse_settings_ini(ini, out));
+  CHECK(out.ui.bug_report);
+  CHECK(out.ui.perf_report);
+  CHECK(out.hotkeys.hud_ctrl);
+  CHECK(out.hotkeys.vk_hud == 0x20);
+
+  AppConfig cfg;
+  apply_persisted_to_config(out, cfg);
+  CHECK(cfg.bug_report);
+  CHECK(cfg.perf_report);
+  CHECK(cfg.hotkeys.hud_ctrl);
+
+  SessionReportWriter idle;
+  CHECK_FALSE(idle.active());
+}
+
+TEST_CASE("SessionReportWriter writes unique files when started") {
+  namespace fs = std::filesystem;
+  const auto tmp = fs::temp_directory_path() / "nexuscap_report_ut";
+  fs::create_directories(tmp);
+  const std::string dir = tmp.string();
+
+  SessionReportSnapshot snap;
+  snap.device = "ut-device";
+  snap.width = 1920;
+  snap.height = 1080;
+  snap.os_version = "Windows UT";
+  snap.cpu_name = "UT-CPU";
+  snap.gpu_name = "UT-GPU";
+  snap.reshade_snippet = "NRIntensity=1\n";
+  snap.feed_snippet = "work_resolution=100\n";
+  snap.mgf_snippet = "Techniques=\n";
+
+  const std::string bug_path = make_session_report_path(dir, SessionReportKind::Bug, 2026, 1, 2, 3, 4, 5);
+  SessionReportWriter bug;
+  bug.start(SessionReportKind::Bug, bug_path, snap);
+  bug.note_event(1, "hitch", "interval_ms=30");
+  bug.end(2, 10, 0, 1, 0);
+  CHECK(fs::exists(bug_path));
+  const std::string bug_txt = read_text_file_utf8(bug_path);
+  CHECK(bug_txt.find("NEXUSCAP_BUG_REPORT") != std::string::npos);
+  CHECK(bug_txt.find("event=hitch") != std::string::npos);
+
+  const std::string perf_path =
+      make_session_report_path(dir, SessionReportKind::Perf, 2026, 1, 2, 3, 4, 6);
+  SessionReportWriter perf;
+  perf.start(SessionReportKind::Perf, perf_path, snap);
+  perf.heartbeat(100, 60, 16, 2, 16.5, 17.0, 0, 0, 0, false, true, 10, 20, true, true, 8.5, 2.1);
+  perf.end(200, 20, 0, 0, 0);
+  CHECK(fs::exists(perf_path));
+  const std::string perf_txt = read_text_file_utf8(perf_path);
+  CHECK(perf_txt.find("=== SETUP ===") != std::string::npos);
+  CHECK(perf_txt.find("=== RENODX ===") != std::string::npos);
+  CHECK(perf_txt.find("=== TUNABLES (app) ===") != std::string::npos);
+  CHECK(perf_txt.find("=== METRICS ===") != std::string::npos);
+  CHECK(perf_txt.find("=== AI_HINT ===") != std::string::npos);
+  CHECK(perf_txt.find("UT-CPU") != std::string::npos);
+  CHECK(perf_txt.find("NRIntensity=1") != std::string::npos);
+  CHECK(perf_txt.find("ft_avg=") != std::string::npos);
+  CHECK(perf_txt.find("e2e=") != std::string::npos);
+
+  SessionReportWriter bug2;
+  const std::string bug2_path = make_session_report_path(dir, SessionReportKind::Bug, 2026, 1, 2, 3, 4, 7);
+  bug2.start(SessionReportKind::Bug, bug2_path, snap);
+  bug2.note_exception(50, "present", "device lost");
+  bug2.end(60, 1, 0, 0, 0);
+  const std::string bug2_txt = read_text_file_utf8(bug2_path);
+  CHECK(bug2_txt.find("=== EXCEPTIONS ===") != std::string::npos);
+  CHECK(bug2_txt.find("event=exception") != std::string::npos);
+  CHECK(bug2_txt.find("where=present") != std::string::npos);
+  CHECK(bug2_txt.find("device lost") != std::string::npos);
+
+  SessionReportWriter noop;
+  CHECK_FALSE(noop.active());
+}
+
+

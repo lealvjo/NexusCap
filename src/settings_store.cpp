@@ -166,9 +166,13 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "fullscreen=" << (s.ui.fullscreen ? 1 : 0) << "\n";
   o << "hide_panel_on_capture=" << (s.ui.hide_panel_on_capture ? 1 : 0) << "\n";
   o << "sync_image=" << (s.ui.sync_image ? 1 : 0) << "\n";
+  o << "preview_mute=" << (s.ui.preview_mute ? 1 : 0) << "\n";
+  o << "bug_report=" << (s.ui.bug_report ? 1 : 0) << "\n";
+  o << "perf_report=" << (s.ui.perf_report ? 1 : 0) << "\n";
   o << "\n[hotkeys]\n";
   o << "quit=" << s.hotkeys.vk_quit << "\n";
   o << "hud=" << s.hotkeys.vk_hud << "\n";
+  o << "hud_ctrl=" << (s.hotkeys.hud_ctrl ? 1 : 0) << "\n";
   o << "analyze=" << s.hotkeys.vk_analyze << "\n";
   o << "dlss=" << s.hotkeys.vk_dlss << "\n";
   o << "fg_toggle=" << s.hotkeys.vk_fg_toggle << "\n";
@@ -227,11 +231,15 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "fullscreen") s.ui.fullscreen = (val == "1" || val == "true");
       else if (key == "hide_panel_on_capture") s.ui.hide_panel_on_capture = (val == "1" || val == "true");
       else if (key == "sync_image") s.ui.sync_image = (val == "1" || val == "true");
+      else if (key == "preview_mute") s.ui.preview_mute = (val == "1" || val == "true");
+      else if (key == "bug_report") s.ui.bug_report = (val == "1" || val == "true");
+      else if (key == "perf_report") s.ui.perf_report = (val == "1" || val == "true");
       // legacy auto_start ignored — lobby always opens first (maximized window)
     } else if (section == "hotkeys") {
       int v = std::atoi(val.c_str());
       if (key == "quit") s.hotkeys.vk_quit = v;
       else if (key == "hud") s.hotkeys.vk_hud = v;
+      else if (key == "hud_ctrl") s.hotkeys.hud_ctrl = (val == "1" || val == "true");
       else if (key == "analyze") s.hotkeys.vk_analyze = v;
       else if (key == "dlss") s.hotkeys.vk_dlss = v;
       else if (key == "fg_toggle") s.hotkeys.vk_fg_toggle = v;
@@ -271,6 +279,8 @@ const char* vk_display_name(int vk) {
   switch (vk) {
     case 0x1B:
       return "Esc";
+    case 0x20:
+      return "Espaco";
     case 0x70:
       return "F1";
     case 0x71:

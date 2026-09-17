@@ -179,7 +179,7 @@ void AudioMonitor::thread_main(std::string prefer) {
       if (to_write > 0) {
         BYTE* out = nullptr;
         if (SUCCEEDED(arc->GetBuffer(to_write, &out)) && out) {
-          if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+          if (muted_ || (flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
             std::memset(out, 0, static_cast<size_t>(to_write) * frame_bytes);
           } else {
             std::memcpy(out, data, static_cast<size_t>(to_write) * frame_bytes);

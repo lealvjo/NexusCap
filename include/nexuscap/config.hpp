@@ -33,6 +33,8 @@ struct AppConfig {
   bool hw_info = false;  // painel Infos GPU/CPU
   bool hide_panel_on_capture = true;
   bool sync_image = true;  // vsync Present — default after 2.0.1 A/B (TEAR felt shakier)
+  bool bug_report = false;
+  bool perf_report = false;
   int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // Default / Natural / Cinematic
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
@@ -89,7 +91,7 @@ inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
   if (hw_info) h += 5 * 28;
   return h;
 }
-inline int hud_mini_overlay_height() { return 77; }  // +50% vs 51 (18px era)
+inline int hud_mini_overlay_height() { return 104; }  // 2 text rows + pad (was 77 one-liner)
 inline int hud_mini_overlay_font_px() { return 27; }  // +50% vs 18
 
 // When mini overlay is on, multi-line compact/advanced HUD is suppressed.
@@ -125,7 +127,7 @@ inline constexpr int kAppIconResourceId = 101;
 inline int lobby_hud_preview_lines(bool show_fps, bool advanced_metrics, bool hw_info = false,
                                    bool mini_overlay = false) {
   if (!show_fps) return 0;
-  if (mini_overlay) return 1;  // one dense full-width bar
+  if (mini_overlay) return 2;  // ADV row + FT/L600/HW row
   int n = advanced_metrics ? 8 : 6;
   if (hw_info) n += kSysMetricsLineCount;
   return n;
@@ -180,7 +182,7 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
         scaled_extent(s.width, scale), scaled_extent(s.height, scale), s.width, s.height, scale, false, 0, 0,
         0, 0, renodx_visual_preset_name(s.renodx_preset), hw_compact, /*dlss_ms=*/0, /*frames=*/0,
         /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps);
-    out.count = 1;
+    out.count = out.line[1][0] ? 2 : 1;
     return out;
   }
 

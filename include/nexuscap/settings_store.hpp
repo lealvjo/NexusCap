@@ -7,7 +7,8 @@ namespace nexuscap {
 
 struct HotkeyConfig {
   int vk_quit = 0x1B;       // VK_ESCAPE
-  int vk_hud = 0x72;        // VK_F3
+  int vk_hud = 0x20;        // VK_SPACE — with hud_ctrl → Ctrl+Espaço
+  bool hud_ctrl = true;     // require Ctrl for overlay HUD toggle
   int vk_analyze = 0x73;    // VK_F4
   int vk_dlss = 0x74;       // VK_F5
   int vk_fg_toggle = 0x22;  // VK_NEXT (Page Down) — X2 framegen
@@ -27,6 +28,9 @@ struct SessionUiFlags {
   bool fullscreen = true;
   bool hide_panel_on_capture = true;
   bool sync_image = true;  // VSYNC default — TEAR+ALLOW_TEARING felt shakier in A/B vs 2.0.1
+  bool preview_mute = false;  // lobby preview audio mute (icon on preview)
+  bool bug_report = false;    // session → report/bug_TIMESTAMP.txt
+  bool perf_report = false;   // session → performance/performance_TIMESTAMP.txt
 };
 
 struct PersistedSettings {

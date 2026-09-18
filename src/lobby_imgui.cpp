@@ -56,6 +56,7 @@ bool g_lobby_running = true;
 bool g_start_requested = false;
 bool g_open_gear = false;
 int* g_capture_vk_target = nullptr;
+int g_lobby_gear_vk = 0x7B;  // default F12 — atualizado do settings a cada frame
 SystemMetricsSampler g_lobby_hw;
 SystemMetricsSample g_lobby_hw_sample{};
 
@@ -356,6 +357,10 @@ LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // Esc never closes the lobby / app — only gear or hotkey capture (see lobby_esc_action).
         const LobbyEscAction act = lobby_esc_action(g_open_gear, false);
         if (act == LobbyEscAction::CloseGear) g_open_gear = false;
+        return 0;
+      }
+      if (lobby_gear_hotkey_toggles_cfg(static_cast<int>(wp), g_lobby_gear_vk, false)) {
+        g_open_gear = !g_open_gear;
         return 0;
       }
       return 0;
@@ -977,6 +982,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       }
     }
 
+    g_lobby_gear_vk = settings.hotkeys.vk_gear;
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -1599,6 +1605,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             g_capture_vk_target = vk;
           }
         };
+        hotkey_row("CFG no lobby", &settings.hotkeys.vk_gear);
+        ImGui::TextDisabled("  default F12 — abre este painel sem clicar no botao CFG");
         hotkey_row("Frame Gen on/off", &settings.hotkeys.vk_fg_toggle);
         hotkey_row("Ciclo FG x2/x3/x4", &settings.hotkeys.vk_fg_cycle);
         {

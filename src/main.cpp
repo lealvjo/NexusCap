@@ -267,7 +267,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         std::printf("neural rendering: NR=%s feed=ON (runtime trusts NeuralUplift; Delete=reinicio)\n",
                     want_nr ? "ON" : "OFF");
       }
-    } else if (sync_neural_rendering_enabled_files(exe_dir.string(), false, false)) {
+    } else if (session_writes_renodx_off_files(cfg) &&
+               sync_neural_rendering_enabled_files(exe_dir.string(), false, false)) {
       append_log(cfg.log_dir, "neural rendering files OFF (runtime pulse pending=0)");
       std::printf("neural rendering files: OFF\n");
     }
@@ -878,7 +879,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         std::printf("nr toggle: RenoDX off — marque RenoDX no lobby (FG continua independente)\n");
         append_log(cfg.log_dir, "nr toggle blocked: RenoDX not loaded this session");
         bug_exc("nr_toggle", "blocked: RenoDX not loaded this session");
-        session_notice.push(session_notice_nr_off(), clock.now_ms());
+        session_notice.push(session_notice_nr_needs_renodx(), clock.now_ms());
       } else {
         // Qualquer Pass Count: grava NeuralUplift e reinicia. O pulso ao vivo invertia a imagem.
         wchar_t exe_path[MAX_PATH]{};

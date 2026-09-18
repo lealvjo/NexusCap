@@ -21,6 +21,7 @@
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/capture.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -2048,17 +2049,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 2));
+  CHECK(app_version_is(3, 1, 3));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.2");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.2") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.2");
+  CHECK(std::string(kAppVersion) == "3.1.3");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.1.3") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.3");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.2") != std::string::npos);
+  CHECK(lobby_t.find("3.1.3") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.2") != std::string::npos);
+  CHECK(sess_t.find("3.1.3") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2110,6 +2111,51 @@ TEST_CASE("Esc back to lobby keeps RenoDX stack so Delete works next session") {
   apply_persisted_to_config(s, cfg);
   CHECK(cfg.enhance == EnhanceBackend::Renodx);
   CHECK(cfg.neural_rendering);
+}
+
+TEST_CASE("smoke and selftest do not wipe the user's NeuralUplift files") {
+  AppConfig live;
+  live.enhance = EnhanceBackend::Off;
+  CHECK(session_writes_renodx_off_files(live));  // Iniciar sem RenoDX no lobby
+
+  AppConfig smoke;
+  smoke.smoke = true;
+  smoke.fake_capture = true;
+  smoke.enhance = EnhanceBackend::Off;
+  CHECK_FALSE(session_writes_renodx_off_files(smoke));
+
+  AppConfig cap;
+  cap.selftest_cap = true;
+  cap.enhance = EnhanceBackend::Off;
+  CHECK_FALSE(session_writes_renodx_off_files(cap));
+
+  AppConfig cfg;
+  cfg.selftest_cfg = true;
+  cfg.fake_capture = true;
+  cfg.enhance = EnhanceBackend::Off;
+  CHECK_FALSE(session_writes_renodx_off_files(cfg));
+
+  AppConfig fg;
+  fg.selftest_fg = true;
+  fg.enhance = EnhanceBackend::Off;
+  CHECK_FALSE(session_writes_renodx_off_files(fg));
+
+  AppConfig rx;
+  rx.enhance = EnhanceBackend::Renodx;
+  CHECK_FALSE(session_writes_renodx_off_files(rx));
+}
+
+TEST_CASE("Delete without RenoDX warns and does not fake HUD off") {
+  AppConfig cfg;
+  cfg.enhance = EnhanceBackend::Off;
+  CHECK_FALSE(session_nr_hotkey_allowed(cfg.enhance));
+  const std::string blocked = session_notice_nr_needs_renodx();
+  CHECK(blocked.find("RenoDX") != std::string::npos);
+  CHECK(blocked.find("lobby") != std::string::npos);
+  CHECK(blocked.find("OFF") == std::string::npos);
+  CHECK(blocked.find("Confirmado") == std::string::npos);
+  CHECK(session_notice_nr_off().find("Confirmado") != std::string::npos);
+  CHECK(session_notice_nr_off() != blocked);
 }
 
 TEST_CASE("Delete NR needs feed pipeline ON (else HUD-only, no image change)") {
@@ -2548,6 +2594,10 @@ TEST_CASE("Esc never closes lobby; session Esc returns to lobby code") {
   CHECK(lobby_esc_action(true, false) == LobbyEscAction::CloseGear);
   CHECK(lobby_esc_action(false, true) == LobbyEscAction::CancelHotkeyCapture);
   CHECK(lobby_esc_action(true, true) == LobbyEscAction::CancelHotkeyCapture);
+  CHECK(lobby_gear_hotkey_toggles_cfg(0x7B, 0x7B, false));
+  CHECK_FALSE(lobby_gear_hotkey_toggles_cfg(0x7B, 0x7B, true));
+  CHECK_FALSE(lobby_gear_hotkey_toggles_cfg(0x1B, 0x7B, false));
+  CHECK_FALSE(lobby_gear_hotkey_toggles_cfg(0x7B, 0, false));
 
   // Session Esc exit codes
   CHECK(session_exit_code_after_esc(true) == kSessionExitBackToLobby);
@@ -2754,7 +2804,10 @@ TEST_CASE("live mode gate file helpers still work; overlay active follows flag")
   CHECK_FALSE(live_overlay_active(true, false));
 
   namespace fs = std::filesystem;
-  const auto dir = fs::temp_directory_path() / "nexuscap_live_gate_test";
+  const auto dir =
+      fs::temp_directory_path() /
+      ("nexuscap_live_gate_test_" +
+       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   fs::create_directories(dir);
   const auto path = dir / "live.on";
   {

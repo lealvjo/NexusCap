@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `3.1.2` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `3.1.3` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-3.1.2.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-3.1.3.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-3.1.2.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
+1. Instalar `NexusCap-Setup-3.1.3.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -43,15 +43,22 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-3.1.2.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-3.1.3.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
 5. **Frame Gen (opcional):** instale Lossless Scaling na Steam; no CFG, Page Down liga/desliga. Se o exe não for achado, use **Pasta** e aponte `LosslessScaling.exe`.
-6. **Iniciar** — Esc volta ao lobby. **Ctrl+M** abre o CFG por cima do jogo (ajusta sem sair da captura) e **Ctrl+Espaço** mostra/esconde o overlay HUD (os dois atalhos são configuráveis). Use **Abrir logs** no CFG se precisar de suporte.
+6. **Iniciar** — Esc volta ao lobby. **F12** (ou o botão CFG) abre o painel do menu principal. **Ctrl+M** abre o CFG por cima do jogo (ajusta sem sair da captura) e **Ctrl+Espaço** mostra/esconde o overlay HUD (os atalhos são configuráveis). Use **Abrir logs** no CFG se precisar de suporte.
 7. **Reportar bug / Reportar performance** (checkboxes abaixo do VSYNC, off por padrão): geram `.txt` leves em `report/` e `performance/` ao lado do exe — úteis para suporte / colar numa IA.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
+
+### Novidades 3.1.3
+
+- **F12** abre o CFG do lobby (a tecla já gravava, mas o menu só abria pelo botão).
+- **Delete sem RenoDX** avisa para marcar no lobby — já não finge “NR OFF Confirmado”.
+- **Smoke / selftest** não apagam o `NeuralUplift` do utilizador.
+- Plano BDD em [`qa/bdd/`](qa/bdd/) (Gherkin: lobby, CFG do menu, Ctrl+M, atalhos, distribuição).
 
 ### Novidades 3.1.2
 
@@ -349,9 +356,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 3.1.2
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 3.1.3
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 3.1.2
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 3.1.3
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.
@@ -422,11 +429,15 @@ build\Release\NexusCap.exe --selftest-fg --fake-capture
 ## Testes
 
 ```bat
-ctest --test-dir build -C Release -R unit --output-on-failure
+ctest --test-dir build -C Release --output-on-failure
 build\Release\nexuscap_tests.exe
 ```
 
-Cobrem CLI, escala 25–100, mira-lock, Esc/WM_QUIT no lobby, Bridge NR, formato/cor, letterbox, logo, avisos FG/NR, `settings.ini`.
+`ctest` corre unitários + smokes + `--selftest-fg` / `--selftest-cfg`. Smoke e selftest **não** apagam o NeuralUplift do utilizador.
+
+BDD (Gherkin, HDMI à mão): [`qa/bdd/`](qa/bdd/) — ordem no `README` dessa pasta. `@critico` é porta de release. `@auto` = já coberto pelo `ctest`.
+
+Unitários cobrem CLI, escala, mira-lock, Esc/WM_QUIT no lobby, F12 do CFG, Bridge NR, formato/cor, letterbox, avisos FG/NR, `settings.ini`.
 
 ---
 

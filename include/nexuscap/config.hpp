@@ -401,6 +401,12 @@ inline LobbyEscAction lobby_esc_action(bool gear_open, bool capturing_hotkey) {
   return LobbyEscAction::None;
 }
 
+// F12 (ou o rebind vk_gear) abre/fecha o CFG do lobby. Esc e captura de tecla ganham.
+inline bool lobby_gear_hotkey_toggles_cfg(int vk, int gear_vk, bool capturing_hotkey) {
+  if (capturing_hotkey || gear_vk <= 0) return false;
+  return vk == gear_vk;
+}
+
 // Soft on-screen tips while playing (FG / Neural Rendering hotkeys).
 inline constexpr double kSessionNoticeTtlMs = 3200.0;
 // Delay before Krish↔multipass relaunch so the swap does not look like a crash.
@@ -421,6 +427,11 @@ inline std::string session_notice_nr_on() {
 }
 inline std::string session_notice_nr_off() {
   return "Neural Rendering OFF — Confirmado; imagem limpa; menos GPU";
+}
+// Delete sem stack RenoDX: avisa o lobby. Nunca reutilizar session_notice_nr_off()
+// (HUD fingia OFF com a imagem ainda limpa / sem filtros).
+inline std::string session_notice_nr_needs_renodx() {
+  return "Neural Rendering — marque RenoDX no lobby";
 }
 inline std::string session_notice_nr_applying() {
   return "Neural Rendering — Aplicando…";
@@ -514,6 +525,17 @@ inline void apply_session_nr_runtime_to_config(bool nr_on, AppConfig& cfg) {
 
 inline bool session_nr_hotkey_allowed(EnhanceBackend enhance) {
   return enhance == EnhanceBackend::Renodx;
+}
+
+// Smoke / selftest / fake não podem apagar NeuralUplift do utilizador. O lobby
+// é que grava OFF quando o RenoDX é desmarcado de propósito.
+inline bool session_writes_renodx_off_files(const AppConfig& cfg) {
+  if (cfg.enhance == EnhanceBackend::Renodx) return false;
+  if (cfg.smoke || cfg.fake_capture || cfg.selftest_cap || cfg.selftest_cfg || cfg.selftest_fg ||
+      cfg.selftest_dlss) {
+    return false;
+  }
+  return true;
 }
 
 // CFG da sessão → disco. O processo novo (--autostart) lê isto para voltar igual.

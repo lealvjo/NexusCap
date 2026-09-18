@@ -257,14 +257,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
     }
 
-    // Renodx session: keep feed pipeline ON even when NR starts off so Delete can show NR.
-    // (dlss5-feed ignores enabled=0→1 mid-session — HUD would flip with no image change.)
+    // Sessão sempre reinicia no NR: o feed pode seguir o NeuralUplift. Se ficar
+    // enabled=1 com NR=OFF, o DLSS5 continua a avaliar (log: restart sem mudar a imagem).
     if (cfg.enhance == EnhanceBackend::Renodx) {
-      if (sync_neural_rendering_enabled_files(exe_dir.string(), want_nr, /*feed_on=*/true)) {
+      if (sync_neural_rendering_enabled_files(exe_dir.string(), want_nr, /*feed_on=*/want_nr)) {
         append_log(cfg.log_dir, std::string("neural rendering files NR=") + (want_nr ? "ON" : "OFF") +
-                                    " feed=ON (runtime pulse pending=" +
+                                    " feed=" + (want_nr ? "ON" : "OFF") + " (runtime pulse pending=" +
                                     std::to_string(g_nr_boot_retries > 0) + ")");
-        std::printf("neural rendering: NR=%s feed=ON (runtime trusts NeuralUplift; Delete=reinicio)\n",
+        std::printf("neural rendering: NR=%s feed=%s (Delete=reinicio)\n", want_nr ? "ON" : "OFF",
                     want_nr ? "ON" : "OFF");
       }
     } else if (session_writes_renodx_off_files(cfg) &&
@@ -317,7 +317,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     GetModuleFileNameW(nullptr, exe_path_stack, MAX_PATH);
     g_renodx_multipass =
         renodx_stack && renodx_active_addon_is_multipass(fs::path(exe_path_stack).parent_path().string());
-    if (g_renodx_multipass) g_nr_runtime_on = true;  // multipass NR cannot be turned off
   }
   renderer.set_scale_percent(app_present_scale_percent(renodx_stack, cfg.scale_percent));
   // RenoDX: app RT native, Feed does the scaling — HUD must show the Feed resolution.
@@ -566,7 +565,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.renodx_on = g_nr_runtime_on;
   overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset);
   overlay.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
-  overlay.feed_on = (cfg.enhance == EnhanceBackend::Renodx);
+  overlay.feed_on = (cfg.enhance == EnhanceBackend::Renodx) && g_nr_runtime_on;
   overlay.sync_image = cfg.sync_image;
   overlay.hw_info = cfg.hw_info;
   const bool live_unlocked = live_mode_unlocked();
@@ -891,7 +890,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg.nr_runtime_on = want_on;
         overlay.renodx_on = want_on;
         info.dlss_enabled = want_on;
-        (void)sync_neural_rendering_enabled_files(exe_dir.string(), want_on, /*feed_on=*/true);
+        (void)sync_neural_rendering_enabled_files(exe_dir.string(), want_on, /*feed_on=*/want_on);
         cfg_restart_kind = SessionCfgApply::RelaunchNr;
         cfg_restart_pending = true;
         cfg_restart_until = now_nr + kDlss5MotorSwapHoldSec * 1000.0;
@@ -1267,7 +1266,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       overlay.dlss_backend = "renodx+feed";
       overlay.dlss_status = g_nr_runtime_on ? "nr-on" : "nr-off";
       overlay.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
-      overlay.feed_on = true;
+      overlay.feed_on = g_nr_runtime_on;
     }
     last_dlss_ms = overlay.dlss_ms;
     overlay.present_ms = present_ms;

@@ -2049,17 +2049,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 3));
+  CHECK(app_version_is(3, 1, 4));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.3");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.3") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.3");
+  CHECK(std::string(kAppVersion) == "3.1.4");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.1.4") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.4");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.3") != std::string::npos);
+  CHECK(lobby_t.find("3.1.4") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.3") != std::string::npos);
+  CHECK(sess_t.find("3.1.4") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2158,24 +2158,26 @@ TEST_CASE("Delete without RenoDX warns and does not fake HUD off") {
   CHECK(session_notice_nr_off() != blocked);
 }
 
-TEST_CASE("Delete NR needs feed pipeline ON (else HUD-only, no image change)") {
-  // Log regression: session started with feed enabled=0; Delete pulsed RenoDX (ReShade
-  // "NR toggled ON") but dlss5-feed stayed dead → stats ON/OFF with no visual change.
+TEST_CASE("session NR off restart also turns feed off (else DLSS5 keeps evaluating)") {
   CHECK(feed_pipeline_on_for_renodx(true));
   CHECK_FALSE(feed_pipeline_on_for_renodx(false));
 
-  std::string feed = "enabled=0\nmode=2\n";
-  std::string reshade = "NeuralUplift=0\nNRToggleKey=46\n";
-  // Renodx loaded, NR off: feed must stay armed.
-  feed = apply_feed_enabled(std::move(feed), feed_pipeline_on_for_renodx(true));
+  std::string feed = "enabled=1\nmode=2\n";
+  std::string reshade = "NeuralUplift=1\nNRToggleKey=46\n";
+  // Delete/CFG NR off + restart: both files must go off or the image stays DLSS5.
+  feed = apply_feed_enabled(std::move(feed), false);
   reshade = apply_reshade_neural_uplift(std::move(reshade), false);
-  CHECK(parse_feed_enabled(feed, false));
+  CHECK_FALSE(parse_feed_enabled(feed, true));
   CHECK_FALSE(parse_reshade_neural_uplift(reshade, true));
 
-  // Delete ON: NeuralUplift flips; feed stays on.
+  // Delete ON + restart: both back on (feed lê enabled no init do processo novo).
+  feed = apply_feed_enabled(std::move(feed), true);
   reshade = apply_reshade_neural_uplift(std::move(reshade), true);
   CHECK(parse_feed_enabled(feed, false));
   CHECK(parse_reshade_neural_uplift(reshade, false));
+
+  // Lobby: RenoDX ligado sem restart — feed fica armado.
+  CHECK(feed_pipeline_on_for_renodx(true));
 
   // Unload Renodx: both off.
   feed = apply_feed_enabled(std::move(feed), feed_pipeline_on_for_renodx(false));

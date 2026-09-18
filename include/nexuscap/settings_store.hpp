@@ -770,8 +770,8 @@ inline int parse_reshade_nr_toggle_key(const std::string& text, int fallback = 0
 // True when ReShade.ini AddonPath points at addons-multipass.
 bool renodx_active_addon_is_multipass(const std::string& exe_dir);
 
-// dlss5-feed.cfg enabled= — feeder pipeline. Must stay ON for the whole Renodx session:
-// feed does not hot-reload enabled=0→1 (Delete would only flip HUD / RenoDX flag).
+// dlss5-feed.cfg enabled=. No lobby o feed fica armado com RenoDX (não há restart).
+// Na sessão o Delete reinicia: feed segue o NeuralUplift — senão o DLSS5 continua a avaliar.
 inline std::string apply_feed_enabled(std::string text, bool enabled) {
   return apply_keyed_int(std::move(text), "enabled=", enabled ? 1 : 0);
 }

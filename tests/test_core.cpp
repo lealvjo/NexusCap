@@ -1354,6 +1354,9 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
     CHECK(parse_reshade_nr_pass_count(look) == 1);
     CHECK(look.find("NRToggleKey=46") != std::string::npos);  // Delete, not F13
     CHECK(look.find("NRToggleKey=124") == std::string::npos);
+    CHECK(parse_renodx_mp_preset_cycle_key(look) == kRenodxMpPresetCycleVk);
+    CHECK(look.find("PassCountIncreaseKey=187") != std::string::npos);
+    CHECK(look.find("PassCountDecreaseKey=189") != std::string::npos);
     CHECK(look.find("DirectNeuralRenderingIntensity=1") != std::string::npos);
   }
   {
@@ -2049,17 +2052,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 3));
+  CHECK(app_version_is(4, 0, 0));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.3");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.3") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.3");
+  CHECK(std::string(kAppVersion) == "4.0.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.0.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.0.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.3") != std::string::npos);
+  CHECK(lobby_t.find("4.0.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.3") != std::string::npos);
+  CHECK(sess_t.find("4.0.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2448,6 +2451,15 @@ TEST_CASE("neural rendering Bridge plan: enable/disable cannot desync") {
     CHECK(parse_reshade_nr_toggled_line("NR toggled ON via 0x124") == 1);
     CHECK(parse_reshade_nr_toggled_line("NR toggled OFF via 0x124") == 0);
     CHECK(parse_reshade_nr_toggled_line("other") == -1);
+    CHECK(parse_reshade_nr_toggled_line("NR ON") == 1);
+    CHECK(parse_reshade_nr_toggled_line("NR OFF") == 0);
+    CHECK(parse_reshade_nr_toggled_line("Capture NR ON/OFF pair") == -1);
+    CHECK(parse_reshade_mp_preset_transaction(
+              "RenoDX Neural Resolution V6.6: committed preset transaction 2 on overlay thread 1") == 2);
+    CHECK(parse_reshade_mp_preset_transaction("NR toggled ON via 0x124") == -1);
+    CHECK(parse_reshade_mp_pass_count_line(
+              "RenoDX Neural Resolution: pass-count hotkey set [RENODX-DLSS-preset1] to 2.") == 2);
+    CHECK(parse_reshade_mp_pass_count_line("committed preset transaction 1") == -1);
     const char* log =
         "10:00:00 INFO stuff\n"
         "10:01:00 NR toggled ON via 0x124\n"
@@ -2876,7 +2888,6 @@ TEST_CASE("feed scale change needs relaunch only under RenoDX") {
   CHECK(msg.find("50%") != std::string::npos);
 }
 
-// Measured: multipass RenoDX ignores NRToggleKey, so Delete must not fake an "off" HUD.
 TEST_CASE("NR hotkey only claimed on the stable stack") {
   CHECK(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/false));
   CHECK_FALSE(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/true));
@@ -3048,22 +3059,36 @@ TEST_CASE("session CFG plan: motor swap and feed scale restart, the rest is live
   CHECK(plan_session_cfg_apply(true, 1, 4, 100, 100) == SessionCfgApply::RelaunchMotor);
   CHECK(plan_session_cfg_apply(true, 4, 1, 100, 100) == SessionCfgApply::RelaunchMotor);
   CHECK(plan_session_cfg_apply(true, 1, 2, 100, 100) == SessionCfgApply::RelaunchMotor);
-  // 1,5x ↔ 2x ↔ 3x: mesmo motor, mas o multipass le o PassCount so no init (ReShade.log:
-  // ini em 3 e runtime em "passes=1", sem NRToggleKey pro ciclo OFF→ON) — reinicia tambem.
-  CHECK(plan_session_cfg_apply(true, 4, 2, 100, 100) == SessionCfgApply::RelaunchPassCount);
-  CHECK(plan_session_cfg_apply(true, 2, 3, 100, 100) == SessionCfgApply::RelaunchPassCount);
-  CHECK(plan_session_cfg_apply(true, 3, 4, 100, 100) == SessionCfgApply::RelaunchPassCount);
-  CHECK(plan_session_cfg_preset_apply(true) == SessionCfgApply::RelaunchPreset);
-  CHECK(plan_session_cfg_preset_apply(false) == SessionCfgApply::RelaunchPreset);
-  CHECK_FALSE(session_cfg_preset_applies_live(true));
-  CHECK_FALSE(session_cfg_preset_applies_live(false));
-  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::RelaunchNr);
+  // 1,5x ↔ 2x ↔ 3x: HDMI +/- ao vivo.
+  CHECK(plan_session_cfg_apply(true, 4, 2, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_apply(true, 2, 3, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_apply(true, 3, 4, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_preset_apply(true) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_preset_apply(false) == SessionCfgApply::Live);
+  CHECK(session_cfg_preset_applies_live(true));
+  CHECK(session_cfg_preset_applies_live(false));
+  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::Live);
   CHECK(plan_session_cfg_nr_apply(true, true) == SessionCfgApply::RelaunchNr);
   CHECK(plan_session_cfg_nr_apply(false, false) == SessionCfgApply::Live);
-  CHECK_FALSE(nr_pass_count_change_applies_live(4, 2));
-  CHECK_FALSE(nr_pass_count_change_applies_live(2, 3));
+  CHECK(session_cfg_nr_applies_live(true, false));
+  CHECK_FALSE(session_cfg_nr_applies_live(true, true));
+  CHECK_FALSE(session_nr_hud_may_update(false));
+  CHECK(session_nr_hud_may_update(true));
+  CHECK(nr_confirm_result_from_log(-1) == NrConfirmPoll::Failed);
+  CHECK(nr_confirm_result_from_log(0) == NrConfirmPoll::Confirmed);
+  CHECK(nr_confirm_result_from_log(1) == NrConfirmPoll::Confirmed);
+  CHECK(nr_pass_count_change_applies_live(4, 2));
+  CHECK(nr_pass_count_change_applies_live(2, 3));
   CHECK(nr_pass_count_change_applies_live(2, 2));  // sem troca, nada a aplicar
   CHECK(nr_pass_count_change_applies_live(1, 1));
+  CHECK_FALSE(nr_pass_count_change_applies_live(1, 4));
+  CHECK(nr_pass_count_live_delta(4, 2) == 1);
+  CHECK(nr_pass_count_live_delta(2, 3) == 1);
+  CHECK(nr_pass_count_live_delta(3, 4) == -2);
+  CHECK(renodx_mp_preset_cycle_steps(0, 1) == 1);
+  CHECK(renodx_mp_preset_cycle_steps(0, 2) == 2);
+  CHECK(renodx_mp_preset_cycle_steps(2, 0) == 1);
+  CHECK(renodx_mp_preset_cycle_steps(1, 1) == 0);
   // Preset / NR / FG nao mexem em pass count nem escala.
   CHECK(plan_session_cfg_apply(true, 4, 4, 50, 50) == SessionCfgApply::Live);
   // Escala do Feed so entra no boot do processo.
@@ -3091,17 +3116,25 @@ TEST_CASE("session CFG restart resumes the session, never the lobby") {
   CHECK(c.autostart);
 }
 
-TEST_CASE("session CFG NR on/off restarts on every RenoDX motor") {
+TEST_CASE("session CFG NR on/off is live on 1x and restarts on multipass") {
   CHECK(session_cfg_nr_toggle_allowed(/*renodx=*/true, /*multipass=*/false));
   CHECK(session_cfg_nr_toggle_allowed(true, true));
   CHECK_FALSE(session_cfg_nr_toggle_allowed(false, false));
-  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::RelaunchNr);
+  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::Live);
   CHECK(plan_session_cfg_nr_apply(true, true) == SessionCfgApply::RelaunchNr);
+  CHECK(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/false));
+  CHECK_FALSE(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/true));
   const std::string on = session_notice_nr_apply(true);
   const std::string off = session_notice_nr_apply(false);
   CHECK(on.find("ON") != std::string::npos);
   CHECK(off.find("OFF") != std::string::npos);
   CHECK(on.find("reinicio") != std::string::npos);
+  const std::string live = session_notice_nr_apply_live(false);
+  CHECK(live.find("OFF") != std::string::npos);
+  CHECK(live.find("reinicio") == std::string::npos);
+  CHECK(session_notice_nr_unconfirmed().find("nao confirmou") != std::string::npos);
+  CHECK(session_notice_preset_apply_live(0, 2).find("Cinematic") != std::string::npos);
+  CHECK(session_notice_preset_apply_live(0, 2).find("reinicio") == std::string::npos);
 }
 
 TEST_CASE("session CFG changes survive the restart through settings.ini") {
@@ -3263,8 +3296,7 @@ TEST_CASE("session CFG preset persist then boot files match on every motor") {
       apply_persisted_to_config(s, back);
       CHECK(back.renodx_preset == v);
       CHECK(back.nr_pass_count == p);
-      CHECK(plan_session_cfg_preset_apply(nr_pass_count_uses_multipass_addon(p)) ==
-            SessionCfgApply::RelaunchPreset);
+      CHECK(plan_session_cfg_preset_apply(nr_pass_count_uses_multipass_addon(p)) == SessionCfgApply::Live);
 
       std::string reshade =
           std::string("AddonPath=") + renodx_addon_stack_rel(back.nr_pass_count) +

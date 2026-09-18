@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
 namespace nexuscap {
@@ -157,11 +158,46 @@ inline bool bridge_nr_delivered_advanced(uint32_t before, const Dlss5BridgeStatu
 }
 
 // Parse RenoDX log lines: "NR toggled ON via 0x124" / "NR toggled OFF via ..."
+// Multipass V6.6 OSD/log: "NR ON" / "NR OFF" (not the "NR ON/OFF pair" capture label).
 // Returns +1 ON, 0 OFF, -1 not a toggle line.
 inline int parse_reshade_nr_toggled_line(const std::string& line) {
   if (line.find("NR toggled ON") != std::string::npos) return 1;
   if (line.find("NR toggled OFF") != std::string::npos) return 0;
+  if (line.find("NR ON/OFF") != std::string::npos) return -1;
+  if (line.find("NR ON") != std::string::npos) return 1;
+  if (line.find("NR OFF") != std::string::npos) return 0;
   return -1;
+}
+
+// V6.6: "committed preset transaction %d on overlay thread"
+inline int parse_reshade_mp_preset_transaction(const std::string& line) {
+  const auto p = line.find("committed preset transaction ");
+  if (p == std::string::npos) return -1;
+  return std::atoi(line.c_str() + p + 29);
+}
+
+// V6.6: "pass-count hotkey set [RENODX-DLSS-preset1] to 2."
+inline int parse_reshade_mp_pass_count_line(const std::string& line) {
+  if (line.find("pass-count hotkey set") == std::string::npos) return -1;
+  const auto to = line.find(" to ");
+  if (to == std::string::npos) return -1;
+  return std::atoi(line.c_str() + to + 4);
+}
+
+template <typename Fn>
+inline int parse_reshade_last_int(const std::string& log_text, Fn parse_line) {
+  int last = -1;
+  size_t i = 0;
+  while (i < log_text.size()) {
+    size_t e = log_text.find('\n', i);
+    if (e == std::string::npos) e = log_text.size();
+    std::string line = log_text.substr(i, e - i);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const int v = parse_line(line);
+    if (v >= 0) last = v;
+    i = e + 1;
+  }
+  return last;
 }
 
 // Scan log text newest-first (split by newline); last matching toggle wins.
@@ -180,10 +216,7 @@ inline int parse_reshade_nr_last_toggled(const std::string& log_text) {
   return last;
 }
 
-// Measured on the multipass build: it never reads NRToggleKey (its ReShade sections
-// [RENODX-DLSS]* carry no key binding) and an injected edge produces no log line, no state
-// change and no frame-cost change — NR runs for the whole session there. Only the stable
-// build toggles by key ("NR toggled ON via 0x7C" in ReShade.log).
+// 1x: Bridge GetAsyncKeyState. Multipass: sem tecla de NR (F6 e cena).
 inline bool renodx_stack_supports_nr_hotkey(bool multipass_stack) { return !multipass_stack; }
 
 // FG HUD: only claim ON if LS process is alive; OFF only if none remain.
@@ -194,7 +227,9 @@ inline bool fg_overlay_on_confirmed(bool want_on, unsigned running_ls) {
 
 bool dlss5_bridge_pulse_nr_confirmed(uint32_t timeout_ms = 400);
 
-// Non-blocking NR confirm: pulse now, finish on later poll (keeps capture Present alive).
+enum class LiveAckKind { NrToggle, PresetCycle, PassCount };
+
+// Non-blocking confirm: pulse now, finish on later poll (keeps capture Present alive).
 struct NrConfirmPending {
   bool active = false;
   std::string exe_dir;
@@ -204,21 +239,34 @@ struct NrConfirmPending {
   double deadline_ms = 0;
   // RenoDX may boot already ON when NeuralUplift=1; first enable-pulse then lands OFF.
   int recover_pulses = 0;
+  // Preset live 1x: primeiro OFF, depois ON (ciclo de reload sem abrir o Home).
+  bool followup_enable = false;
+  // Multipass F6 / +/- : sem ACK no log → restart (ficheiros ja gravados).
+  bool relaunch_if_unconfirmed = false;
+  LiveAckKind ack_kind = LiveAckKind::NrToggle;
+  int pulses_left = 0;
+  int repeat_vk = 0;
 };
 
 enum class NrConfirmPoll { Pending, Confirmed, Failed };
+
+// Sem linha no log o HUD nao pode flipar (timeout = Failed, nao Confirmed+want).
+inline NrConfirmPoll nr_confirm_result_from_log(int logged) {
+  return logged >= 0 ? NrConfirmPoll::Confirmed : NrConfirmPoll::Failed;
+}
 
 // Read only bytes appended since log_size_before; -1 = no toggle line yet.
 int peek_reshade_nr_toggled_since(const std::string& exe_dir, std::streamoff log_size_before);
 
 NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_on, double now_ms);
 
-// Fake NRToggleKey edge. Krish: Bridge GetAsyncKeyState inject. Multipass: real VK_F13 SendInput
-// (addon has NRToggleKey but does not import GetAsyncKeyState for Bridge).
+// Fake key edge (SendInput). Multipass: F6 cena, +/- Pass Count. Nao usar para NR.
 bool inject_nr_toggle_key(int vk = kRenodxNrInjectVk);
 
-// Apply want_on: sync NeuralUplift + Bridge pulse if runtime differs.
-// Multipass: SendInput NRToggleKey instead of Bridge.
+// 1x: Bridge opcode 6. Multipass: nao pulsa (F6 e cena, nao NR).
+bool pulse_renodx_nr(const std::string& exe_dir);
+
+// Apply want_on: sync NeuralUplift + pulse if runtime differs.
 // If async_out != nullptr: pulse without blocking and fill pending (HUD updates on poll).
 // If async_out == nullptr: wait for ReShade.log line (lobby/boot; may hitch briefly).
 bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on,
@@ -229,8 +277,17 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
 bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
                                     bool* runtime_on);
 
+// Sessao: 1x cicla NR; multipass envia F6 N vezes (ACK: committed preset transaction).
+bool apply_session_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
+                                      bool* runtime_on, NrConfirmPending* async_out, double now_ms,
+                                      int from_visual = 0);
+
+// Sessao 1,5x↔2x↔3x: +/- N vezes (ACK: pass-count hotkey set). Sem Home.
+bool apply_session_nr_pass_count_live(const std::string& exe_dir, int from_pass, int to_pass,
+                                      int visual_preset, NrConfirmPending* async_out, double now_ms);
+
 // Sync Pass Count + look defaults + reload NR so RenoDX re-reads.
 bool apply_lobby_nr_pass_count_live(const std::string& exe_dir, int pass_count, bool want_nr,
-                                    bool* runtime_on, int visual_preset = 0);
+                                    bool* runtime_on, int visual_preset = 0, int from_pass = -1);
 
 }  // namespace nexuscap

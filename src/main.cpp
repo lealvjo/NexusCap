@@ -48,7 +48,7 @@ std::atomic<bool> g_toggle_fg{false};
 std::atomic<bool> g_toggle_nr{false};
 // RenoDX runtime NR — carry from lobby via cfg.nr_runtime_on (same process often keeps NR ON).
 bool g_nr_runtime_on = false;
-bool g_renodx_multipass = false;  // active stack (AddonPath) — multipass owns NR, no hotkey
+bool g_renodx_multipass = false;  // active stack (AddonPath): 1,5x/2x/3x — F6/F7, nao Bridge
 int g_nr_boot_retries = 0;
 double g_nr_toggle_last_ms = 0;  // Delete debounce (bit30 + time)
 nexuscap::NrConfirmPending g_nr_confirm{};  // async log ACK — no Present freeze
@@ -317,7 +317,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     GetModuleFileNameW(nullptr, exe_path_stack, MAX_PATH);
     g_renodx_multipass =
         renodx_stack && renodx_active_addon_is_multipass(fs::path(exe_path_stack).parent_path().string());
-    if (g_renodx_multipass) g_nr_runtime_on = true;  // multipass NR cannot be turned off
   }
   renderer.set_scale_percent(app_present_scale_percent(renodx_stack, cfg.scale_percent));
   // RenoDX: app RT native, Feed does the scaling — HUD must show the Feed resolution.
@@ -881,40 +880,84 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         bug_exc("nr_toggle", "blocked: RenoDX not loaded this session");
         session_notice.push(session_notice_nr_needs_renodx(), clock.now_ms());
       } else {
-        // Qualquer Pass Count: grava NeuralUplift e reinicia. O pulso ao vivo invertia a imagem.
         wchar_t exe_path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         const fs::path exe_dir = fs::path(exe_path).parent_path();
         const bool want_on = !g_nr_runtime_on;
-        apply_session_nr_runtime_to_config(want_on, cfg);
-        g_nr_runtime_on = want_on;
-        cfg.nr_runtime_on = want_on;
-        overlay.renodx_on = want_on;
-        info.dlss_enabled = want_on;
-        (void)sync_neural_rendering_enabled_files(exe_dir.string(), want_on, /*feed_on=*/true);
-        cfg_restart_kind = SessionCfgApply::RelaunchNr;
-        cfg_restart_pending = true;
-        cfg_restart_until = now_nr + kDlss5MotorSwapHoldSec * 1000.0;
-        session_notice.push(session_notice_nr_apply(want_on), now_nr);
-        append_log(cfg.log_dir, std::string("cfg nr restart → ") + (want_on ? "ON" : "OFF"));
-        std::printf("neural rendering %s (Delete→reinicio) — Frame Gen nao muda\n", want_on ? "ON" : "OFF");
+        const bool multipass = nr_pass_count_uses_multipass_addon(cfg.nr_pass_count);
+        const SessionCfgApply nr_plan = plan_session_cfg_nr_apply(true, multipass);
+        if (nr_plan == SessionCfgApply::RelaunchNr) {
+          apply_session_nr_runtime_to_config(want_on, cfg);
+          g_nr_runtime_on = want_on;
+          cfg.nr_runtime_on = want_on;
+          overlay.renodx_on = want_on;
+          info.dlss_enabled = want_on;
+          (void)sync_neural_rendering_enabled_files(exe_dir.string(), want_on, /*feed_on=*/true);
+          cfg_restart_kind = SessionCfgApply::RelaunchNr;
+          cfg_restart_pending = true;
+          cfg_restart_until = now_nr + kDlss5MotorSwapHoldSec * 1000.0;
+          session_notice.push(session_notice_nr_apply(want_on), now_nr);
+          append_log(cfg.log_dir, std::string("cfg nr restart → ") + (want_on ? "ON" : "OFF"));
+          std::printf("neural rendering %s (Delete→reinicio) — Frame Gen nao muda\n",
+                      want_on ? "ON" : "OFF");
+        } else {
+          // 1x: Bridge + ACK no ReShade.log. HUD so muda no confirm (senao inverte).
+          session_notice.push(session_notice_nr_apply_live(want_on), now_nr);
+          bool runtime = g_nr_runtime_on;
+          if (!apply_neural_rendering_state(exe_dir.string(), want_on, &runtime, /*feed_on=*/true,
+                                           &g_nr_confirm, now_nr)) {
+            session_notice.push(session_notice_nr_unconfirmed(), now_nr);
+            append_log(cfg.log_dir, "nr live pulse failed — HUD unchanged");
+          } else {
+            append_log(cfg.log_dir, std::string("cfg nr live pulse → ") + (want_on ? "ON" : "OFF"));
+          }
+        }
       }
     }
 
     // Finish async NR confirm without blocking Present.
     if (g_nr_confirm.active) {
+      const LiveAckKind ack_kind = g_nr_confirm.ack_kind;
       const auto polled = poll_nr_confirm_pending(g_nr_confirm, &g_nr_runtime_on, clock.now_ms());
       if (polled == NrConfirmPoll::Confirmed) {
-        overlay.renodx_on = g_nr_runtime_on;
-        cfg.nr_runtime_on = g_nr_runtime_on;
-        apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
-        info.dlss_enabled = g_nr_runtime_on;
-        append_log(cfg.log_dir, std::string("neural rendering ") + (g_nr_runtime_on ? "ON" : "OFF") +
-                                    " (log confirm)");
-        std::printf("neural rendering %s (confirm) — Frame Gen nao muda\n",
-                    g_nr_runtime_on ? "ON" : "OFF");
-        session_notice.push(g_nr_runtime_on ? session_notice_nr_on() : session_notice_nr_off(),
-                            clock.now_ms());
+        if (ack_kind == LiveAckKind::PresetCycle) {
+          overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset);
+          append_log(cfg.log_dir, std::string("preset live confirm → ") + overlay.renodx_preset);
+        } else if (ack_kind == LiveAckKind::PassCount) {
+          overlay.nr_pass_count = cfg.nr_pass_count;
+          append_log(cfg.log_dir,
+                     std::string("pass count live confirm → ") + nr_pass_count_label(cfg.nr_pass_count));
+        } else if (session_nr_hud_may_update(true)) {
+          overlay.renodx_on = g_nr_runtime_on;
+          cfg.nr_runtime_on = g_nr_runtime_on;
+          apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
+          info.dlss_enabled = g_nr_runtime_on;
+          overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset);
+          append_log(cfg.log_dir, std::string("neural rendering ") + (g_nr_runtime_on ? "ON" : "OFF") +
+                                      " (log confirm)");
+          std::printf("neural rendering %s (confirm) — Frame Gen nao muda\n",
+                      g_nr_runtime_on ? "ON" : "OFF");
+          session_notice.push(g_nr_runtime_on ? session_notice_nr_on() : session_notice_nr_off(),
+                              clock.now_ms());
+        }
+      } else if (polled == NrConfirmPoll::Failed) {
+        if (g_nr_confirm.relaunch_if_unconfirmed) {
+          cfg_restart_kind = (ack_kind == LiveAckKind::PresetCycle)
+                                 ? SessionCfgApply::RelaunchPreset
+                                 : (ack_kind == LiveAckKind::PassCount ? SessionCfgApply::RelaunchPassCount
+                                                                      : SessionCfgApply::RelaunchNr);
+          cfg_restart_pending = true;
+          cfg_restart_until = clock.now_ms() + kDlss5MotorSwapHoldSec * 1000.0;
+          session_notice.push(session_restart_notice_detail(cfg_restart_kind), clock.now_ms());
+          append_log(cfg.log_dir, "live timeout — fallback restart (no ReShade.log line)");
+        } else {
+          wchar_t exe_fail[MAX_PATH]{};
+          GetModuleFileNameW(nullptr, exe_fail, MAX_PATH);
+          (void)sync_neural_rendering_enabled_files(fs::path(exe_fail).parent_path().string(),
+                                                    g_nr_runtime_on, /*feed_on=*/true);
+          session_notice.push(session_notice_nr_unconfirmed(), clock.now_ms());
+          append_log(cfg.log_dir, "nr live timeout — HUD unchanged (no ReShade.log line)");
+        }
       }
     }
 
@@ -1166,15 +1209,35 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           ui.renodx_preset = clamp_renodx_visual_preset(cfg.renodx_preset);
         } else {
           const int preset_before = clamp_renodx_visual_preset(cfg.renodx_preset);
-          cfg.renodx_preset = clamp_renodx_visual_preset(ui.renodx_preset);
-          (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
-          (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset);
-          cfg_restart_kind = SessionCfgApply::RelaunchPreset;
-          cfg_restart_pending = true;
-          cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
-          session_notice.push(session_notice_preset_apply(preset_before, cfg.renodx_preset), now);
-          append_log(cfg.log_dir, std::string("cfg preset restart → ") +
-                                      renodx_visual_preset_name(cfg.renodx_preset));
+          const int preset_after = clamp_renodx_visual_preset(ui.renodx_preset);
+          const bool multipass = nr_pass_count_uses_multipass_addon(cfg.nr_pass_count);
+          if (plan_session_cfg_preset_apply(multipass) == SessionCfgApply::Live) {
+            cfg.renodx_preset = preset_after;
+            (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
+            bool runtime = g_nr_runtime_on;
+            const bool want = want_neural_rendering(true, cfg.neural_rendering || g_nr_runtime_on);
+            if (!apply_session_renodx_preset_live(exe_dir_cfg, cfg.renodx_preset, want, &runtime,
+                                                  &g_nr_confirm, now, preset_before)) {
+              cfg.renodx_preset = preset_before;
+              ui.renodx_preset = preset_before;
+              session_notice.push(session_notice_nr_unconfirmed(), now);
+              append_log(cfg.log_dir, "cfg preset live failed — radio reverted");
+            } else {
+              session_notice.push(session_notice_preset_apply_live(preset_before, cfg.renodx_preset), now);
+              append_log(cfg.log_dir, std::string("cfg preset live → ") +
+                                          renodx_visual_preset_name(cfg.renodx_preset));
+            }
+          } else {
+            cfg.renodx_preset = preset_after;
+            (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
+            (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset);
+            cfg_restart_kind = SessionCfgApply::RelaunchPreset;
+            cfg_restart_pending = true;
+            cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
+            session_notice.push(session_notice_preset_apply(preset_before, cfg.renodx_preset), now);
+            append_log(cfg.log_dir, std::string("cfg preset restart → ") +
+                                        renodx_visual_preset_name(cfg.renodx_preset));
+          }
         }
       }
 
@@ -1209,14 +1272,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           append_log(cfg.log_dir, std::string(motor ? "cfg motor swap → " : "cfg pass count restart → ") +
                                       nr_pass_count_label(cfg.nr_pass_count));
         } else {
-          cfg.nr_pass_count = clamp_nr_pass_count(ui.nr_pass_count);
-          const bool want = want_neural_rendering(true, cfg.neural_rendering);
-          apply_lobby_nr_pass_count_live(exe_dir_cfg, cfg.nr_pass_count, want, &g_nr_runtime_on,
-                                         cfg.renodx_preset);
-          cfg.nr_runtime_on = g_nr_runtime_on;
-          overlay.nr_pass_count = cfg.nr_pass_count;
-          session_notice.push(std::string("Pass Count: ") + nr_pass_count_label(cfg.nr_pass_count), now);
-          append_log(cfg.log_dir, "cfg pass count → " + std::string(nr_pass_count_label(cfg.nr_pass_count)));
+          const int before = act.pass_count_before;
+          const int after = clamp_nr_pass_count(ui.nr_pass_count);
+          cfg.nr_pass_count = after;
+          if (!apply_session_nr_pass_count_live(exe_dir_cfg, before, after, cfg.renodx_preset, &g_nr_confirm,
+                                                now)) {
+            cfg.nr_pass_count = before;
+            ui.nr_pass_count = before;
+            session_notice.push(session_notice_nr_unconfirmed(), now);
+            append_log(cfg.log_dir, "cfg pass count live failed — radio reverted");
+          } else {
+            session_notice.push(session_notice_nr_pass_count_apply_live(before, after), now);
+            append_log(cfg.log_dir, std::string("cfg pass count live → ") + nr_pass_count_label(after));
+          }
         }
       } else if (act.pass_count_changed) {
         ui.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);

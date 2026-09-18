@@ -1531,8 +1531,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                             renodx_nr_preset_index(settings.renodx_preset),
                             renodx_feed_model_preset(settings.renodx_preset));
         ImGui::TextDisabled(nr_pass_count_uses_multipass_addon(settings.nr_pass_count)
-                                ? "  no multipass o Iniciar aplica o preset (o addon so le no boot)"
-                                : "  no 1x o preview muda na hora; na captura o preset reinicia");
+                                ? "  captura: cena F6 ao vivo; NR reinicia; 1,5x/2x/3x +/- "
+                                : "  no 1x o preview e a captura mudam na hora (Bridge + log)");
         ImGui::TextDisabled("Mesmo look no Iniciar — janela ou tela cheia.");
 
         ImGui::Spacing();
@@ -1553,7 +1553,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           const bool writable = prepare_renodx_runtime_dirs(exe_dir);
-          // Multipass não relê o PassCount no processo vivo, então 1,5x↔2x↔3x também reinicia.
+          // Multipass nao relê o PassCount no init; 1,5x↔2x↔3x usa +/- ao vivo.
           const bool need_relaunch = !nr_pass_count_change_applies_live(pass_before, settings.nr_pass_count);
           if (!writable) {
             push_lobby_toast(renodx_write_denied_notice());
@@ -1578,7 +1578,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           } else {
             // 1,5x ↔ 2x ↔ 3x: same multipass addon — INI + NR reload only.
             apply_lobby_nr_pass_count_live(exe_dir, settings.nr_pass_count, want, &nr_runtime_on,
-                                           settings.renodx_preset);
+                                           settings.renodx_preset, pass_before);
             cfg.nr_runtime_on = nr_runtime_on;
             push_lobby_toast(std::string("Pass Count: ") + nr_pass_count_label(settings.nr_pass_count));
             if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
@@ -1589,7 +1589,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextDisabled("1,5x: mesma res e ~60 fps que o 1x (recomendado).");
         ImGui::TextDisabled("2x/3x: mais pesados, pouco ganho, look mais processado.");
         ImGui::TextDisabled("Escala do Feed e manual se quiseres menos carga.");
-        ImGui::TextDisabled("Delete ou Ctrl+M liga/desliga o NR na captura (reinicia e volta).");
+        ImGui::TextDisabled("NR: 1x ao vivo, outros x reiniciam. Cena F6. 1,5x/2x/3x: +/- ao vivo.");
         ImGui::EndDisabled();
 
         ImGui::Separator();

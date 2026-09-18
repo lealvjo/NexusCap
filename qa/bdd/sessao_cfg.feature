@@ -39,18 +39,33 @@ Funcionalidade: CFG na captura (Ctrl+M)
     E o processo nao reinicia
 
   @critico @hdmi
-  Esquema do Cenario: NR on/off em qualquer Pass Count reinicia e volta na sessao
+  Esquema do Cenario: NR on/off no 1x e ao vivo (sem restart)
+    Dado que o Pass Count atual e 1x
+    E o Neural Rendering esta <estado_inicial>
+    Quando eu ligo ou desligo Neural Rendering ON no CFG (ou aperto Delete)
+    Entao o processo nao reinicia
+    E o ReShade.log ganha uma linha NR toggled <log>
+    E o overlay Home nao abre
+    E a imagem e o check do NR ficam iguais a <estado_final>
+    E se o log nao confirmar o check volta ao <estado_inicial>
+
+    Exemplos:
+      | estado_inicial | estado_final | log |
+      | ON             | OFF          | OFF |
+      | OFF            | ON           | ON  |
+
+  @critico @hdmi
+  Esquema do Cenario: NR on/off no multipass reinicia na hora
     Dado que o Pass Count atual e <modo>
     E o Neural Rendering esta <estado_inicial>
     Quando eu ligo ou desligo Neural Rendering ON no CFG (ou aperto Delete)
     Entao aparece o aviso Reiniciando o NexusCap cerca de 1,1 s
     E o processo volta para a sessao com --autostart (nunca para o lobby)
+    E o overlay Home nao abre
     E a imagem e o check do NR ficam iguais a <estado_final>
 
     Exemplos:
       | modo | estado_inicial | estado_final |
-      | 1x   | ON             | OFF          |
-      | 1x   | OFF            | ON           |
       | 1,5x | ON             | OFF          |
       | 1,5x | OFF            | ON           |
       | 2x   | ON             | OFF          |
@@ -59,20 +74,37 @@ Funcionalidade: CFG na captura (Ctrl+M)
       | 3x   | OFF            | ON           |
 
   @critico @hdmi
-  Esquema do Cenario: Preset visual grava em todas as secoes e muda a imagem
+  Esquema do Cenario: Preset visual no 1x e ao vivo
+    Dado que o Pass Count atual e 1x
+    E o preset visual atual e Default
+    Quando eu escolho <cena> no CFG da sessao
+    Entao o app nao reinicia
+    E a imagem fica diferente de Default (Cinema vs Default e o minimo)
+    E ReShade.ini na secao [RenoDX.DLSS5] tem NRPreset e NRStyle da <cena>
+    E o dlss5-feed.cfg tem preset= da <cena>
+    E o overlay Home nao abre
+
+    Exemplos:
+      | cena       |
+      | Natural    |
+      | Cinematic  |
+
+  @critico @hdmi
+  Esquema do Cenario: Preset visual no multipass ao vivo (F6)
     Dado que o Pass Count atual e <modo>
     E o preset visual atual e Default
     Quando eu escolho <cena> no CFG da sessao
-    Entao o app reinicia e volta para a sessao
+    Entao o overlay Home nao abre
+    E o ReShade.log ganha committed preset transaction
+    E o app nao reinicia
     E a imagem fica diferente de Default (Cinema vs Default e o minimo)
     E ReShade.ini na secao [RenoDX.DLSS5] tem NRPreset e NRStyle da <cena>
-    E se <modo> for 1,5x ou 2x ou 3x o DirectNeuralRenderingStyle tambem bate
+    E o DirectNeuralRenderingStyle tambem bate
+    E o [RenoDXNeuralResolution] tem PresetCycleKey=117
     E o dlss5-feed.cfg tem preset= da <cena>
 
     Exemplos:
       | modo | cena       |
-      | 1x   | Natural    |
-      | 1x   | Cinematic  |
       | 1,5x | Natural    |
       | 1,5x | Cinematic  |
       | 2x   | Natural    |
@@ -81,22 +113,34 @@ Funcionalidade: CFG na captura (Ctrl+M)
       | 3x   | Cinematic  |
 
   @critico @hdmi
-  Esquema do Cenario: Trocar Pass Count reinicia e volta na sessao
+  Esquema do Cenario: Trocar 1x com outro x reinicia o motor
     Dado que o Pass Count atual e <de>
     Quando eu escolho <para> no CFG da sessao
-    Entao aparece o aviso de motor ou de Pass Count
+    Entao aparece o aviso de motor
     E o processo volta para a sessao (nao para o lobby)
     E o HUD mostra <para>
-    E o AddonPath e o DirectNeuralRenderingPassCount batem com <para>
+    E o AddonPath bate com <para>
 
     Exemplos:
       | de   | para |
       | 1x   | 1,5x |
-      | 1,5x | 2x   |
-      | 2x   | 3x   |
       | 3x   | 1x   |
       | 1x   | 2x   |
       | 1,5x | 1x   |
+
+  @critico @hdmi
+  Esquema do Cenario: 1,5x 2x 3x ao vivo com mais e menos
+    Dado que o Pass Count atual e <de>
+    Quando eu escolho <para> no CFG da sessao
+    Entao o overlay Home nao abre
+    E o ReShade.log ganha pass-count hotkey set
+    E o processo nao reinicia
+    E o HUD mostra <para>
+
+    Exemplos:
+      | de   | para |
+      | 1,5x | 2x   |
+      | 2x   | 3x   |
 
   @importante @hdmi
   Cenario: Frame Gen no CFG da sessao entra ao vivo

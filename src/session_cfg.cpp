@@ -191,10 +191,13 @@ void SessionCfgOverlay::draw_panel() {
     if (!state.renodx_stack) {
       ImGui::TextColored(kWarn, "Sem RenoDX nesta sessao - marque RenoDX no lobby.");
     } else {
-      ImGui::TextDisabled(state.nr_busy ? "Aplicando..." : "Delete ou este check reinicia e volta para a sessao.");
+      ImGui::TextDisabled(state.nr_busy ? "Aplicando..."
+                                         : (state.multipass
+                                                ? "Delete ou este check reinicia e volta para a sessao."
+                                                : "Delete ou este check ao vivo — RenoDX confirma no log."));
     }
 
-    ImGui::BeginDisabled(!state.renodx_stack);
+    ImGui::BeginDisabled(!state.renodx_stack || state.nr_busy);
     ImGui::Separator();
     ImGui::TextUnformatted("Preset visual");
     const int preset_before = clamp_renodx_visual_preset(state.renodx_preset);
@@ -206,7 +209,7 @@ void SessionCfgOverlay::draw_panel() {
     if (ImGui::RadioButton("Cinematic", preset == 2)) preset = 2;
     state.renodx_preset = clamp_renodx_visual_preset(preset);
     if (state.renodx_preset != preset_before) actions_.preset_changed = true;
-    ImGui::TextColored(kWarn, "Trocar o preset reinicia o app e volta para a sessao.");
+    ImGui::TextDisabled("Cena ao vivo (F6, sem overlay Home).");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Pass Count");
@@ -226,8 +229,7 @@ void SessionCfgOverlay::draw_panel() {
     }
     ImGui::TextDisabled("1,5x: mesma res e ~60 fps que o 1x (recomendado).");
     ImGui::TextDisabled("2x/3x: mais pesados, pouco ganho, look mais processado.");
-    // O addon só lê o PassCount no init: qualquer troca aqui passa por processo novo.
-    ImGui::TextColored(kWarn, "Trocar o Pass Count reinicia o app e volta para a sessao.");
+    ImGui::TextDisabled("1,5x / 2x / 3x ao vivo (+/-). Trocar para 1x (ou do 1x) reinicia.");
     ImGui::EndDisabled();
 
     ImGui::Separator();

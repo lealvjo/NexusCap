@@ -1,6 +1,6 @@
 # BDD NexusCap (ponta a ponta)
 
-Cenarios Gherkin em portugues (release **4.0.0**). Correr **na mao** no HDMI; o `ctest` so cobre o que esta marcado `@auto`.
+Cenarios Gherkin em portugues (release **3.1.3**). Correr **na mao** no HDMI; o `ctest` so cobre o que esta marcado `@auto`.
 
 `run_e2e.ps1` e um atalho HDMI (F12, Ctrl+M, Pass Count, FG). Nao substitui olhar Cinema vs Default no ecran.
 
@@ -28,7 +28,7 @@ So publica se todos os `@critico` dessa volta estiverem OK.
 | Onde | Ficheiro | NR / cena / Pass Count |
 |------|----------|-------------------------|
 | Lobby (CFG / F12) | `lobby_cfg.feature` | preview ao vivo; Pass Count pode reiniciar o **app no lobby** |
-| Captura (Ctrl+M) | `sessao_cfg.feature` | 1x NR/cena ao vivo; cena F6 e 1,5x/2x/3x +/- ao vivo; NR noutros x e escala **reiniciam** |
+| Captura (Ctrl+M) | `sessao_cfg.feature` | grava e **reinicia a sessao** (`--autostart`) |
 
 ## Selftests que nao substituem HDMI
 

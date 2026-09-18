@@ -338,23 +338,17 @@ enum class SessionCfgApply {
   RelaunchNr,
 };
 
-// Cena: 1x Bridge+ciclo NR; multipass F6 (HDMI: committed preset transaction). Sem Home.
-inline bool session_cfg_preset_applies_live(bool /*multipass_stack*/) { return true; }
+// Preset e NR no 1x tambem reiniciam: o pulso OFF→ON invertia a imagem vs a UI.
+inline bool session_cfg_preset_applies_live(bool /*multipass_stack*/) { return false; }
 
-inline SessionCfgApply plan_session_cfg_preset_apply(bool multipass_stack) {
-  return session_cfg_preset_applies_live(multipass_stack) ? SessionCfgApply::Live
-                                                         : SessionCfgApply::RelaunchPreset;
-}
-
-// NR ao vivo so no 1x. Multipass: HDMI nao achou tecla de toggle — reinicio imediato.
-inline bool session_cfg_nr_applies_live(bool renodx_stack, bool multipass_stack) {
-  return renodx_stack && !multipass_stack;
+inline SessionCfgApply plan_session_cfg_preset_apply(bool /*multipass_stack*/) {
+  return SessionCfgApply::RelaunchPreset;
 }
 
 inline SessionCfgApply plan_session_cfg_apply(bool renodx_stack, int pass_before, int pass_after,
                                               int scale_loaded, int scale_after) {
   if (nr_pass_count_change_needs_relaunch(pass_before, pass_after)) return SessionCfgApply::RelaunchMotor;
-  // 1,5x↔2x↔3x: +/- do V6.6. Troca de motor (1x) ja saiu acima.
+  // Mesmo motor, mas o multipass não relê o PassCount sem processo novo.
   if (!nr_pass_count_change_applies_live(pass_before, pass_after)) {
     return SessionCfgApply::RelaunchPassCount;
   }
@@ -376,12 +370,8 @@ inline bool session_cfg_nr_toggle_allowed(bool renodx_stack, bool /*multipass_st
 
 inline SessionCfgApply plan_session_cfg_nr_apply(bool renodx_stack, bool multipass_stack) {
   if (!session_cfg_nr_toggle_allowed(renodx_stack, multipass_stack)) return SessionCfgApply::Live;
-  if (session_cfg_nr_applies_live(renodx_stack, multipass_stack)) return SessionCfgApply::Live;
   return SessionCfgApply::RelaunchNr;
 }
-
-// HUD / check so mudam quando o ReShade.log escreveu NR toggled ON/OFF.
-inline bool session_nr_hud_may_update(bool log_line_seen) { return log_line_seen; }
 
 // Aviso de reinício: sessão, teardown e boot do processo novo mostram o mesmo texto.
 inline std::string session_restart_notice_title() { return "Reiniciando o NexusCap"; }
@@ -460,26 +450,12 @@ inline std::string session_notice_nr_pass_count_apply(int from_pass, int to_pass
   return std::string("Aplicando Pass Count — ") + nr_pass_count_label(from_pass) + " → " +
          nr_pass_count_label(to_pass) + " (reinicio)";
 }
-inline std::string session_notice_nr_pass_count_apply_live(int from_pass, int to_pass) {
-  return std::string("Aplicando Pass Count — ") + nr_pass_count_label(from_pass) + " → " +
-         nr_pass_count_label(to_pass);
-}
 inline std::string session_notice_preset_apply(int from_preset, int to_preset) {
   return std::string("Aplicando preset — ") + renodx_visual_preset_name(from_preset) + " → " +
          renodx_visual_preset_name(to_preset) + " (reinicio)";
 }
 inline std::string session_notice_nr_apply(bool want_on) {
   return std::string("Aplicando Neural Rendering — ") + (want_on ? "ON" : "OFF") + " (reinicio)";
-}
-inline std::string session_notice_nr_apply_live(bool want_on) {
-  return std::string("Aplicando Neural Rendering — ") + (want_on ? "ON" : "OFF");
-}
-inline std::string session_notice_nr_unconfirmed() {
-  return "Neural Rendering — RenoDX nao confirmou";
-}
-inline std::string session_notice_preset_apply_live(int from_preset, int to_preset) {
-  return std::string("Aplicando preset — ") + renodx_visual_preset_name(from_preset) + " → " +
-         renodx_visual_preset_name(to_preset);
 }
 inline std::string session_notice_nr_hotkey_unavailable(int pass_count) {
   return std::string("Neural Rendering sempre ON em ") + nr_pass_count_label(pass_count) +

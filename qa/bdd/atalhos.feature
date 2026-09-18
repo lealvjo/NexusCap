@@ -15,7 +15,7 @@ Funcionalidade: Atalhos
       | tecla        | efeito                                      |
       | Esc          | volta ao lobby (CFG fechado)                |
       | Ctrl+Espaco  | mostra ou esconde o overlay HUD             |
-      | Delete       | liga ou desliga NR (1x ao vivo; 1,5x/2x/3x reinicio) |
+      | Delete       | liga ou desliga NR e reinicia a sessao      |
       | Page Down    | liga ou desliga Frame Gen                   |
       | Page Up      | cicla Frame Gen x2 / x3 / x4                |
       | Home         | overlay / presets do RenoDX                 |

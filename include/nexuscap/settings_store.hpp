@@ -149,26 +149,15 @@ inline bool nr_pass_count_change_needs_relaunch(int before, int after) {
   return nr_pass_count_uses_multipass_addon(before) != nr_pass_count_uses_multipass_addon(after);
 }
 
-// 1,5x↔2x↔3x: HDMI, +/- muda DirectNeuralRenderingPassCount no processo (log: pass-count hotkey).
-// 1x ↔ multipass e outro motor: false (RelaunchMotor ja cobre).
+// O addon multipass lê DirectNeuralRenderingPassCount só no init e não aceita o ciclo OFF→ON
+// do NR (ReShade.log: "nao importa USER32!GetAsyncKeyState ... alternancia do NR indisponivel").
+// Medido: com o ini já em 3 o runtime seguia em "NR PASS TEST 1: passes=1". Logo 1,5x↔2x↔3x
+// também precisa de processo novo — só escrever o ini não muda nada na imagem.
 inline bool nr_pass_count_change_applies_live(int before, int after) {
   const int a = clamp_nr_pass_count(before);
   const int b = clamp_nr_pass_count(after);
   if (a == b) return true;
-  return nr_pass_count_uses_multipass_addon(a) && nr_pass_count_uses_multipass_addon(b);
-}
-
-inline int nr_pass_count_live_delta(int before, int after) {
-  return nr_reshade_pass_count(after) - nr_reshade_pass_count(before);
-}
-
-// V6.6 LastEnabledPreset e 1/2/3 = Default/Natural/Cinematic.
-inline int renodx_mp_last_enabled_preset(int visual) { return clamp_renodx_visual_preset(visual) + 1; }
-
-inline int renodx_mp_preset_cycle_steps(int from_visual, int to_visual) {
-  const int a = renodx_mp_last_enabled_preset(from_visual);
-  const int b = renodx_mp_last_enabled_preset(to_visual);
-  return (b - a + 3) % 3;
+  return !nr_pass_count_uses_multipass_addon(a) && !nr_pass_count_uses_multipass_addon(b);
 }
 
 enum class RenodxAddonSyncResult {
@@ -624,63 +613,6 @@ inline std::string sanitize_multipass_home_windows(std::string text) {
   return text;
 }
 
-// HDMI: F6 cicla cena (nao NR). +/- muda Pass Count. NR toggle nao existe neste binario.
-inline constexpr int kRenodxMpPresetCycleVk = 0x75;  // VK_F6
-inline constexpr int kRenodxMpPassIncVk = 0xBB;      // VK_OEM_PLUS
-inline constexpr int kRenodxMpPassDecVk = 0xBD;      // VK_OEM_MINUS
-inline constexpr const char* kRenodxNeuralResolutionSection = "RenoDXNeuralResolution";
-
-inline int parse_keyed_int_in_section(const std::string& text, const char* section, const std::string& key,
-                                      int fallback) {
-  const auto start = find_ini_section_pos(text, section);
-  if (start == std::string::npos) return fallback;
-  const auto hdr_nl = text.find('\n', start);
-  const auto body_start = (hdr_nl == std::string::npos) ? text.size() : hdr_nl + 1;
-  const auto body_end = ini_section_body_end(text, start);
-  std::size_t pos = body_start;
-  while (pos < body_end) {
-    const auto found = text.find(key, pos);
-    if (found == std::string::npos || found >= body_end) break;
-    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
-    if (!at_line_start) {
-      pos = found + key.size();
-      continue;
-    }
-    const auto num_start = found + key.size();
-    const auto end = text.find_first_of("\r\n", num_start);
-    const std::string num =
-        text.substr(num_start, end == std::string::npos ? std::string::npos : end - num_start);
-    return std::atoi(num.c_str());
-  }
-  return fallback;
-}
-
-inline std::string ensure_ini_section(std::string text, const char* section) {
-  if (find_ini_section_pos(text, section) != std::string::npos) return text;
-  if (!text.empty() && text.back() != '\n') text.push_back('\n');
-  text += "[";
-  text += section;
-  text += "]\n";
-  return text;
-}
-
-inline std::string apply_renodx_neural_resolution_hotkeys(std::string text, int visual_preset = 0) {
-  text = ensure_ini_section(std::move(text), kRenodxNeuralResolutionSection);
-  text = upsert_keyed_int_in_section(std::move(text), kRenodxNeuralResolutionSection, "NRToggleKey=", 0);
-  text = upsert_keyed_int_in_section(std::move(text), kRenodxNeuralResolutionSection, "PresetCycleKey=",
-                                    kRenodxMpPresetCycleVk);
-  text = upsert_keyed_int_in_section(std::move(text), kRenodxNeuralResolutionSection, "PassCountIncreaseKey=",
-                                    kRenodxMpPassIncVk);
-  text = upsert_keyed_int_in_section(std::move(text), kRenodxNeuralResolutionSection, "PassCountDecreaseKey=",
-                                    kRenodxMpPassDecVk);
-  return upsert_keyed_int_in_section(std::move(text), kRenodxNeuralResolutionSection, "LastEnabledPreset=",
-                                    renodx_mp_last_enabled_preset(visual_preset));
-}
-
-inline int parse_renodx_mp_preset_cycle_key(const std::string& text, int fallback = kRenodxMpPresetCycleVk) {
-  return parse_keyed_int_in_section(text, kRenodxNeuralResolutionSection, "PresetCycleKey=", fallback);
-}
-
 // Align DirectNeuralRendering* keys (Pass Count 2/3/4=1.5x).
 inline std::string apply_reshade_multipass_look_defaults(std::string text, int pass_count,
                                                          int visual_preset = 0) {
@@ -711,9 +643,8 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = apply_keyed_int(std::move(text), "NRSkinStructure=", -1);
   text = apply_keyed_int(std::move(text), "NRUICorrection=", 1);
   text = apply_reshade_visual_look_keys(std::move(text), visual_preset);
-  // Legacy [RenoDX.DLSS5] key (unused by V6.6). Real binds live in [RenoDXNeuralResolution].
+  // Multipass: Delete is the real NRToggleKey (Bridge cannot inject GetAsyncKeyState).
   text = apply_keyed_int(std::move(text), "NRToggleKey=", 0x2E);
-  text = apply_renodx_neural_resolution_hotkeys(std::move(text), visual_preset);
   text = sanitize_multipass_home_windows(std::move(text));
   return text;
 }

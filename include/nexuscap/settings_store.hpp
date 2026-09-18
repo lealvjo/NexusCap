@@ -27,6 +27,7 @@ struct SessionUiFlags {
   bool advanced_metrics = false;
   // Steam Deck-style: one horizontal top bar; turns off compact/advanced multi-line HUD.
   bool mini_overlay = false;
+  bool overlay_no_bg = false;  // mini overlay sem placa preta (só texto no HDMI)
   bool hw_info = false;  // painel CPU(+C) / GPU(+C) / RAM / VRAM / PWR (abaixo de métricas)
   bool fullscreen = true;
   bool hide_panel_on_capture = true;
@@ -34,8 +35,9 @@ struct SessionUiFlags {
   bool preview_mute = false;  // lobby preview audio mute (icon on preview)
   bool bug_report = false;    // session → report/bug_TIMESTAMP.txt
   bool perf_report = false;   // session → performance/performance_TIMESTAMP.txt
-  // Live overlay. Console: ps5|xbox_ss|switch2.
+  // Live overlay strip. Console branding is public (all overlays).
   bool live_overlay = false;
+  bool overlay_console = false;  // optional: show console name on overlays
   std::string live_console = "ps5";
 };
 
@@ -55,7 +57,7 @@ struct PersistedSettings {
   // Neural Rendering on/off (Delete na captura). Independente do FG; persiste entre sessões.
   bool neural_rendering = true;
   // Gear: Default / Natural / Cinematic (RenoDX Home overlay names).
-  int renodx_preset = 0;  // RenodxVisualPreset
+  int renodx_preset = 0;  // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
   // Pass Count (DirectNeuralRenderingPassCount). 1=stable; 2/3=multipass; heavier GPU.
   int nr_pass_count = 1;
   // Origem (OBS-style). Defaults = validated HDMI path.
@@ -111,6 +113,14 @@ inline const char* nr_pass_count_label(int v) {
     default:
       return "1x estavel";
   }
+}
+
+// Hint under the Pass Count radios (lobby F12 e Ctrl+M).
+inline const char* nr_pass_count_15x_hint() {
+  return "1,5x exclusivo NexusCap: rede neural perto do 2x, sem perder desempenho.";
+}
+inline const char* nr_pass_count_23x_hint() {
+  return "2x/3x: mais pesados, pouco ganho, look mais processado.";
 }
 
 // Short HUD tag: "1x" / "1.5x" / "2x" / "3x".
@@ -178,8 +188,21 @@ inline const char* renodx_addon_stack_rel(int pass_count) {
 // Spawn a new NexusCap.exe then return true (caller should ExitProcess).
 bool relaunch_current_process(const char* extra_args = nullptr);
 
-inline const char* renodx_visual_preset_name(int v) {
-  switch (clamp_renodx_visual_preset(v)) {
+// 1x (Krish / addons-stable): Default / Natural / Cinematic.
+// 1.5x/2x/3x (addons-multipass): Model A / B / C — outro motor, outros knobs.
+inline const char* renodx_visual_preset_name(int v, int pass_count = 1) {
+  v = clamp_renodx_visual_preset(v);
+  if (nr_pass_count_uses_multipass_addon(pass_count)) {
+    switch (v) {
+      case 1:
+        return "Model B";
+      case 2:
+        return "Model C";
+      default:
+        return "Model A";
+    }
+  }
+  switch (v) {
     case 1:
       return "Natural";
     case 2:
@@ -189,15 +212,25 @@ inline const char* renodx_visual_preset_name(int v) {
   }
 }
 
-// RenoDX overlay "NR Preset": Natural=0, Cinematic=1.
+// RenoDX overlay "NR Preset" (Krish): Natural=0, Cinematic=1. Multipass keeps this dual-read.
 inline int renodx_nr_preset_index(int visual) {
   return clamp_renodx_visual_preset(visual) == static_cast<int>(RenodxVisualPreset::Cinematic) ? 1 : 0;
 }
 
-// feed.cfg preset= maps overlay model: Default=0, Preset#1=1, Preset#2=2, Preset#3=3.
-// Natural uses Preset#1 so Default/Natural/Cinematic each write a distinct combo (visible look).
-inline int renodx_feed_model_preset(int visual) {
-  switch (clamp_renodx_visual_preset(visual)) {
+// Multipass DirectNeuralRenderingStyle is the model slot (A=0, B=1, C=2).
+// 1x has no Style knob — Krish uses NRPreset/NRStyle 0/1 instead.
+inline int renodx_direct_style_index(int visual, int pass_count = 1) {
+  visual = clamp_renodx_visual_preset(visual);
+  if (nr_pass_count_uses_multipass_addon(pass_count)) return visual;
+  return renodx_nr_preset_index(visual);
+}
+
+// feed.cfg preset=: 1x Default=0, Natural=Preset#1, Cinematic=0+NR cinema.
+// Multipass writes the model slot 0/1/2 so A/B/C each hit a distinct Feed model.
+inline int renodx_feed_model_preset(int visual, int pass_count = 1) {
+  visual = clamp_renodx_visual_preset(visual);
+  if (nr_pass_count_uses_multipass_addon(pass_count)) return visual;
+  switch (visual) {
     case static_cast<int>(RenodxVisualPreset::Natural):
       return 1;
     case static_cast<int>(RenodxVisualPreset::Cinematic):
@@ -208,12 +241,13 @@ inline int renodx_feed_model_preset(int visual) {
 }
 
 // True when two gear presets must produce different on-disk RenoDX config (preview/session).
-inline bool renodx_visual_presets_differ_on_disk(int a, int b) {
+inline bool renodx_visual_presets_differ_on_disk(int a, int b, int pass_count = 1) {
   a = clamp_renodx_visual_preset(a);
   b = clamp_renodx_visual_preset(b);
   if (a == b) return false;
   return renodx_nr_preset_index(a) != renodx_nr_preset_index(b) ||
-         renodx_feed_model_preset(a) != renodx_feed_model_preset(b);
+         renodx_feed_model_preset(a, pass_count) != renodx_feed_model_preset(b, pass_count) ||
+         renodx_direct_style_index(a, pass_count) != renodx_direct_style_index(b, pass_count);
 }
 
 // CPU look-alike for Default/Natural/Cinematic on the lobby preview band (ImGui texture).
@@ -522,9 +556,9 @@ inline int parse_feed_work_resolution(const std::string& text, int fallback = 10
   return clamp_scale_percent(parse_keyed_int(text, "work_resolution=", fallback));
 }
 
-inline std::string apply_feed_model_preset(std::string text, int visual_preset) {
-  text = apply_keyed_int(std::move(text), "preset=", renodx_feed_model_preset(visual_preset));
-  // Feed caches preset= like work_resolution — force rebuild so Default/Natural/Cinema entram.
+inline std::string apply_feed_model_preset(std::string text, int visual_preset, int pass_count = 1) {
+  text = apply_keyed_int(std::move(text), "preset=", renodx_feed_model_preset(visual_preset, pass_count));
+  // Feed caches preset= like work_resolution — force rebuild so the look entra.
   return apply_keyed_int(std::move(text), "rebuild=", 1);
 }
 
@@ -541,17 +575,19 @@ inline std::string apply_reshade_nr_preset(std::string text, int visual_preset) 
 
 // Preset visual: NRPreset/NRStyle in every section. Multipass also writes Style
 // into the saved preset AND the live addon section (first-only left cinema stale).
+// Style on that motor is Model A/B/C = 0/1/2, not the Krish NR 0/1 knob.
 inline std::string apply_reshade_visual_look_keys(std::string text, int visual_preset) {
   const int nr = renodx_nr_preset_index(visual_preset);
   text = apply_reshade_nr_preset(std::move(text), visual_preset);
   text = apply_keyed_int_all(std::move(text), "NRStyle=", nr);
   text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRStyle=", nr);
   if (reshade_addon_path_is_multipass(text)) {
-    text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingStyle=", nr);
+    const int style = clamp_renodx_visual_preset(visual_preset);
+    text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingStyle=", style);
     text = upsert_keyed_int_in_section(std::move(text), "RENODX-DLSS-preset1",
-                                      "DirectNeuralRenderingStyle=", nr);
+                                      "DirectNeuralRenderingStyle=", style);
     text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5",
-                                      "DirectNeuralRenderingStyle=", nr);
+                                      "DirectNeuralRenderingStyle=", style);
   }
   return text;
 }
@@ -631,7 +667,7 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalToneStrength=", 1);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingSkinStructureStrength=", 1);
   text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingStyle=",
-                            renodx_nr_preset_index(visual_preset));
+                            clamp_renodx_visual_preset(visual_preset));
   text = apply_reshade_nr_pass_count(std::move(text), pass_count);
   // Keep legacy NR* block in sync for tools / dual-read / Krish.
   text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", 500);
@@ -677,15 +713,19 @@ inline std::string apply_reshade_look_for_current_stack(std::string text, int vi
 }
 
 // After gear Salvar / session start: feed + ReShade must match settings.renodx_preset.
+// pass_count < 0: infer motor from AddonPath (tests without UI pass count).
 inline bool renodx_files_reflect_visual_preset(const std::string& feed_text, const std::string& reshade_text,
-                                               int visual_preset) {
+                                               int visual_preset, int pass_count = -1) {
   const int v = clamp_renodx_visual_preset(visual_preset);
   const int nr = renodx_nr_preset_index(v);
-  if (parse_feed_model_preset(feed_text, -1) != renodx_feed_model_preset(v)) return false;
+  const bool mp = pass_count >= 0 ? nr_pass_count_uses_multipass_addon(pass_count)
+                                  : reshade_addon_path_is_multipass(reshade_text);
+  const int p = pass_count >= 0 ? clamp_nr_pass_count(pass_count) : (mp ? 2 : 1);
+  if (parse_feed_model_preset(feed_text, -1) != renodx_feed_model_preset(v, p)) return false;
   if (!every_keyed_int_is(reshade_text, "NRPreset=", nr)) return false;
   if (!every_keyed_int_is(reshade_text, "NRStyle=", nr)) return false;
-  if (reshade_addon_path_is_multipass(reshade_text) &&
-      !every_keyed_int_is(reshade_text, "DirectNeuralRenderingStyle=", nr)) {
+  if (mp && !every_keyed_int_is(reshade_text, "DirectNeuralRenderingStyle=",
+                               renodx_direct_style_index(v, p))) {
     return false;
   }
   return true;
@@ -741,8 +781,9 @@ inline bool renodx_mgf_chain_order_ok(const std::string& mgf_ini_or_script) {
   return renodx_mgf_technique_chain_ok(techniques) && renodx_mgf_technique_chain_ok(sorting);
 }
 
-inline std::string apply_renodx_visual_preset_to_feed(std::string feed, int visual_preset) {
-  return apply_feed_model_preset(std::move(feed), visual_preset);
+inline std::string apply_renodx_visual_preset_to_feed(std::string feed, int visual_preset,
+                                                    int pass_count = 1) {
+  return apply_feed_model_preset(std::move(feed), visual_preset, pass_count);
 }
 
 inline std::string apply_renodx_visual_preset_to_reshade(std::string reshade, int visual_preset) {
@@ -833,6 +874,11 @@ inline bool feed_scale_change_needs_relaunch(bool renodx_stack, int loaded_scale
   return feed_work_resolution_for_session(loaded_scale) != feed_work_resolution_for_session(want_scale);
 }
 
+// Lobby Present is the process's first swapchain — Feed/ReShade lock there. Iniciar in the
+// same process cannot apply CFG (scale, Cinema, NR on/off). Ctrl+M works because it relaunches.
+// Always --autostart so the capture window is the first Present with disk already matching CFG.
+inline bool lobby_iniciar_needs_session_relaunch() { return true; }
+
 // Menus must never inherit the session scale — the Feed would blur the whole lobby.
 inline int feed_work_resolution_for_lobby() { return kLobbyFeedWorkResolution; }
 
@@ -892,13 +938,25 @@ bool sync_feed_work_resolution_in_dir(const std::string& exe_dir, int scale_perc
 bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_live_preview);
 
 // Write renodx_preset into dlss5-feed.cfg + ReShade.ini next to the exe.
-bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset);
+// pass_count picks 1x feed 0/1/0 vs multipass model 0/1/2.
+bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset, int pass_count = 1);
 
 // Pass Count + look defaults. 1x keeps Krish NR*; 2x/3x writes DirectNeural* in ReShade.ini.
 bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int visual_preset = 0);
 
 // Persist Neural Rendering on/off (independent of Frame Gen). Updates feed+ReShade.
 bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on, bool feed_on);
+
+// CFG do lobby → disco do RenoDX/Feed, na ordem que o addon le no boot da sessao.
+inline bool sync_persisted_session_files(const std::string& exe_dir, const PersistedSettings& s) {
+  const bool want_nr = s.enhance_renodx && s.neural_rendering;
+  (void)sync_nr_pass_count_files(exe_dir, s.nr_pass_count, s.renodx_preset);
+  (void)sync_renodx_visual_preset_files(exe_dir, s.renodx_preset, s.nr_pass_count);
+  (void)sync_neural_rendering_enabled_files(exe_dir, want_nr, want_nr);
+  (void)sync_feed_work_resolution_in_dir(exe_dir, feed_work_resolution_for_session(s.scale_percent));
+  (void)sync_mgf_techniques_for_phase(exe_dir, s.enhance_renodx);
+  return true;
+}
 
 // Pure helpers for unit tests (serialize to string).
 std::string serialize_settings_ini(const PersistedSettings& s);

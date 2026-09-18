@@ -141,7 +141,7 @@ inline void mini_seg_sep(MiniOverlaySeg& s) { mini_seg_set(s, " · ", 80, 95, 11
 // 3-row mini bar: row0 = FPS…present, row1 = stalls+ft, row2 = L600+HW.
 // Stalls used to sit at the end of row0 and were clipped by the sparkline.
 inline bool mini_overlay_seg_is_stalls(const MiniOverlaySeg& s) {
-  return s.text[0] == 's' && s.text[1] == 't' && s.text[2] >= '0' && s.text[2] <= '9';
+  return std::strncmp(s.text, "stalls ", 7) == 0;
 }
 inline bool mini_overlay_seg_is_l600(const MiniOverlaySeg& s) {
   return std::strncmp(s.text, "L600", 4) == 0;
@@ -204,7 +204,9 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                                         const char* renodx_preset = nullptr, const char* hw_compact = nullptr,
                                         double dlss_ms = 0, uint64_t frames = 0, double s600_max_interval = 0,
                                         const char* fg_backend = nullptr, double target_fps = 0,
-                                        int nr_pass_count = 1) {
+                                        int nr_pass_count = 1, const char* console_label = nullptr,
+                                        bool console_flag = true, unsigned char cons_r = 0,
+                                        unsigned char cons_g = 55, unsigned char cons_b = 145) {
   if (line0 && n0) line0[0] = '\0';
   if (line1 && n1) line1[0] = '\0';
   int n = 0;
@@ -216,6 +218,12 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
     if (!segs || n >= max_segs) return;
     mini_seg_sep(segs[n++]);
   };
+
+  if (console_label && console_label[0]) {
+    push(console_label, cons_r, cons_g, cons_b);
+    push_sep();
+  }
+  (void)console_flag;
 
   char fps_part[96]{};
   format_session_hud_fps_line(fps_part, sizeof(fps_part), fps_cap, fps_fg_est, fg_on, fg_mult, true);
@@ -281,8 +289,8 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   push(lat, 120, 255, 160);
 
   push_sep();
-  char cnt[72]{};
-  std::snprintf(cnt, sizeof(cnt), "st%llu/cl%llu · frm %llu drop %llu",
+  char cnt[96]{};
+  std::snprintf(cnt, sizeof(cnt), "stalls %llu  clusters %llu · frm %llu drop %llu",
                 static_cast<unsigned long long>(stalls), static_cast<unsigned long long>(clusters),
                 static_cast<unsigned long long>(frames), static_cast<unsigned long long>(dropped));
   push(cnt, 255, 180, 120);
@@ -302,10 +310,10 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   if (has_stats600) {
     if (s600_max_interval > 0.01) {
       std::snprintf(s600_part, sizeof(s600_part),
-                    "L600 fps %.1f p95e %.1f p95p %.1f st%llu max %.1f", s600_fps, s600_p95_e2e,
+                    "L600 fps %.1f p95e %.1f p95p %.1f stalls %llu max %.1f", s600_fps, s600_p95_e2e,
                     s600_p95_present, static_cast<unsigned long long>(s600_stalls), s600_max_interval);
     } else {
-      std::snprintf(s600_part, sizeof(s600_part), "L600 fps %.1f p95e %.1f p95p %.1f st%llu", s600_fps,
+      std::snprintf(s600_part, sizeof(s600_part), "L600 fps %.1f p95e %.1f p95p %.1f stalls %llu", s600_fps,
                     s600_p95_e2e, s600_p95_present, static_cast<unsigned long long>(s600_stalls));
     }
   } else {
@@ -380,14 +388,17 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                       const char* renodx_preset = nullptr, const char* hw_compact = nullptr,
                                       double dlss_ms = 0, uint64_t frames = 0, double s600_max_interval = 0,
                                       const char* fg_backend = nullptr, double target_fps = 0,
-                                      int nr_pass_count = 1) {
+                                      int nr_pass_count = 1, const char* console_label = nullptr,
+                                      bool console_flag = true, unsigned char cons_r = 0,
+                                      unsigned char cons_g = 55, unsigned char cons_b = 145) {
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
   format_mini_overlay_segments(segs, kMiniOverlayMaxSegs, line0, n0, line1, n1, fps_cap, fps_fg_est, fg_on,
                                fg_mult, dlss5_on, sync_image, frame_ms, ft_avg_ms, ft_p95_ms, ft_max_ms,
                                ft_stable, e2e_ms, present_ms, stalls, clusters, dropped, capture_w, capture_h,
                                work_w, work_h, output_w, output_h, scale_percent, has_stats600, s600_fps,
                                s600_p95_e2e, s600_p95_present, s600_stalls, renodx_preset, hw_compact, dlss_ms,
-                               frames, s600_max_interval, fg_backend, target_fps, nr_pass_count);
+                               frames, s600_max_interval, fg_backend, target_fps, nr_pass_count, console_label,
+                               console_flag, cons_r, cons_g, cons_b);
 }
 
 // Back-compat one-liner.

@@ -69,6 +69,7 @@ struct SessionReportSnapshot {
   bool neural_rendering = true;
   bool nr_runtime_on = false;
   int renodx_preset = 0;
+  int nr_pass_count = 1;
   int video_fourcc = 0;
   int color_space = 0;
   int color_range = 0;

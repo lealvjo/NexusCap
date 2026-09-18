@@ -581,6 +581,20 @@ std::wstring utf8_to_wide_hud(const std::string& s) {
   return w;
 }
 
+void hud_draw_title_with_console(HDC hdc, int x, int y, const wchar_t* prefix, const OverlayState& o) {
+  SetTextColor(hdc, RGB(255, 210, 70));
+  const int plen = static_cast<int>(wcslen(prefix));
+  TextOutW(hdc, x, y, prefix, plen);
+  if (!o.overlay_console) return;
+  SIZE sz{};
+  GetTextExtentPoint32W(hdc, prefix, plen, &sz);
+  char chip[48]{};
+  format_overlay_console_chip(chip, sizeof(chip), clamp_live_console(o.live_console));
+  const std::wstring w = utf8_to_wide_hud(chip);
+  SetTextColor(hdc, live_console_color(clamp_live_console(o.live_console)));
+  TextOutW(hdc, x + sz.cx, y, w.c_str(), static_cast<int>(w.size()));
+}
+
 SystemMetricsSample metrics_from_overlay(const OverlayState& o) {
   SystemMetricsSample s;
   s.cpu_ok = o.cpu_ok;
@@ -616,9 +630,11 @@ int append_hw_metric_lines(wchar_t (*lines)[180], int n, int max_n, const Overla
 }
 
 void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
-  HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
-  FillRect(hdc, &rc, bg);
-  DeleteObject(bg);
+  if (overlay_draws_plate(o.overlay_no_bg)) {
+    HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+  }
   SetBkMode(hdc, TRANSPARENT);
 
   const int font_px = hud_mini_overlay_font_px();
@@ -633,13 +649,16 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
   const bool dlss5_on = o.renodx_on;
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+  unsigned char cr = 0, cg = 55, cb = 145;
+  live_console_rgb(clamp_live_console(o.live_console), cr, cg, cb);
   const int nseg = format_mini_overlay_segments(
       segs, kMiniOverlayMaxSegs, line0, sizeof(line0), line1, sizeof(line1), show_fps, o.fps_fg_est, o.fg_on,
       o.fg_multiplier, dlss5_on, o.sync_image, o.frame_ms, o.ft_avg_ms, o.ft_p95_ms, o.ft_max_ms, o.ft_stable,
       o.e2e_ms, o.present_ms, o.stalls_window, o.clusters, o.dropped, o.capture_w, o.capture_h, o.work_w,
       o.work_h, o.output_w, o.output_h, o.scale_percent, o.has_stats600, o.s600_fps, o.s600_p95_e2e,
       o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
-      o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count);
+      o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count,
+      overlay_console_label_or_null(o.overlay_console, clamp_live_console(o.live_console)), false, cr, cg, cb);
   (void)line0;
   (void)line1;
 
@@ -696,10 +715,12 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
 
   if (gw >= 64) {
     RECT graph_rc{gx, gy, gx + gw, gy + gh};
-    HBRUSH gbg = CreateSolidBrush(RGB(8, 10, 14));
-    FillRect(hdc, &graph_rc, gbg);
-    DeleteObject(gbg);
-    HPEN border = CreatePen(PS_SOLID, 1, RGB(50, 56, 68));
+    if (overlay_draws_plate(o.overlay_no_bg)) {
+      HBRUSH gbg = CreateSolidBrush(RGB(8, 10, 14));
+      FillRect(hdc, &graph_rc, gbg);
+      DeleteObject(gbg);
+    }
+    HPEN border = CreatePen(PS_SOLID, 1, o.overlay_no_bg ? RGB(90, 96, 110) : RGB(50, 56, 68));
     HGDIOBJ old_pen = SelectObject(hdc, border);
     HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
     Rectangle(hdc, gx, gy, gx + gw, gy + gh);
@@ -816,14 +837,24 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
     }
     HGDIOBJ old_bmp = SelectObject(mem, dib);
     RECT rc{0, 0, bar_w, bar_h};
+    if (overlay.overlay_no_bg && bits) {
+      std::memset(bits, 0, static_cast<size_t>(bar_w) * static_cast<size_t>(bar_h) * 4u);
+    }
     paint_mini_overlay_hdc(mem, rc, overlay);
 
-    // GDI BI_RGB leaves alpha=0 — stamp ~86% opacity so the burned bar is see-through.
+    // GDI BI_RGB deixa alpha=0. Com placa: ~86% no quadro todo. Sem fundo: so a tinta.
     {
       auto* px = static_cast<uint32_t*>(bits);
       const int n = bar_w * bar_h;
-      constexpr uint32_t kA = 220u << 24;
-      for (int i = 0; i < n; ++i) px[i] = (px[i] & 0x00FFFFFFu) | kA;
+      if (overlay.overlay_no_bg) {
+        for (int i = 0; i < n; ++i) {
+          const uint32_t rgb = px[i] & 0x00FFFFFFu;
+          px[i] = rgb ? (rgb | 0xFF000000u) : 0;
+        }
+      } else {
+        constexpr uint32_t kA = 220u << 24;
+        for (int i = 0; i < n; ++i) px[i] = (px[i] & 0x00FFFFFFu) | kA;
+      }
     }
 
     D3D11_MAPPED_SUBRESOURCE map{};
@@ -993,11 +1024,11 @@ void MetricsHud::paint(HDC hdc) const {
   const bool exact = o.capture_w == o.output_w && o.capture_h == o.output_h && o.capture_w > 0;
   const double target_ms = o.target_fps > 0 ? 1000.0 / o.target_fps : (1000.0 / 60.0);
 
-  // Compact HUD (Exibir FPS only): FPS + FG + res — no graph / last600.
+  // Compact HUD (Exibir metricas only): FPS + FG + res — no graph / last600.
   if (!o.advanced_metrics) {
     wchar_t lines[16][180];
     int n = 0;
-    swprintf(lines[n++], 180, L"NexusCap  [%s]", mode);
+    swprintf(lines[n++], 180, L"NexusCap  [%s]  ", mode);
     swprintf(lines[n++], 180, L"%dx%d @ %.0f", o.capture_w, o.capture_h, o.target_fps);
     {
       char fps_line[128]{};
@@ -1039,8 +1070,13 @@ void MetricsHud::paint(HDC hdc) const {
       else if (o.hw_info && i >= hw_start && i < hotkey_i) c = RGB(140, 255, 180);
       else if (i == hotkey_i) c = RGB(150, 150, 160);
       else if (i == notice_i || i == notice_i2) c = RGB(255, 200, 120);
+      const int y = 10 + i * 28;
+      if (i == 0) {
+        hud_draw_title_with_console(hdc, 14, y, lines[i], o);
+        continue;
+      }
       SetTextColor(hdc, c);
-      TextOutW(hdc, 14, 10 + i * 28, lines[i], static_cast<int>(wcslen(lines[i])));
+      TextOutW(hdc, 14, y, lines[i], static_cast<int>(wcslen(lines[i])));
     }
     SelectObject(hdc, old);
     DeleteObject(font);
@@ -1050,7 +1086,7 @@ void MetricsHud::paint(HDC hdc) const {
   // Advanced metrics: full panel + MSI-style frametime graph + last600.
   const wchar_t* an = o.analyze_on ? L"ON" : L"off";
   wchar_t lines[20][180];
-  swprintf(lines[0], 180, L"NexusCap  [%s]  analyze=%s  ADV", mode, an);
+  swprintf(lines[0], 180, L"NexusCap  [%s]  analyze=%s  ADV  ", mode, an);
   swprintf(lines[1], 180, L"device  %s", utf8_to_wide_hud(o.device).c_str());
   swprintf(lines[2], 180, L"signal  %dx%d @ %.0f Hz   output %dx%d%s", o.capture_w, o.capture_h,
            o.target_fps, o.output_w, o.output_h, exact ? L"  (1:1)" : L"  (scaled)");
@@ -1139,8 +1175,13 @@ void MetricsHud::paint(HDC hdc) const {
   };
 
   for (int i = 0; i < 5; ++i) {
+    const int y = 10 + i * 28;
+    if (i == 0) {
+      hud_draw_title_with_console(hdc, 14, y, lines[i], o);
+      continue;
+    }
     SetTextColor(hdc, color_for_adv(i));
-    TextOutW(hdc, 14, 10 + i * 28, lines[i], static_cast<int>(wcslen(lines[i])));
+    TextOutW(hdc, 14, y, lines[i], static_cast<int>(wcslen(lines[i])));
   }
 
   // MSI-style frametime line graph (spikes = hitch).
@@ -1696,19 +1737,22 @@ void LiveOverlay::update(const OverlayState& state) {
 }
 
 void LiveOverlay::show_console_menu() {
-  if (!hwnd_) return;
+  if (!hwnd_ || !state_.overlay_console) return;
   POINT pt{};
   GetCursorPos(&pt);
   HMENU menu = CreatePopupMenu();
   if (!menu) return;
-  AppendMenuW(menu, MF_STRING | (console_ == 0 ? MF_CHECKED : 0), 1, L"PS5");
-  AppendMenuW(menu, MF_STRING | (console_ == 1 ? MF_CHECKED : 0), 2, L"Xbox Series S");
-  AppendMenuW(menu, MF_STRING | (console_ == 2 ? MF_CHECKED : 0), 3, L"Switch 2");
+  for (LiveConsole o : kLiveConsoleOrder) {
+    const int id = static_cast<int>(o) + 1;
+    const UINT flags = MF_STRING | (console_ == static_cast<int>(o) ? MF_CHECKED : 0);
+    const std::wstring label = utf8_to_wide_hud(live_console_label(o));
+    AppendMenuW(menu, flags, static_cast<UINT_PTR>(id), label.c_str());
+  }
   const int cmd =
       TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
   DestroyMenu(menu);
-  if (cmd >= 1 && cmd <= 3) {
-    const int next = cmd - 1;
+  if (cmd >= 1 && cmd <= kLiveConsoleCount) {
+    const int next = static_cast<int>(clamp_live_console(cmd - 1));
     if (next != console_) {
       console_ = next;
       console_changed_ = true;
@@ -1734,7 +1778,12 @@ void LiveOverlay::present() const {
   HFONT old_m = static_cast<HFONT>(SelectObject(measure, font));
 
   const LiveConsole cons = clamp_live_console(console_);
-  const std::wstring cons_w = utf8_to_wide_hud(live_console_label(cons));
+  std::wstring cons_w;
+  if (state_.overlay_console) {
+    char chip[48]{};
+    format_overlay_console_chip(chip, sizeof(chip), cons);
+    cons_w = utf8_to_wide_hud(chip);
+  }
   char dlss_buf[64]{};
   format_live_dlss5_line(dlss_buf, sizeof(dlss_buf), state_.renodx_on || state_.dlss_on, state_.nr_pass_count,
                          state_.feed_on);
@@ -1747,13 +1796,16 @@ void LiveOverlay::present() const {
   const std::wstring fps_w = utf8_to_wide_hud(fps_line);
 
   SIZE sz_cons{}, sz_dlss{}, sz_fps{};
-  GetTextExtentPoint32W(measure, cons_w.c_str(), static_cast<int>(cons_w.size()), &sz_cons);
+  if (!cons_w.empty()) {
+    GetTextExtentPoint32W(measure, cons_w.c_str(), static_cast<int>(cons_w.size()), &sz_cons);
+  }
   GetTextExtentPoint32W(measure, dlss_w.c_str(), static_cast<int>(dlss_w.size()), &sz_dlss);
   GetTextExtentPoint32W(measure, fps_w.c_str(), static_cast<int>(fps_w.size()), &sz_fps);
   SelectObject(measure, old_m);
   DeleteDC(measure);
 
-  const int ww = pad_x + sz_cons.cx + gap + sz_dlss.cx + gap + sz_fps.cx + gap + spark_w + pad_x;
+  const int ww = pad_x + sz_cons.cx + (sz_cons.cx > 0 ? gap : 0) + sz_dlss.cx + gap + sz_fps.cx + gap + spark_w +
+                 pad_x;
   layout_w_ = ww;
   layout_h_ = hh;
 
@@ -1791,7 +1843,7 @@ void LiveOverlay::present() const {
     x += sz.cx + gap;
   };
 
-  draw_seg(cons_w, live_console_color(cons));
+  if (!cons_w.empty()) draw_seg(cons_w, live_console_color(cons));
   draw_seg(dlss_w, RGB(240, 242, 248));
   draw_seg(fps_w, RGB(120, 220, 255));
 

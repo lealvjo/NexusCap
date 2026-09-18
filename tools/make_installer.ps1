@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "3.1.4",
+  [string]$Version = "3.1.5",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -92,11 +92,15 @@ New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 Copy-Item -LiteralPath $Exe -Destination (Join-Path $Stage "NexusCap.exe") -Force
 
 $logoSrc = Join-Path $Root "assets\logo.png"
+$watermarkSrc = Join-Path $Root "assets\watermark.png"
 $logoIco = Join-Path $Root "assets\logo.ico"
 $logoDst = Join-Path $Stage "assets"
 New-Item -ItemType Directory -Force -Path $logoDst | Out-Null
 if (Test-Path $logoSrc) {
   Copy-Item -LiteralPath $logoSrc -Destination (Join-Path $logoDst "logo.png") -Force
+}
+if (Test-Path $watermarkSrc) {
+  Copy-Item -LiteralPath $watermarkSrc -Destination (Join-Path $logoDst "watermark.png") -Force
 }
 if (Test-Path $logoIco) {
   Copy-Item -LiteralPath $logoIco -Destination (Join-Path $Stage "logo.ico") -Force

@@ -168,6 +168,7 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "show_fps=" << (s.ui.show_fps ? 1 : 0) << "\n";
   o << "advanced_metrics=" << (s.ui.advanced_metrics ? 1 : 0) << "\n";
   o << "mini_overlay=" << (s.ui.mini_overlay ? 1 : 0) << "\n";
+  o << "overlay_no_bg=" << (s.ui.overlay_no_bg ? 1 : 0) << "\n";
   o << "hw_info=" << (s.ui.hw_info ? 1 : 0) << "\n";
   o << "fullscreen=" << (s.ui.fullscreen ? 1 : 0) << "\n";
   o << "hide_panel_on_capture=" << (s.ui.hide_panel_on_capture ? 1 : 0) << "\n";
@@ -176,6 +177,7 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "bug_report=" << (s.ui.bug_report ? 1 : 0) << "\n";
   o << "perf_report=" << (s.ui.perf_report ? 1 : 0) << "\n";
   o << "live_overlay=" << (s.ui.live_overlay ? 1 : 0) << "\n";
+  o << "overlay_console=" << (s.ui.overlay_console ? 1 : 0) << "\n";
   o << "live_console=" << (s.ui.live_console.empty() ? "ps5" : s.ui.live_console) << "\n";
   o << "\n[hotkeys]\n";
   o << "quit=" << s.hotkeys.vk_quit << "\n";
@@ -238,6 +240,7 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "show_fps") s.ui.show_fps = (val == "1" || val == "true");
       else if (key == "advanced_metrics") s.ui.advanced_metrics = (val == "1" || val == "true");
       else if (key == "mini_overlay") s.ui.mini_overlay = (val == "1" || val == "true");
+      else if (key == "overlay_no_bg") s.ui.overlay_no_bg = (val == "1" || val == "true");
       else if (key == "hw_info") s.ui.hw_info = (val == "1" || val == "true");
       else if (key == "fullscreen") s.ui.fullscreen = (val == "1" || val == "true");
       else if (key == "hide_panel_on_capture") s.ui.hide_panel_on_capture = (val == "1" || val == "true");
@@ -246,6 +249,7 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "bug_report") s.ui.bug_report = (val == "1" || val == "true");
       else if (key == "perf_report") s.ui.perf_report = (val == "1" || val == "true");
       else if (key == "live_overlay") s.ui.live_overlay = (val == "1" || val == "true");
+      else if (key == "overlay_console") s.ui.overlay_console = (val == "1" || val == "true");
       else if (key == "live_console") s.ui.live_console = val.empty() ? "ps5" : val;
       // legacy auto_start ignored — lobby always opens first (maximized window)
     } else if (section == "hotkeys") {
@@ -394,14 +398,15 @@ bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_l
   return true;
 }
 
-bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset) {
+bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset, int pass_count) {
   const int v = clamp_renodx_visual_preset(visual_preset);
+  const int p = clamp_nr_pass_count(pass_count);
   bool any = for_each_feed_cfg(exe_dir, [&](const std::string& feed_path) {
     std::ifstream in(feed_path);
     if (!in) return false;
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
-    text = apply_renodx_visual_preset_to_feed(std::move(text), v);
+    text = apply_renodx_visual_preset_to_feed(std::move(text), v, p);
     std::ofstream out(feed_path, std::ios::trunc);
     if (!out) return false;
     out << text;
@@ -484,6 +489,7 @@ bool renodx_active_addon_is_multipass(const std::string& exe_dir) {
 
 bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int visual_preset) {
   const int p = clamp_nr_pass_count(pass_count);
+  const int v = clamp_renodx_visual_preset(visual_preset);
   (void)sync_renodx_addon_variant(exe_dir, p);
   const std::string reshade_path = exe_dir + "\\ReShade.ini";
   std::ifstream in(reshade_path);
@@ -492,9 +498,9 @@ bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int vi
   in.close();
   text = apply_reshade_addon_path(std::move(text), p);
   if (nr_pass_count_uses_multipass_addon(p)) {
-    text = apply_reshade_multipass_look_defaults(std::move(text), p, visual_preset);
+    text = apply_reshade_multipass_look_defaults(std::move(text), p, v);
   } else {
-    text = apply_reshade_stable_look_defaults(std::move(text), visual_preset);
+    text = apply_reshade_stable_look_defaults(std::move(text), v);
     text = apply_reshade_nr_pass_count(std::move(text), 1);
     // Krish: Bridge injects F13 — user Delete must not double-toggle RenoDX key.
     text = apply_reshade_nr_toggle_key(std::move(text), kRenodxNrInjectVk);
@@ -502,6 +508,18 @@ bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int vi
   std::ofstream out(reshade_path, std::ios::trunc);
   if (!out) return false;
   out << text;
+  // Motor swap also remaps feed model (1x Cinematic=0 vs Model C=2).
+  (void)for_each_feed_cfg(exe_dir, [&](const std::string& feed_path) {
+    std::ifstream fin(feed_path);
+    if (!fin) return false;
+    std::string feed((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+    fin.close();
+    feed = apply_renodx_visual_preset_to_feed(std::move(feed), v, p);
+    std::ofstream fout(feed_path, std::ios::trunc);
+    if (!fout) return false;
+    fout << feed;
+    return true;
+  });
   return true;
 }
 

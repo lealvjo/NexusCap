@@ -135,5 +135,8 @@ add_custom_command(TARGET NexusCap POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_SOURCE_DIR}/assets/logo.png"
     "$<TARGET_FILE_DIR:NexusCap>/assets/logo.png"
-  COMMENT "Copy assets/logo.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/assets/watermark.png"
+    "$<TARGET_FILE_DIR:NexusCap>/assets/watermark.png"
+  COMMENT "Copy assets/logo.png and assets/watermark.png"
 )

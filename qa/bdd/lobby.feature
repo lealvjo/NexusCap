@@ -47,7 +47,7 @@ Funcionalidade: Tela principal (lobby)
 
     Exemplos:
       | opcao                      |
-      | Exibir FPS (HUD)           |
+      | Exibir metricas            |
       | Mini overlay (barra topo)  |
       | Metricas avancadas         |
       | Infos GPU / CPU            |
@@ -66,18 +66,19 @@ Funcionalidade: Tela principal (lobby)
     E o HUD da sessao fica no modo barra de topo
 
   @importante @hdmi
-  Cenario: Overlay live escolhe consola
-    Dado que Overlay live esta ligado
-    Quando eu escolho PS5 ou Xbox ou Switch 2
-    Entao o combo mostra a consola
-    E na sessao o overlay live usa essa cor e o nome certo
+  Cenario: Console na captura e publico
+    Dado que estou no lobby
+    Quando eu escolho PS5, PS4, PS3, Xbox Series X, Xbox Series S, Xbox One, Switch 2 ou Switch
+    Entao o checkbox Mostrar console fica desligado
+    E ao marcar aparecem as opcoes (padrao PS5)
+    E compacto, mini, ADV e overlay live mostram o nome colorido so quando marcado
 
   @critico @hdmi
   Cenario: Iniciar processamento entra na captura
     Dado que ha placa, modo e preview ok
     Quando eu clico Iniciar processamento
-    Entao a sessao de captura abre
-    E se a escala do Feed mudou o app reinicia com --autostart e entra na sessao
+    Entao o app grava o CFG e reinicia com --autostart
+    E a sessao abre ja com DLSS 5, preset e escala escolhidos no menu
 
   @importante @hdmi
   Cenario: Sair fecha o app

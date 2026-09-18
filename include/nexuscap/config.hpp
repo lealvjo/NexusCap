@@ -7,6 +7,7 @@
 #include "nexuscap/dlss_options.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/settings_store.hpp"
+#include "nexuscap/live_mode.hpp"
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/system_metrics.hpp"
 #include "nexuscap/version.hpp"
@@ -30,17 +31,20 @@ struct AppConfig {
   bool frames_limited = false;  // true when --frames was passed (auto-quit)
   bool show_lobby = true;       // false with --no-lobby / --smoke / selftests
   bool autostart = false;       // --autostart: seed from settings, skip lobby once (feed scale relaunch)
+  bool open_lobby_cfg = false;  // --lobby-cfg: reopen lobby CFG after a motor/Pass Count restart
   bool advanced_metrics = false;
   bool mini_overlay = false;    // Steam Deck-style top bar
+  bool overlay_no_bg = false;   // mini overlay sem placa preta
   bool hw_info = false;  // painel Infos GPU/CPU
   bool hide_panel_on_capture = true;
   bool sync_image = true;  // vsync Present — default after 2.0.1 A/B (TEAR felt shakier)
   bool bug_report = false;
   bool perf_report = false;
-  bool live_overlay = false;  // right-side live overlay (console + DLSS5 stack)
-  int live_console = 0;       // LiveConsole: 0=ps5, 1=xbox_ss, 2=switch2
+  bool live_overlay = false;  // right-side live overlay (DLSS5 + FPS strip)
+  bool overlay_console = false;  // optional console name on overlays
+  int live_console = 0;       // LiveConsole: which console is being captured
   int scale_percent = 100;  // 25–100; 100 = native
-  int renodx_preset = 0;    // Default / Natural / Cinematic
+  int renodx_preset = 0;    // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
   int nr_pass_count = 1;    // 1=Krish, 2/3=multipass evaluates, 4=1.5x (multipass motor, 1 pass)
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
   // Live RenoDX NR (Bridge). Carried lobby↔session — NOT the same as neural_rendering on disk.
@@ -74,7 +78,7 @@ AppConfig parse_args(int argc, char** argv);
 // Lobby Sessão/CFG → AppConfig (tested).
 void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg);
 
-// HUD starts visible when "Exibir FPS" is on. "Ocultar painel" does NOT hide the metrics HUD.
+// HUD starts visible when "Exibir metricas" is on. "Ocultar painel" does NOT hide the metrics HUD.
 inline bool initial_hud_visible(const SessionUiFlags& ui) { return ui.show_fps; }
 inline bool initial_hud_visible(bool show_fps, bool /*hide_panel_on_capture*/) { return show_fps; }
 
@@ -103,6 +107,7 @@ inline int hud_mini_overlay_rows() { return 3; }
 
 // When mini overlay is on, multi-line compact/advanced HUD is suppressed.
 inline bool hud_uses_mini_overlay(bool show_fps, bool mini_overlay) { return show_fps && mini_overlay; }
+inline bool overlay_draws_plate(bool overlay_no_bg) { return !overlay_no_bg; }
 inline bool hud_uses_advanced_metrics(bool show_fps, bool mini_overlay, bool advanced_metrics) {
   return show_fps && !mini_overlay && advanced_metrics;
 }
@@ -125,6 +130,12 @@ inline std::string logo_png_candidate_assets(const std::string& exe_dir) {
 }
 inline std::string logo_png_candidate_root(const std::string& exe_dir) {
   return logo_png_path_join(exe_dir, "logo.png");
+}
+inline std::string watermark_png_candidate_assets(const std::string& exe_dir) {
+  return logo_png_path_join(exe_dir, "assets\\watermark.png");
+}
+inline std::string watermark_png_candidate_root(const std::string& exe_dir) {
+  return logo_png_path_join(exe_dir, "watermark.png");
 }
 
 // Win32 ICON resource id embedded in NexusCap.exe (resources/nexuscap.rc).
@@ -183,18 +194,28 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     hw.power_w = 90;
     char hw_compact[200]{};
     format_sys_metrics_compact(hw_compact, sizeof(hw_compact), hw);
+    const LiveConsole cons = parse_live_console(s.ui.live_console);
+    unsigned char cr = 0, cg = 55, cb = 145;
+    live_console_rgb(cons, cr, cg, cb);
     format_mini_overlay_lines(
         out.line[0], 384, out.line[1], 384, fps, fps * static_cast<double>((std::max)(fgx, 1)), false, fgx,
         dlss5, s.ui.sync_image, ft, ft, ft, ft, true, ft, /*present=*/ft * 0.15f, 0, 0, 0, s.width, s.height,
         scaled_extent(s.width, scale), scaled_extent(s.height, scale), s.width, s.height, scale, false, 0, 0,
-        0, 0, renodx_visual_preset_name(s.renodx_preset), hw_compact, /*dlss_ms=*/0, /*frames=*/0,
-        /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps, s.nr_pass_count);
+        0, 0, renodx_visual_preset_name(s.renodx_preset, s.nr_pass_count), hw_compact, /*dlss_ms=*/0, /*frames=*/0,
+        /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps, s.nr_pass_count,
+        overlay_console_label_or_null(s.ui.overlay_console, cons), false, cr, cg, cb);
     out.count = out.line[1][0] ? 2 : 1;
     return out;
   }
 
   if (s.ui.advanced_metrics) {
-    std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]  ADV");
+    if (s.ui.overlay_console) {
+      char chip[48]{};
+      format_overlay_console_chip(chip, sizeof(chip), parse_live_console(s.ui.live_console));
+      std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]  ADV  %s", chip);
+    } else {
+      std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]  ADV");
+    }
     std::snprintf(out.line[n++], 128, "%s", s.device_name.empty() ? "auto" : s.device_name.c_str());
     const int ww = scaled_extent(s.width, scale);
     const int wh = scaled_extent(s.height, scale);
@@ -215,10 +236,12 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       format_dlss5_stack_hud_line(stack, sizeof(stack), s.enhance_renodx && s.neural_rendering, s.enhance_renodx,
                                   s.nr_pass_count);
       if (!s.enhance_renodx) {
-        std::snprintf(out.line[n++], 128, "RenoDX off  %s  %s", renodx_visual_preset_name(s.renodx_preset),
+        std::snprintf(out.line[n++], 128, "RenoDX off  %s  %s",
+                      renodx_visual_preset_name(s.renodx_preset, s.nr_pass_count),
                       s.ui.fullscreen ? "fullscreen" : "windowed");
       } else {
-        std::snprintf(out.line[n++], 128, "%s  %s  %s", stack, renodx_visual_preset_name(s.renodx_preset),
+        std::snprintf(out.line[n++], 128, "%s  %s  %s", stack,
+                      renodx_visual_preset_name(s.renodx_preset, s.nr_pass_count),
                       s.ui.fullscreen ? "fullscreen" : "windowed");
       }
     }
@@ -233,7 +256,13 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       }
     }
   } else {
-    std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]");
+    if (s.ui.overlay_console) {
+      char chip[48]{};
+      format_overlay_console_chip(chip, sizeof(chip), parse_live_console(s.ui.live_console));
+      std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]  %s", chip);
+    } else {
+      std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]");
+    }
     std::snprintf(out.line[n++], 128, "%dx%d @ %.0f", s.width, s.height, s.fps);
     if (s.fg_enabled) {
       format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx);
@@ -247,11 +276,13 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       format_dlss5_stack_hud_line(stack, sizeof(stack), s.enhance_renodx && s.neural_rendering, s.enhance_renodx,
                                   s.nr_pass_count);
       if (!s.enhance_renodx) {
-        std::snprintf(out.line[n++], 128, "RenoDX off %s  %s  %s", renodx_visual_preset_name(s.renodx_preset),
+        std::snprintf(out.line[n++], 128, "RenoDX off %s  %s  %s",
+                      renodx_visual_preset_name(s.renodx_preset, s.nr_pass_count),
                       s.ui.fullscreen ? "fullscreen" : "windowed",
                       s.ui.sync_image ? "SYNC VSYNC" : "SYNC TEAR");
       } else {
-        std::snprintf(out.line[n++], 128, "%s  %s  %s  %s", stack, renodx_visual_preset_name(s.renodx_preset),
+        std::snprintf(out.line[n++], 128, "%s  %s  %s  %s", stack,
+                      renodx_visual_preset_name(s.renodx_preset, s.nr_pass_count),
                       s.ui.fullscreen ? "fullscreen" : "windowed",
                       s.ui.sync_image ? "SYNC VSYNC" : "SYNC TEAR");
       }
@@ -363,6 +394,16 @@ inline bool session_cfg_apply_needs_relaunch(SessionCfgApply a) { return a != Se
 // Reinício da sessão sempre volta para a captura, nunca para o lobby.
 inline const char* session_cfg_relaunch_args() { return "--autostart"; }
 
+// Pass Count / motor no CFG do lobby: reabre o lobby com o CFG ainda aberto.
+inline const char* lobby_cfg_relaunch_args() { return "--lobby-cfg"; }
+
+// One-shot: consume the boot flag so Esc→lobby later does not keep reopening CFG.
+inline bool lobby_consume_open_cfg(bool& open_lobby_cfg) {
+  const bool v = open_lobby_cfg;
+  open_lobby_cfg = false;
+  return v;
+}
+
 // Delete / Ctrl+M ligam e desligam o NR em qualquer Pass Count. Sem pulso: grava e reinicia.
 inline bool session_cfg_nr_toggle_allowed(bool renodx_stack, bool /*multipass_stack*/) {
   return renodx_stack;
@@ -410,7 +451,7 @@ inline bool lobby_gear_hotkey_toggles_cfg(int vk, int gear_vk, bool capturing_ho
 // Soft on-screen tips while playing (FG / Neural Rendering hotkeys).
 inline constexpr double kSessionNoticeTtlMs = 3200.0;
 // Delay before Krish↔multipass relaunch so the swap does not look like a crash.
-inline constexpr double kDlss5MotorSwapHoldSec = 1.1;
+inline constexpr double kDlss5MotorSwapHoldSec = 0.55;
 
 inline std::string session_notice_fg_on() {
   return "Frame Gen ON — latencia / artefatos podem subir";
@@ -450,9 +491,9 @@ inline std::string session_notice_nr_pass_count_apply(int from_pass, int to_pass
   return std::string("Aplicando Pass Count — ") + nr_pass_count_label(from_pass) + " → " +
          nr_pass_count_label(to_pass) + " (reinicio)";
 }
-inline std::string session_notice_preset_apply(int from_preset, int to_preset) {
-  return std::string("Aplicando preset — ") + renodx_visual_preset_name(from_preset) + " → " +
-         renodx_visual_preset_name(to_preset) + " (reinicio)";
+inline std::string session_notice_preset_apply(int from_preset, int to_preset, int pass_count = 1) {
+  return std::string("Aplicando preset — ") + renodx_visual_preset_name(from_preset, pass_count) + " → " +
+         renodx_visual_preset_name(to_preset, pass_count) + " (reinicio)";
 }
 inline std::string session_notice_nr_apply(bool want_on) {
   return std::string("Aplicando Neural Rendering — ") + (want_on ? "ON" : "OFF") + " (reinicio)";
@@ -472,6 +513,9 @@ inline std::string session_notice_cfg_closed() {
 inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
   return std::string("Aplicando escala do Feed — ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +
          std::to_string(clamp_scale_percent(to_pct)) + "% (reinicio)";
+}
+inline std::string session_notice_lobby_iniciar_apply() {
+  return "Aplicando configuracao — DLSS 5, preset e escala do CFG entram na sessao";
 }
 
 // Split "titulo — detalhe" so HUD/toast never clip the second half.
@@ -543,6 +587,8 @@ inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettin
   s.renodx_preset = clamp_renodx_visual_preset(cfg.renodx_preset);
   s.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
   s.scale_percent = clamp_scale_percent(cfg.scale_percent);
+  s.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
+  s.ui.overlay_console = cfg.overlay_console;
   apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, s);
   apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == EnhanceBackend::Renodx, s);
 }

@@ -221,9 +221,9 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
 }
 
 bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
-                                    bool* runtime_on) {
+                                    bool* runtime_on, int pass_count) {
   if (!runtime_on) return false;
-  const bool files_ok = sync_renodx_visual_preset_files(exe_dir, visual_preset);
+  const bool files_ok = sync_renodx_visual_preset_files(exe_dir, visual_preset, pass_count);
   if (want_nr && *runtime_on) {
     if (!apply_neural_rendering_state(exe_dir, false, runtime_on)) return false;
     if (!apply_neural_rendering_state(exe_dir, true, runtime_on)) return false;

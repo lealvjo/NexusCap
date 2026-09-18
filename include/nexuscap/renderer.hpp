@@ -17,6 +17,7 @@ struct OverlayState {
   bool visible = true;
   bool advanced_metrics = false;  // lobby "Metricas avancadas" → full HUD
   bool mini_overlay = false;      // lobby "Mini overlay" → single top bar
+  bool overlay_no_bg = false;     // sem placa preta no mini overlay queimado
   bool analyze_on = false;
   bool fake_capture = false;
   bool dlss_on = false;
@@ -25,7 +26,7 @@ struct OverlayState {
   std::string dlss_status = "passthrough";
   std::string dlss_backend = "none";
   double dlss_ms = 0;
-  std::string renodx_preset = "Default";  // Default / Natural / Cinematic (ADV HUD)
+  std::string renodx_preset = "Default";  // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
   bool renodx_on = false;
   bool sync_image = false;  // vsync Present(1) when true
   bool hw_info = false;     // painel Infos GPU / CPU
@@ -87,6 +88,7 @@ struct OverlayState {
   uint64_t s600_stalls = 0;
   // Live overlay (right edge). When active, mini/ADV HUD share is suppressed.
   bool live_overlay = false;
+  bool overlay_console = false;  // optional console name on overlays
   int live_console = 0;  // LiveConsole
   int nr_pass_count = 1;
   bool feed_on = true;
@@ -174,7 +176,7 @@ private:
   bool visible_ = false;
 };
 
-// Secret right-edge overlay: Console / DLSS5 / FPS (+ FG bar) / frametime sparkline.
+// Right-edge live strip: console / DLSS5 / FPS (+ FG bar) / frametime sparkline.
 // Per-pixel alpha (UpdateLayeredWindow) — crisp on high-DPI; click opens console picker.
 class LiveOverlay {
 public:

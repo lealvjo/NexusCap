@@ -227,7 +227,7 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
 
 // Lobby live preview: sync visual preset + apply NR (reload cycle when already ON).
 bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
-                                    bool* runtime_on);
+                                    bool* runtime_on, int pass_count = 1);
 
 // Sync Pass Count + look defaults + reload NR so RenoDX re-reads.
 bool apply_lobby_nr_pass_count_live(const std::string& exe_dir, int pass_count, bool want_nr,

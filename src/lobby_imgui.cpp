@@ -431,13 +431,22 @@ std::string exe_dir_utf8() {
   return std::filesystem::path(exe_path).parent_path().string();
 }
 
-std::string resolve_logo_png_on_disk() {
-  const std::string dir = exe_dir_utf8();
-  for (const auto& p : {logo_png_candidate_assets(dir), logo_png_candidate_root(dir)}) {
+std::string resolve_brand_png_on_disk(const std::string& assets_path, const std::string& root_path) {
+  for (const auto& p : {assets_path, root_path}) {
     const DWORD attr = GetFileAttributesW(utf8_path_to_wide(p).c_str());
     if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY) == 0) return p;
   }
   return {};
+}
+
+std::string resolve_logo_png_on_disk() {
+  const std::string dir = exe_dir_utf8();
+  return resolve_brand_png_on_disk(logo_png_candidate_assets(dir), logo_png_candidate_root(dir));
+}
+
+std::string resolve_watermark_png_on_disk() {
+  const std::string dir = exe_dir_utf8();
+  return resolve_brand_png_on_disk(watermark_png_candidate_assets(dir), watermark_png_candidate_root(dir));
 }
 
 bool load_png_bgra_file(const std::wstring& path, int& out_w, int& out_h, std::vector<uint8_t>& out_bgra) {
@@ -496,13 +505,12 @@ bool load_png_bgra_file(const std::wstring& path, int& out_w, int& out_h, std::v
   return true;
 }
 
-bool create_logo_srv(ID3D11Device* device, ID3D11ShaderResourceView** out_srv, int* out_w, int* out_h) {
+bool create_png_srv(ID3D11Device* device, const std::string& path, ID3D11ShaderResourceView** out_srv, int* out_w,
+                    int* out_h) {
   if (out_srv) *out_srv = nullptr;
   if (out_w) *out_w = 0;
   if (out_h) *out_h = 0;
-  if (!device || !out_srv) return false;
-  const std::string path = resolve_logo_png_on_disk();
-  if (path.empty()) return false;
+  if (!device || !out_srv || path.empty()) return false;
   int w = 0, h = 0;
   std::vector<uint8_t> bgra;
   if (!load_png_bgra_file(utf8_path_to_wide(path), w, h, bgra)) return false;
@@ -528,6 +536,14 @@ bool create_logo_srv(ID3D11Device* device, ID3D11ShaderResourceView** out_srv, i
   if (out_w) *out_w = w;
   if (out_h) *out_h = h;
   return true;
+}
+
+bool create_logo_srv(ID3D11Device* device, ID3D11ShaderResourceView** out_srv, int* out_w, int* out_h) {
+  return create_png_srv(device, resolve_logo_png_on_disk(), out_srv, out_w, out_h);
+}
+
+bool create_watermark_srv(ID3D11Device* device, ID3D11ShaderResourceView** out_srv, int* out_w, int* out_h) {
+  return create_png_srv(device, resolve_watermark_png_on_disk(), out_srv, out_w, out_h);
 }
 
 void apply_window_app_icon(HWND hwnd, HINSTANCE hi) {
@@ -578,7 +594,9 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
     const float bar_h = static_cast<float>(hud_mini_overlay_height());
     ImVec2 p0(img_min.x, img_min.y);
     ImVec2 p1(img_max.x, img_min.y + bar_h);
-    dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
+    if (overlay_draws_plate(settings.ui.overlay_no_bg)) {
+      dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
+    }
     const float graph_w = 220.f;
     const float gx = (std::max)(p0.x + 8.f, p1.x - 8.f - graph_w);
     const float gy = p0.y + 9.f;
@@ -608,13 +626,17 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
     format_sys_metrics_compact(hw_compact, sizeof(hw_compact), hw);
     MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
     char line0[8]{}, line1[8]{};
+    const LiveConsole cons = parse_live_console(settings.ui.live_console);
+    unsigned char cr = 0, cg = 55, cb = 145;
+    live_console_rgb(cons, cr, cg, cb);
     const int nseg = format_mini_overlay_segments(
         segs, kMiniOverlayMaxSegs, line0, sizeof(line0), line1, sizeof(line1), fps,
         fps * static_cast<double>((std::max)(fgx, 1)), false, fgx, dlss5, settings.ui.sync_image, ft, ft, ft, ft,
         true, ft, ft * 0.15f, 0, 0, 0, settings.width, settings.height, scaled_extent(settings.width, scale),
         scaled_extent(settings.height, scale), settings.width, settings.height, scale, false, 0, 0, 0, 0,
-        renodx_visual_preset_name(settings.renodx_preset), hw_compact[0] ? hw_compact : nullptr, 0, 0, 0,
-        nullptr, settings.fps, settings.nr_pass_count);
+        renodx_visual_preset_name(settings.renodx_preset, settings.nr_pass_count), hw_compact[0] ? hw_compact : nullptr, 0, 0, 0,
+        nullptr, settings.fps, settings.nr_pass_count,
+        overlay_console_label_or_null(settings.ui.overlay_console, cons), false, cr, cg, cb);
 
     const float font_sz = static_cast<float>(hud_mini_overlay_font_px());
     const float line_gap = 2.f;
@@ -751,7 +773,7 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
 bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   g_lobby_running = true;
   g_start_requested = false;
-  g_open_gear = false;
+  g_open_gear = lobby_consume_open_cfg(cfg.open_lobby_cfg);
   g_capture_vk_target = nullptr;
 
   // Scale is session-only. ReShade hooks lobby Present too — force feed 100% or the menu blurs.
@@ -806,6 +828,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   ID3D11ShaderResourceView* logo_srv = nullptr;
   int logo_w = 0, logo_h = 0;
   create_logo_srv(g_dx.device, &logo_srv, &logo_w, &logo_h);
+  ID3D11ShaderResourceView* watermark_srv = nullptr;
+  int watermark_w = 0, watermark_h = 0;
+  create_watermark_srv(g_dx.device, &watermark_srv, &watermark_w, &watermark_h);
 
   LobbyPreview preview;
   AudioMonitor lobby_audio;
@@ -997,7 +1022,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::BeginChild("header", ImVec2(0, 72), false, ImGuiWindowFlags_NoScrollbar);
     {
+      const float header_y = ImGui::GetCursorPosY();
+      if (watermark_srv) {
+        ImGui::SetCursorPosY(header_y);
+        ImGui::Image(reinterpret_cast<ImTextureID>(watermark_srv), ImVec2(60, 64));
+        ImGui::SameLine();
+      }
       if (logo_srv) {
+        ImGui::SetCursorPosY(header_y + (watermark_srv ? 8.f : 0.f));
         ImGui::Image(reinterpret_cast<ImTextureID>(logo_srv), ImVec2(48, 48));
       } else {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.55f, 0.95f, 1.f));
@@ -1242,7 +1274,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
         if (!settings.ui.show_fps) {
           ImGui::SetCursorPos(ImVec2(12, 8));
-          ImGui::TextColored(ImVec4(0.75f, 0.9f, 1.f, 1.f), "HUD off (marque Exibir FPS)");
+          ImGui::TextColored(ImVec4(0.75f, 0.9f, 1.f, 1.f), "HUD off (marque Exibir metricas)");
         }
         ImGui::EndChild();
         ImGui::PopStyleColor();
@@ -1260,7 +1292,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::TextUnformatted("Configuracoes");
     ImGui::Spacing();
     // Single column — two-up SameLine clipped labels on the right edge.
-    ImGui::Checkbox("Exibir FPS (HUD)", &settings.ui.show_fps);
+    ImGui::Checkbox("Exibir metricas", &settings.ui.show_fps);
     if (ImGui::Checkbox("Mini overlay (barra topo)", &settings.ui.mini_overlay)) {
       if (settings.ui.mini_overlay) settings.ui.advanced_metrics = false;
     }
@@ -1268,6 +1300,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                                                  : "  -> HUD multi-linha · latencia cap + present");
     if (settings.ui.mini_overlay) {
       ImGui::TextDisabled("  present+NR ≈ processamento c/ DLSS5 (~2ms) · cap = captura pura");
+      ImGui::Checkbox("Overlay sem fundo", &settings.ui.overlay_no_bg);
+      ImGui::TextDisabled(settings.ui.overlay_no_bg ? "  -> so texto no jogo, sem placa preta"
+                                                    : "  -> placa preta atras do texto");
     }
 
     ImGui::BeginDisabled(settings.ui.mini_overlay);
@@ -1281,31 +1316,33 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
     ImGui::TextDisabled(settings.ui.sync_image ? "  -> SYNC VSYNC" : "  -> SYNC TEAR");
-    ImGui::Checkbox("Overlay live", &settings.ui.live_overlay);
-    if (settings.ui.live_overlay) {
-      LiveConsole cur = parse_live_console(settings.ui.live_console);
-      const char* preview = live_console_label(cur);
-      auto console_imcol = [](LiveConsole c) -> ImVec4 {
-        const COLORREF rgb = live_console_color(c);
-        return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
-      };
-      ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
-      const bool open = ImGui::BeginCombo("Console##live", preview);
-      ImGui::PopStyleColor();
-      if (open) {
-        const LiveConsole opts[] = {LiveConsole::Ps5, LiveConsole::XboxSs, LiveConsole::Switch2};
-        for (LiveConsole o : opts) {
-          const bool selected = (o == cur);
-          ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
-          if (ImGui::Selectable(live_console_label(o), selected)) {
-            settings.ui.live_console = live_console_key(o);
+      ImGui::Checkbox("Mostrar console", &settings.ui.overlay_console);
+      if (settings.ui.overlay_console) {
+        LiveConsole cur = parse_live_console(settings.ui.live_console);
+        auto console_imcol = [](LiveConsole c) -> ImVec4 {
+          const COLORREF rgb = live_console_color(c);
+          return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
+        };
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
+        char console_btn[48]{};
+        std::snprintf(console_btn, sizeof(console_btn), "%s##console_pick", live_console_label(cur));
+        if (ImGui::Button(console_btn)) ImGui::OpenPopup("##console_menu");
+        ImGui::PopStyleColor();
+        if (ImGui::BeginPopup("##console_menu")) {
+          for (LiveConsole o : kLiveConsoleOrder) {
+            const bool selected = (o == cur);
+            ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
+            if (ImGui::MenuItem(live_console_label(o), nullptr, selected)) {
+              settings.ui.live_console = live_console_key(o);
+            }
+            ImGui::PopStyleColor();
           }
-          ImGui::PopStyleColor();
-          if (selected) ImGui::SetItemDefaultFocus();
+          ImGui::EndPopup();
         }
-        ImGui::EndCombo();
+        ImGui::TextDisabled("  -> nome no overlay (padrao PS5)");
       }
-    }
+    ImGui::Checkbox("Overlay live", &settings.ui.live_overlay);
     ImGui::Checkbox("Reportar bug", &settings.ui.bug_report);
     ImGui::TextDisabled(settings.ui.bug_report ? "  -> modo diagnostico (report/*.txt)"
                                                : "  -> off (sem overhead)");
@@ -1349,28 +1386,31 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           settings.fps = modes[static_cast<size_t>(mode_idx)].fps;
         }
         settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
+        if (!settings.enhance_renodx) settings.neural_rendering = false;
         const int session_scale = clamp_scale_percent(settings.scale_percent);
         {
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-          sync_feed_work_resolution_in_dir(std::filesystem::path(exe_path).parent_path().string(),
-                                           feed_work_resolution_for_session(session_scale));
-        }
-        if (feed_scale_change_needs_relaunch(settings.enhance_renodx, feed_loaded_scale, session_scale)) {
-          // Feed already snapshotted the old work_resolution — restart, then resume the session.
+          const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           std::string serr;
           save_settings(settings, settings_default_path(), serr);
+          (void)sync_persisted_session_files(exe_dir, settings);
+        }
+        // Same process already locked Feed/ReShade on the lobby swapchain. Ctrl+M relaunches;
+        // Iniciar must too, or Cinema / NR off / escala ficam só no preview.
+        motor_swap_args = "--autostart";
+        motor_swap_pending = true;
+        motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+        if (feed_scale_change_needs_relaunch(settings.enhance_renodx, feed_loaded_scale, session_scale)) {
           motor_swap_title = "Aplicando escala do Feed";
           motor_swap_line = std::to_string(effective_scale_percent(true, feed_loaded_scale)) + "%  \xE2\x86\x92  " +
                             std::to_string(effective_scale_percent(true, session_scale)) + "%";
-          motor_swap_args = "--autostart";
-          motor_swap_pending = true;
-          motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
           push_lobby_toast(session_notice_feed_scale_apply(effective_scale_percent(true, feed_loaded_scale),
                                                           effective_scale_percent(true, session_scale)));
         } else {
-          g_start_requested = true;
-          g_lobby_running = false;
+          motor_swap_title = "Aplicando configuracao";
+          motor_swap_line = "DLSS 5, preset e escala do CFG entram na sessao";
+          push_lobby_toast(session_notice_lobby_iniciar_apply());
         }
       }
       ImGui::PopStyleColor();
@@ -1501,11 +1541,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextUnformatted("Preset visual (ao vivo no preview)");
         const int preset_before = clamp_renodx_visual_preset(settings.renodx_preset);
         int preset_i = preset_before;
-        if (ImGui::RadioButton("Default", preset_i == 0)) preset_i = 0;
+        if (ImGui::RadioButton(renodx_visual_preset_name(0, settings.nr_pass_count), preset_i == 0))
+          preset_i = 0;
         ImGui::SameLine();
-        if (ImGui::RadioButton("Natural", preset_i == 1)) preset_i = 1;
+        if (ImGui::RadioButton(renodx_visual_preset_name(1, settings.nr_pass_count), preset_i == 1))
+          preset_i = 1;
         ImGui::SameLine();
-        if (ImGui::RadioButton("Cinematic", preset_i == 2)) preset_i = 2;
+        if (ImGui::RadioButton(renodx_visual_preset_name(2, settings.nr_pass_count), preset_i == 2))
+          preset_i = 2;
         settings.renodx_preset = clamp_renodx_visual_preset(preset_i);
         if (settings.renodx_preset != preset_before) {
           wchar_t exe_path[MAX_PATH]{};
@@ -1518,9 +1561,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           if (!writable) {
             push_lobby_toast(renodx_write_denied_notice());
           } else {
-            apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on);
+            apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on,
+                                           settings.nr_pass_count);
             cfg.nr_runtime_on = nr_runtime_on;
-            push_lobby_toast(std::string("Preset: ") + renodx_visual_preset_name(settings.renodx_preset) +
+            push_lobby_toast(std::string("Preset: ") +
+                             renodx_visual_preset_name(settings.renodx_preset, settings.nr_pass_count) +
                              " — olhe o preview");
             if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
               nr_boot_retries = 120;
@@ -1529,10 +1574,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
         ImGui::TextDisabled("NR=%d  model=%d  ·  olhe a imagem (nao so o texto)",
                             renodx_nr_preset_index(settings.renodx_preset),
-                            renodx_feed_model_preset(settings.renodx_preset));
+                            renodx_feed_model_preset(settings.renodx_preset, settings.nr_pass_count));
         ImGui::TextDisabled(nr_pass_count_uses_multipass_addon(settings.nr_pass_count)
-                                ? "  no multipass o Iniciar aplica o preset (o addon so le no boot)"
-                                : "  no 1x o preview muda na hora; na captura o preset reinicia");
+                                ? "  1,5x/2x/3x: Model A/B/C (o addon so le no boot)"
+                                : "  1x: Default/Natural/Cinematic; o preview muda na hora");
         ImGui::TextDisabled("Mesmo look no Iniciar — janela ou tela cheia.");
 
         ImGui::Spacing();
@@ -1569,7 +1614,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             motor_swap_title = motor_change ? "Trocando motor DLSS 5" : "Aplicando Pass Count";
             motor_swap_line = std::string(nr_pass_count_label(pass_before)) + "  \xE2\x86\x92  " +
                               nr_pass_count_label(settings.nr_pass_count);
-            motor_swap_args.clear();
+            motor_swap_args = lobby_cfg_relaunch_args();
             motor_swap_pending = true;
             motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
             push_lobby_toast(motor_change
@@ -1586,8 +1631,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             }
           }
         }
-        ImGui::TextDisabled("1,5x: mesma res e ~60 fps que o 1x (recomendado).");
-        ImGui::TextDisabled("2x/3x: mais pesados, pouco ganho, look mais processado.");
+        ImGui::TextDisabled("%s", nr_pass_count_15x_hint());
+        ImGui::TextDisabled("%s", nr_pass_count_23x_hint());
         ImGui::TextDisabled("Escala do Feed e manual se quiseres menos carga.");
         ImGui::TextDisabled("Delete ou Ctrl+M liga/desliga o NR na captura (reinicia e volta).");
         ImGui::EndDisabled();
@@ -1647,7 +1692,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           ImGui::TextDisabled("  abre este CFG por cima do jogo, sem sair da captura");
         }
         hotkey_row("Analyze", &settings.hotkeys.vk_analyze);
-        hotkey_row("RenoDX overlay", &settings.hotkeys.vk_renodx);
+        hotkey_row("RenoDX", &settings.hotkeys.vk_renodx);
         hotkey_row("Neural Rendering on/off", &settings.hotkeys.vk_nr_toggle);
         hotkey_row("Tela cheia", &settings.hotkeys.vk_fullscreen);
 
@@ -1662,8 +1707,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
-          sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset);
           sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
+          sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count);
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
                                        feed_pipeline_on_for_renodx(settings.enhance_renodx));
@@ -1765,6 +1810,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   if (logo_srv) {
     logo_srv->Release();
     logo_srv = nullptr;
+  }
+  if (watermark_srv) {
+    watermark_srv->Release();
+    watermark_srv = nullptr;
   }
 
   ImGui_ImplDX11_Shutdown();

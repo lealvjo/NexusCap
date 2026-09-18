@@ -695,7 +695,9 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(a, "cap 8.5") != nullptr);
   CHECK(std::strstr(a, "2560x1440>2560x1440@100%>out 1:1") != nullptr);
   CHECK(std::strstr(a, "st2/cl1") == nullptr);  // stalls live on row 1 so the sparkline cannot clip them
-  CHECK(std::strstr(b, "st2/cl1") != nullptr);
+  CHECK(std::strstr(b, "st2/cl1") == nullptr);
+  CHECK(std::strstr(b, "stalls 2") != nullptr);
+  CHECK(std::strstr(b, "clusters 1") != nullptr);
   CHECK(std::strstr(b, "frm 900") != nullptr);
   CHECK(std::strstr(b, "drop 5") != nullptr);
   CHECK(std::strstr(b, "ft 16.7") != nullptr);
@@ -737,7 +739,9 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(a, "TEAR") != nullptr);
   CHECK(std::strstr(a, "FG x2 off") != nullptr);
   CHECK(std::strstr(a, "2560x1440>1280x720@50%>out 1:1") != nullptr);
-  CHECK(std::strstr(b, "st0/cl0") != nullptr);
+  CHECK(std::strstr(b, "st0/cl0") == nullptr);
+  CHECK(std::strstr(b, "stalls 0") != nullptr);
+  CHECK(std::strstr(b, "clusters 0") != nullptr);
   CHECK(std::strstr(b, "L600") != nullptr);
 
   // Legacy one-liner still includes key tokens.
@@ -770,6 +774,8 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(lobby_hud_preview_lines(true, true, false, true) == 3);
   CHECK(hud_uses_mini_overlay(true, true));
   CHECK_FALSE(hud_uses_advanced_metrics(true, true, true));
+  CHECK(overlay_draws_plate(false));
+  CHECK_FALSE(overlay_draws_plate(true));
 }
 
 TEST_CASE("default FG off but multiplier stays armed for PageDn") {
@@ -864,6 +870,8 @@ TEST_CASE("logo brand paths and app icon resource id") {
   CHECK(logo_png_candidate_assets("C:\\app") == "C:\\app\\assets\\logo.png");
   CHECK(logo_png_candidate_root("C:\\app") == "C:\\app\\logo.png");
   CHECK(logo_png_path_join("C:\\app\\", "assets\\logo.png") == "C:\\app\\assets\\logo.png");
+  CHECK(watermark_png_candidate_assets("C:\\app") == "C:\\app\\assets\\watermark.png");
+  CHECK(watermark_png_candidate_root("C:\\app") == "C:\\app\\watermark.png");
 }
 
 TEST_CASE("session notices for FG enable/up and NR on/off") {
@@ -1096,10 +1104,12 @@ TEST_CASE("settings ini round-trip") {
   s.ui.show_fps = true;
   s.ui.advanced_metrics = true;
   s.ui.mini_overlay = true;
+  s.ui.overlay_no_bg = true;
   s.ui.fullscreen = false;
   s.ui.hide_panel_on_capture = false;
   s.ui.sync_image = true;
   s.ui.live_overlay = true;
+  s.ui.overlay_console = true;
   s.ui.live_console = "xbox_ss";
   s.enhance_renodx = false;
   s.renodx_preset = static_cast<int>(RenodxVisualPreset::Cinematic);
@@ -1115,10 +1125,12 @@ TEST_CASE("settings ini round-trip") {
   CHECK(out.ui.show_fps);
   CHECK(out.ui.advanced_metrics);
   CHECK(out.ui.mini_overlay);
+  CHECK(out.ui.overlay_no_bg);
   CHECK_FALSE(out.ui.fullscreen);
   CHECK_FALSE(out.ui.hide_panel_on_capture);
   CHECK(out.ui.sync_image);
   CHECK(out.ui.live_overlay);
+  CHECK(out.ui.overlay_console);
   CHECK(out.ui.live_console == "xbox_ss");
   CHECK_FALSE(out.enhance_renodx);
   CHECK(out.renodx_preset == static_cast<int>(RenodxVisualPreset::Cinematic));
@@ -1196,6 +1208,11 @@ TEST_CASE("gear renodx preset change+save reflects in feed and ReShade") {
   CHECK(std::string(renodx_visual_preset_name(0)) == "Default");
   CHECK(std::string(renodx_visual_preset_name(1)) == "Natural");
   CHECK(std::string(renodx_visual_preset_name(2)) == "Cinematic");
+  CHECK(std::string(renodx_visual_preset_name(0, 1)) == "Default");
+  CHECK(std::string(renodx_visual_preset_name(2, 1)) == "Cinematic");
+  CHECK(std::string(renodx_visual_preset_name(0, 4)) == "Model A");
+  CHECK(std::string(renodx_visual_preset_name(1, 2)) == "Model B");
+  CHECK(std::string(renodx_visual_preset_name(2, 3)) == "Model C");
   CHECK(renodx_nr_preset_index(0) == 0);  // Default → NR Natural
   CHECK(renodx_nr_preset_index(1) == 0);  // Natural
   CHECK(renodx_nr_preset_index(2) == 1);  // Cinematic
@@ -1340,8 +1357,8 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(reshade.find("DirectNeuralRenderingSkinStructureStrength=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingStyle=0") != std::string::npos);
-  reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 1, /*Cinematic=*/2);
-  CHECK(reshade.find("DirectNeuralRenderingStyle=1") != std::string::npos);
+  reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 1, /*Model C=*/2);
+  CHECK(reshade.find("DirectNeuralRenderingStyle=2") != std::string::npos);
   reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 4, /*visual=*/0);
   CHECK(parse_reshade_nr_pass_count(reshade) == 1);
   CHECK(reshade.find("DirectNeuralRenderingPassCount=4") == std::string::npos);
@@ -1450,7 +1467,7 @@ TEST_CASE("apply_persisted_to_config maps Sessao + engrenagem") {
   CHECK(cfg.enhance == EnhanceBackend::Off);
 }
 
-TEST_CASE("initial_hud_visible follows Exibir FPS only") {
+TEST_CASE("initial_hud_visible follows Exibir metricas only") {
   CHECK(initial_hud_visible(true, false));
   CHECK(initial_hud_visible(true, true));  // hide lobby must NOT hide HUD
   CHECK_FALSE(initial_hud_visible(false, false));
@@ -2049,17 +2066,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 4));
+  CHECK(app_version_is(3, 1, 5));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.4");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.4") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.4");
+  CHECK(std::string(kAppVersion) == "3.1.5");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.1.5") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.5");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.4") != std::string::npos);
+  CHECK(lobby_t.find("3.1.5") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.4") != std::string::npos);
+  CHECK(sess_t.find("3.1.5") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2782,19 +2799,132 @@ TEST_CASE("SessionReportWriter writes unique files when started") {
 TEST_CASE("live console enum parse/label/color") {
   CHECK(parse_live_console("ps5") == LiveConsole::Ps5);
   CHECK(parse_live_console("") == LiveConsole::Ps5);
+  CHECK(parse_live_console("ps4") == LiveConsole::Ps4);
+  CHECK(parse_live_console("ps3") == LiveConsole::Ps3);
   CHECK(parse_live_console("xbox_ss") == LiveConsole::XboxSs);
+  CHECK(parse_live_console("xbox") == LiveConsole::XboxSs);
+  CHECK(parse_live_console("xbox_sx") == LiveConsole::XboxSx);
+  CHECK(parse_live_console("xsx") == LiveConsole::XboxSx);
+  CHECK(parse_live_console("xbox_one") == LiveConsole::XboxOne);
   CHECK(parse_live_console("switch2") == LiveConsole::Switch2);
+  CHECK(parse_live_console("nsw2") == LiveConsole::Switch2);
+  CHECK(parse_live_console("switch") == LiveConsole::Switch);
+  CHECK(parse_live_console("switch1") == LiveConsole::Switch);
   CHECK(std::string(live_console_key(LiveConsole::Ps5)) == "ps5");
+  CHECK(std::string(live_console_key(LiveConsole::Ps4)) == "ps4");
+  CHECK(std::string(live_console_key(LiveConsole::Ps3)) == "ps3");
   CHECK(std::string(live_console_key(LiveConsole::XboxSs)) == "xbox_ss");
+  CHECK(std::string(live_console_key(LiveConsole::XboxSx)) == "xbox_sx");
+  CHECK(std::string(live_console_key(LiveConsole::XboxOne)) == "xbox_one");
   CHECK(std::string(live_console_key(LiveConsole::Switch2)) == "switch2");
+  CHECK(std::string(live_console_key(LiveConsole::Switch)) == "switch");
   CHECK(std::string(live_console_label(LiveConsole::Ps5)) == "PS5");
+  CHECK(std::string(live_console_label(LiveConsole::Ps4)) == "PS4");
+  CHECK(std::string(live_console_label(LiveConsole::Ps3)) == "PS3");
   CHECK(std::string(live_console_label(LiveConsole::XboxSs)) == "Xbox Series S");
+  CHECK(std::string(live_console_label(LiveConsole::XboxSx)) == "Xbox Series X");
+  CHECK(std::string(live_console_label(LiveConsole::XboxOne)) == "Xbox One");
   CHECK(std::string(live_console_label(LiveConsole::Switch2)) == "Switch 2");
+  CHECK(std::string(live_console_label(LiveConsole::Switch)) == "Switch");
   CHECK(live_console_color(LiveConsole::Ps5) == RGB(0, 55, 145));
+  CHECK(live_console_color(LiveConsole::Ps4) == RGB(0, 85, 185));
+  CHECK(live_console_color(LiveConsole::Ps3) == RGB(0, 32, 90));
   CHECK(live_console_color(LiveConsole::XboxSs) == RGB(16, 124, 16));
+  CHECK(live_console_color(LiveConsole::XboxSx) == RGB(16, 124, 16));
+  CHECK(live_console_color(LiveConsole::XboxOne) == RGB(16, 124, 16));
   CHECK(live_console_color(LiveConsole::Switch2) == RGB(230, 0, 18));
+  CHECK(live_console_color(LiveConsole::Switch) == RGB(230, 0, 18));
   CHECK(clamp_live_console(-1) == LiveConsole::Ps5);
   CHECK(clamp_live_console(99) == LiveConsole::Ps5);
+  CHECK(clamp_live_console(kLiveConsoleCount) == LiveConsole::Ps5);
+  CHECK(clamp_live_console(static_cast<int>(LiveConsole::Switch)) == LiveConsole::Switch);
+  CHECK(clamp_live_console(0) == LiveConsole::Ps5);
+  CHECK(clamp_live_console(1) == LiveConsole::XboxSs);
+  CHECK(clamp_live_console(2) == LiveConsole::Switch2);
+
+  bool seen[kLiveConsoleCount]{};
+  for (LiveConsole o : kLiveConsoleOrder) {
+    const int i = static_cast<int>(o);
+    CHECK(i >= 0);
+    CHECK(i < kLiveConsoleCount);
+    CHECK_FALSE(seen[i]);
+    seen[i] = true;
+    CHECK(parse_live_console(live_console_key(o)) == o);
+    CHECK(clamp_live_console(i) == o);
+    CHECK_FALSE(std::string(live_console_label(o)).empty());
+  }
+  for (int i = 0; i < kLiveConsoleCount; ++i) CHECK(seen[i]);
+}
+
+TEST_CASE("console overlay is optional and defaults to PS5 when shown") {
+  PersistedSettings s = default_settings();
+  CHECK_FALSE(s.ui.overlay_console);
+  CHECK(s.ui.live_console == "ps5");
+  CHECK(parse_live_console(s.ui.live_console) == LiveConsole::Ps5);
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK_FALSE(cfg.overlay_console);
+  CHECK(cfg.live_console == static_cast<int>(LiveConsole::Ps5));
+  auto hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK_FALSE(lobby_hud_contains(hud, "PS5"));
+
+  s.ui.overlay_console = true;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.overlay_console);
+  hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "PS5"));
+  char chip[48]{};
+  format_overlay_console_chip(chip, sizeof(chip), LiveConsole::Ps5);
+  CHECK(std::string(chip) == "PS5");
+  CHECK(overlay_console_label_or_null(false, LiveConsole::Ps5) == nullptr);
+  CHECK(std::string(overlay_console_label_or_null(true, LiveConsole::Ps5)) == "PS5");
+}
+
+TEST_CASE("console branding is public on compact mini and persist") {
+  PersistedSettings s = default_settings();
+  s.ui.show_fps = true;
+  s.ui.overlay_console = true;
+  s.ui.live_console = "xbox_sx";
+  auto hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "Xbox Series X"));
+  CHECK_FALSE(lobby_hud_contains(hud, "\xE2\x96\xA0"));
+
+  s.ui.advanced_metrics = true;
+  s.ui.live_console = "ps4";
+  hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "PS4"));
+  CHECK(lobby_hud_contains(hud, "ADV"));
+
+  s.ui.advanced_metrics = false;
+  s.ui.live_console = "xbox_sx";
+  hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "Xbox Series X"));
+  CHECK(lobby_hud_contains(hud, "NexusCap"));
+
+  s.ui.overlay_console = false;
+  hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK_FALSE(lobby_hud_contains(hud, "Xbox Series X"));
+  CHECK(lobby_hud_contains(hud, "NexusCap"));
+
+  MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+  char a[384]{}, b[384]{};
+  unsigned char cr = 0, cg = 85, cb = 185;
+  const int n = format_mini_overlay_segments(
+      segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 0.0, false, 2, true, true, 16.7, 16.6, 17.0,
+      18.0, true, 8.5, 2.2, 0, 0, 0, 2560, 1440, 2560, 1440, 2560, 1440, 100, false, 0, 0, 0, 0, "Default",
+      nullptr, 0, 0, 0, nullptr, 60.0, 1, "PS4", false, cr, cg, cb);
+  CHECK(n > 0);
+  CHECK(std::strstr(segs[0].text, "PS4") != nullptr);
+  CHECK(std::strstr(segs[0].text, "\xE2\x96\xA0") == nullptr);
+  CHECK(std::strstr(a, "PS4") != nullptr);
+
+  AppConfig cfg;
+  cfg.live_console = static_cast<int>(LiveConsole::Ps3);
+  cfg.overlay_console = true;
+  PersistedSettings back = default_settings();
+  apply_session_cfg_to_persisted(cfg, back);
+  CHECK(back.ui.live_console == std::string("ps3"));
+  CHECK(back.ui.overlay_console);
 }
 
 TEST_CASE("live mode gate file helpers still work; overlay active follows flag") {
@@ -2841,11 +2971,33 @@ TEST_CASE("live fps line shows FG bar when on") {
 TEST_CASE("apply_persisted copies live overlay flags") {
   PersistedSettings s = default_settings();
   s.ui.live_overlay = true;
+  s.ui.overlay_console = true;
   s.ui.live_console = "switch2";
   AppConfig cfg;
   apply_persisted_to_config(s, cfg);
   CHECK(cfg.live_overlay);
+  CHECK(cfg.overlay_console);
   CHECK(cfg.live_console == static_cast<int>(LiveConsole::Switch2));
+  s.ui.live_console = "xbox_sx";
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.live_console == static_cast<int>(LiveConsole::XboxSx));
+  s.ui.live_console = "ps3";
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.live_console == static_cast<int>(LiveConsole::Ps3));
+  s.ui.live_console = "xbox_one";
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.live_console == static_cast<int>(LiveConsole::XboxOne));
+  s.ui.live_console = "switch";
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.live_console == static_cast<int>(LiveConsole::Switch));
+}
+
+TEST_CASE("apply_persisted copies live console") {
+  PersistedSettings s = default_settings();
+  s.ui.live_console = "xbox_sx";
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.live_console == static_cast<int>(LiveConsole::XboxSx));
 }
 
 TEST_CASE("live overlay active follows setting without live.on") {
@@ -2876,6 +3028,54 @@ TEST_CASE("feed scale change needs relaunch only under RenoDX") {
   const std::string msg = session_notice_feed_scale_apply(100, 50);
   CHECK(msg.find("100%") != std::string::npos);
   CHECK(msg.find("50%") != std::string::npos);
+}
+
+TEST_CASE("lobby Iniciar always relaunches so CFG is first swapchain") {
+  CHECK(lobby_iniciar_needs_session_relaunch());
+  const std::string msg = session_notice_lobby_iniciar_apply();
+  CHECK(msg.find("DLSS 5") != std::string::npos);
+  CHECK(msg.find("preset") != std::string::npos);
+  CHECK(msg.find("escala") != std::string::npos);
+
+  // Cinema + NR off + 50%: disk → cfg → autostart boot uses session scale, not lobby 100%.
+  PersistedSettings s = default_settings();
+  s.enhance_renodx = true;
+  s.neural_rendering = false;
+  s.renodx_preset = static_cast<int>(RenodxVisualPreset::Cinematic);
+  s.nr_pass_count = 1;
+  s.scale_percent = 50;
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.enhance == EnhanceBackend::Renodx);
+  CHECK_FALSE(cfg.neural_rendering);
+  CHECK(cfg.renodx_preset == 2);
+  CHECK(cfg.scale_percent == 50);
+  CHECK(feed_work_resolution_at_boot(/*lobby_first=*/true, cfg.scale_percent) == 100);
+  CHECK(feed_work_resolution_at_boot(/*lobby_first=*/false, cfg.scale_percent) == 50);
+  CHECK(want_neural_rendering(s.enhance_renodx, s.neural_rendering) == false);
+
+  s.neural_rendering = true;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.neural_rendering);
+  CHECK(want_neural_rendering(s.enhance_renodx, s.neural_rendering));
+
+  s.enhance_renodx = false;
+  s.neural_rendering = true;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.enhance == EnhanceBackend::Off);
+  CHECK_FALSE(cfg.neural_rendering);
+
+  std::string feed = "enabled=1\npreset=0\nwork_resolution=100\n";
+  std::string reshade = "NeuralUplift=1\nNRPreset=0\n";
+  feed = apply_feed_enabled(std::move(feed), false);
+  feed = apply_renodx_visual_preset_to_feed(std::move(feed), 2, 1);
+  feed = apply_feed_work_resolution(std::move(feed), feed_work_resolution_for_session(50));
+  reshade = apply_reshade_neural_uplift(std::move(reshade), false);
+  reshade = apply_renodx_visual_preset_to_reshade(std::move(reshade), 2);
+  CHECK_FALSE(parse_feed_enabled(feed, true));
+  CHECK_FALSE(parse_reshade_neural_uplift(reshade, true));
+  CHECK(renodx_files_reflect_visual_preset(feed, reshade, 2, 1));
+  CHECK(parse_feed_work_resolution(feed) == 50);
 }
 
 // Measured: multipass RenoDX ignores NRToggleKey, so Delete must not fake an "off" HUD.
@@ -2931,6 +3131,32 @@ TEST_CASE("--autostart keeps lobby settings seeding and skips the menu once") {
   const AppConfig c = parse_args(2, const_cast<char**>(argv));
   CHECK(c.autostart);
   CHECK(c.show_lobby);  // settings still seed cfg; main skips the first run_lobby
+  CHECK_FALSE(c.open_lobby_cfg);  // captura, nao o CFG do lobby
+}
+
+TEST_CASE("lobby CFG reopen after motor-swap relaunch") {
+  CHECK(std::string(lobby_cfg_relaunch_args()) == "--lobby-cfg");
+  CHECK(std::string(lobby_cfg_relaunch_args()).find("autostart") == std::string::npos);
+  CHECK(std::string(session_cfg_relaunch_args()) == "--autostart");
+
+  char a0[] = "NexusCap.exe";
+  char a1[] = "--lobby-cfg";
+  char* argv[] = {a0, a1};
+  AppConfig c = parse_args(2, argv);
+  CHECK(c.open_lobby_cfg);
+  CHECK(c.show_lobby);
+  CHECK_FALSE(c.autostart);
+
+  bool flag = true;
+  CHECK(lobby_consume_open_cfg(flag));
+  CHECK_FALSE(flag);
+  CHECK_FALSE(lobby_consume_open_cfg(flag));
+  CHECK(lobby_consume_open_cfg(c.open_lobby_cfg));
+  CHECK_FALSE(c.open_lobby_cfg);
+
+  // Normal boot / Iniciar / Ctrl+M must not leave the lobby CFG stuck open.
+  AppConfig fresh;
+  CHECK_FALSE(lobby_consume_open_cfg(fresh.open_lobby_cfg));
 }
 
 TEST_CASE("mini overlay 3-row breaks keep stalls off the clipped FPS row") {
@@ -2947,7 +3173,9 @@ TEST_CASE("mini overlay 3-row breaks keep stalls off the clipped FPS row") {
   CHECK(wrap_st < wrap_l600);
   CHECK(wrap_l600 < n);
   CHECK(mini_overlay_seg_is_stalls(segs[wrap_st]));
-  CHECK(std::strstr(segs[wrap_st].text, "st7/cl1") != nullptr);
+  CHECK(std::strstr(segs[wrap_st].text, "st7/cl1") == nullptr);
+  CHECK(std::strstr(segs[wrap_st].text, "stalls 7") != nullptr);
+  CHECK(std::strstr(segs[wrap_st].text, "clusters 1") != nullptr);
   CHECK(mini_overlay_seg_is_l600(segs[wrap_l600]));
   // FPS / res / VSYNC stay on row 0; stalls never share that row (sparkline used to clip them).
   bool row0_has_res = false;
@@ -3184,6 +3412,10 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(preset_toast.find("Default") != std::string::npos);
   CHECK(preset_toast.find("Cinematic") != std::string::npos);
   CHECK(preset_toast.find("reinicio") != std::string::npos);
+  const std::string model_toast = session_notice_preset_apply(0, 2, 4);
+  CHECK(model_toast.find("Model A") != std::string::npos);
+  CHECK(model_toast.find("Model C") != std::string::npos);
+  CHECK(model_toast.find("Cinematic") == std::string::npos);
   // Toast na sessao diz de onde pra onde, igual a troca de motor.
   const std::string toast = session_notice_nr_pass_count_apply(4, 2);
   CHECK(toast.find("1,5x") != std::string::npos);
@@ -3194,8 +3426,12 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(scale.find("sessao") != std::string::npos);
   CHECK(restart_notice_visible_at_boot(/*autostart=*/true));
   CHECK_FALSE(restart_notice_visible_at_boot(false));
-  CHECK(kDlss5MotorSwapHoldSec <= 1.1);
-  CHECK(kDlss5MotorSwapHoldSec >= 1.0);
+  CHECK(kDlss5MotorSwapHoldSec <= 0.55);
+  CHECK(kDlss5MotorSwapHoldSec >= 0.50);
+  CHECK(std::string(nr_pass_count_15x_hint()).find("exclusivo") != std::string::npos);
+  CHECK(std::string(nr_pass_count_15x_hint()).find("2x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_15x_hint()).find("desempenho") != std::string::npos);
+  CHECK(std::string(nr_pass_count_23x_hint()).find("2x/3x") != std::string::npos);
 }
 
 TEST_CASE("visual preset writes every ReShade section on 1x 1.5x 2x 3x") {
@@ -3208,13 +3444,13 @@ TEST_CASE("visual preset writes every ReShade section on 1x 1.5x 2x 3x") {
       "[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\nDirectNeuralRenderingStyle=0\n\n"
       "[RenoDX.DLSS5]\nNeuralUplift=1\nNRPreset=0\nNRStyle=0\nDirectNeuralRenderingPassCount=1\n";
 
-  // Cinema: live section used to stay at NRStyle=0 / missing Style — addon ignored preset1.
+  // Model C: live section used to stay at NRStyle=0 / missing Style — addon ignored preset1.
   std::string cinema = apply_reshade_visual_look_keys(live_ini, 2);
   CHECK(every_keyed_int_is(cinema, "NRPreset=", 1));
   CHECK(every_keyed_int_is(cinema, "NRStyle=", 1));
-  CHECK(every_keyed_int_is(cinema, "DirectNeuralRenderingStyle=", 1));
+  CHECK(every_keyed_int_is(cinema, "DirectNeuralRenderingStyle=", 2));
   CHECK(cinema.find("[RenoDX.DLSS5]") != std::string::npos);
-  CHECK(cinema.find("DirectNeuralRenderingStyle=1") != std::string::npos);
+  CHECK(cinema.find("DirectNeuralRenderingStyle=2") != std::string::npos);
 
   std::string back = apply_reshade_visual_look_keys(std::move(cinema), 0);
   CHECK(every_keyed_int_is(back, "NRPreset=", 0));
@@ -3236,14 +3472,15 @@ TEST_CASE("visual preset writes every ReShade section on 1x 1.5x 2x 3x") {
         reshade = apply_reshade_stable_look_defaults(std::move(reshade), v);
       }
       reshade = apply_reshade_visual_look_keys(std::move(reshade), v);
-      feed = apply_renodx_visual_preset_to_feed(std::move(feed), v);
-      CHECK(renodx_files_reflect_visual_preset(feed, reshade, v));
+      feed = apply_renodx_visual_preset_to_feed(std::move(feed), v, p);
+      CHECK(renodx_files_reflect_visual_preset(feed, reshade, v, p));
       CHECK(every_keyed_int_is(reshade, "NRPreset=", renodx_nr_preset_index(v)));
       CHECK(every_keyed_int_is(reshade, "NRStyle=", renodx_nr_preset_index(v)));
       if (nr_pass_count_uses_multipass_addon(p)) {
-        CHECK(every_keyed_int_is(reshade, "DirectNeuralRenderingStyle=", renodx_nr_preset_index(v)));
+        CHECK(every_keyed_int_is(reshade, "DirectNeuralRenderingStyle=",
+                                renodx_direct_style_index(v, p)));
       }
-      CHECK(parse_feed_model_preset(feed) == renodx_feed_model_preset(v));
+      CHECK(parse_feed_model_preset(feed) == renodx_feed_model_preset(v, p));
       CHECK(parse_keyed_int(feed, "rebuild=", 0) == 1);
     }
   }
@@ -3273,8 +3510,8 @@ TEST_CASE("session CFG preset persist then boot files match on every motor") {
           "\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingStyle=0\n[RenoDX.DLSS5]\nNRPreset=0\nNRStyle=0\n";
       reshade = apply_reshade_look_for_current_stack(std::move(reshade), back.renodx_preset);
       std::string feed = "preset=9\n";
-      feed = apply_renodx_visual_preset_to_feed(std::move(feed), back.renodx_preset);
-      CHECK(renodx_files_reflect_visual_preset(feed, reshade, v));
+      feed = apply_renodx_visual_preset_to_feed(std::move(feed), back.renodx_preset, p);
+      CHECK(renodx_files_reflect_visual_preset(feed, reshade, v, p));
     }
   }
 }
@@ -3288,5 +3525,315 @@ TEST_CASE("--selftest-cfg runs the session without the lobby") {
   CHECK(c.frames_limited);
   CHECK(c.smoke_frames >= 60);
 }
+
+TEST_CASE("visual preset names and disk keys follow the DLSS5 motor") {
+  // 1x Krish: look names + NR cinema knob + Natural on feed Preset#1.
+  CHECK(std::string(renodx_visual_preset_name(0, 1)) == "Default");
+  CHECK(std::string(renodx_visual_preset_name(1, 1)) == "Natural");
+  CHECK(std::string(renodx_visual_preset_name(2, 1)) == "Cinematic");
+  CHECK(renodx_nr_preset_index(0) == 0);
+  CHECK(renodx_nr_preset_index(1) == 0);
+  CHECK(renodx_nr_preset_index(2) == 1);
+  CHECK(renodx_feed_model_preset(0, 1) == 0);
+  CHECK(renodx_feed_model_preset(1, 1) == 1);
+  CHECK(renodx_feed_model_preset(2, 1) == 0);
+  CHECK(renodx_direct_style_index(2, 1) == 1);
+
+  // 1.5x/2x/3x ShortFuse: Model A/B/C, Style+feed 0/1/2, Krish NR* still 0/0/1.
+  for (int p : {4, 2, 3}) {
+    CHECK(nr_pass_count_uses_multipass_addon(p));
+    CHECK(std::string(renodx_visual_preset_name(0, p)) == "Model A");
+    CHECK(std::string(renodx_visual_preset_name(1, p)) == "Model B");
+    CHECK(std::string(renodx_visual_preset_name(2, p)) == "Model C");
+    CHECK(renodx_feed_model_preset(0, p) == 0);
+    CHECK(renodx_feed_model_preset(1, p) == 1);
+    CHECK(renodx_feed_model_preset(2, p) == 2);
+    CHECK(renodx_direct_style_index(0, p) == 0);
+    CHECK(renodx_direct_style_index(1, p) == 1);
+    CHECK(renodx_direct_style_index(2, p) == 2);
+    CHECK(renodx_visual_presets_differ_on_disk(0, 1, p));
+    CHECK(renodx_visual_presets_differ_on_disk(0, 2, p));
+    CHECK(renodx_visual_presets_differ_on_disk(1, 2, p));
+  }
+
+  // Motor swap: 1x Cinematic (feed 0) must become Model C (feed 2) on 1.5x.
+  CHECK(renodx_feed_model_preset(2, 1) != renodx_feed_model_preset(2, 4));
+  std::string feed = "enabled=1\npreset=0\n";
+  feed = apply_renodx_visual_preset_to_feed(std::move(feed), 2, 1);
+  CHECK(parse_feed_model_preset(feed) == 0);
+  feed = apply_renodx_visual_preset_to_feed(std::move(feed), 2, 4);
+  CHECK(parse_feed_model_preset(feed) == 2);
+
+  const int motors[] = {1, 4, 2, 3};
+  const int scales[] = {100, 50};
+
+  auto feed_look_and_scale_ok = [](const std::string& f, int v, int p, int scale) {
+    const int want_work = feed_work_resolution_for_session(scale);
+    CHECK(parse_feed_model_preset(f) == renodx_feed_model_preset(v, p));
+    CHECK(parse_feed_work_resolution(f) == want_work);
+    CHECK(parse_keyed_int(f, "work_upscale=", -1) == (want_work < 100 ? 1 : 0));
+    CHECK(parse_keyed_int(f, "rebuild=", 0) == 1);
+  };
+
+  // Disco: motor x preset x escala. Preset nao apaga work_resolution; escala nao apaga model.
+  for (int p : motors) {
+    for (int v : {0, 1, 2}) {
+      for (int scale : scales) {
+        std::string reshade =
+            std::string("[GENERAL]\nAddonPath=") + renodx_addon_stack_rel(p) +
+            "\n\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\nDirectNeuralRenderingStyle=9\n\n"
+            "[RenoDX.DLSS5]\nNeuralUplift=1\nNRPreset=9\nNRStyle=9\nDirectNeuralRenderingStyle=9\n";
+        std::string f = "enabled=1\npreset=9\nwork_resolution=9\nwork_upscale=0\n";
+        if (nr_pass_count_uses_multipass_addon(p)) {
+          reshade = apply_reshade_multipass_look_defaults(std::move(reshade), p, v);
+        } else {
+          reshade = apply_reshade_stable_look_defaults(std::move(reshade), v);
+        }
+        f = apply_feed_work_resolution(std::move(f), scale);
+        f = apply_renodx_visual_preset_to_feed(std::move(f), v, p);
+        CHECK(renodx_files_reflect_visual_preset(f, reshade, v, p));
+        feed_look_and_scale_ok(f, v, p, scale);
+        CHECK(every_keyed_int_is(reshade, "NRPreset=", renodx_nr_preset_index(v)));
+        CHECK(every_keyed_int_is(reshade, "NRStyle=", renodx_nr_preset_index(v)));
+        if (nr_pass_count_uses_multipass_addon(p)) {
+          CHECK(every_keyed_int_is(reshade, "DirectNeuralRenderingStyle=", v));
+        }
+
+        f = apply_renodx_visual_preset_to_feed(std::move(f), v, p);
+        f = apply_feed_work_resolution(std::move(f), scale);
+        CHECK(renodx_files_reflect_visual_preset(f, reshade, v, p));
+        feed_look_and_scale_ok(f, v, p, scale);
+      }
+    }
+  }
+
+  // HUD compacto/mini/ADV + persist + overlay: 4 motores x 3 looks x 2 escalas.
+  for (int p : motors) {
+    for (int v : {0, 1, 2}) {
+      for (int scale : scales) {
+        const char* want = renodx_visual_preset_name(v, p);
+        const bool mp = nr_pass_count_uses_multipass_addon(p);
+        char scale_tag[16]{};
+        std::snprintf(scale_tag, sizeof(scale_tag), "scale %d%%", scale);
+        char at_tag[16]{};
+        std::snprintf(at_tag, sizeof(at_tag), "@%d%%", scale);
+        const char* other_scale = (scale == 50) ? "scale 100%" : "scale 50%";
+        const char* other_at = (scale == 50) ? "@100%" : "@50%";
+
+        PersistedSettings s = default_settings();
+        s.enhance_renodx = true;
+        s.neural_rendering = true;
+        s.ui.show_fps = true;
+        s.renodx_preset = v;
+        s.nr_pass_count = p;
+        s.scale_percent = scale;
+
+        AppConfig cfg;
+        apply_persisted_to_config(s, cfg);
+        CHECK(cfg.renodx_preset == v);
+        CHECK(cfg.nr_pass_count == p);
+        CHECK(cfg.scale_percent == scale);
+        CHECK(effective_scale_percent(true, cfg.scale_percent) == feed_work_resolution_for_session(scale));
+
+        PersistedSettings back = default_settings();
+        apply_session_cfg_to_persisted(cfg, back);
+        CHECK(back.renodx_preset == v);
+        CHECK(back.nr_pass_count == p);
+        CHECK(back.scale_percent == scale);
+
+        const int ww = scaled_extent(s.width, scale);
+        const int wh = scaled_extent(s.height, scale);
+
+        for (bool mini : {false, true}) {
+          for (bool adv : {false, true}) {
+            s.ui.mini_overlay = mini;
+            s.ui.advanced_metrics = adv;
+            const auto hud = make_lobby_hud_preview_lines(s, 60.0);
+            CHECK(lobby_hud_contains(hud, want));
+            if (mini) {
+              CHECK(lobby_hud_contains(hud, at_tag));
+              CHECK_FALSE(lobby_hud_contains(hud, other_at));
+            } else {
+              CHECK(lobby_hud_contains(hud, scale_tag));
+              CHECK_FALSE(lobby_hud_contains(hud, other_scale));
+            }
+            if (mp) {
+              CHECK_FALSE(lobby_hud_contains(hud, "Default"));
+              CHECK_FALSE(lobby_hud_contains(hud, "Natural"));
+              CHECK_FALSE(lobby_hud_contains(hud, "Cinematic"));
+            } else {
+              CHECK_FALSE(lobby_hud_contains(hud, "Model A"));
+              CHECK_FALSE(lobby_hud_contains(hud, "Model B"));
+              CHECK_FALSE(lobby_hud_contains(hud, "Model C"));
+            }
+          }
+        }
+
+        MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+        char a[384]{}, b[384]{};
+        const int n = format_mini_overlay_segments(
+            segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 0.0, false, 2, true, true, 16.7, 16.6,
+            17.0, 18.0, true, 8.5, 2.2, 0, 0, 0, s.width, s.height, ww, wh, s.width, s.height, scale, true, 59.9,
+            2.0, 2.1, 0, want, nullptr, 1.5, 0, 0, nullptr, 60.0, p);
+        CHECK(n > 0);
+        CHECK(std::strstr(a, want) != nullptr);
+        CHECK(std::strstr(a, nr_pass_count_short(p)) != nullptr);
+        CHECK(std::strstr(a, at_tag) != nullptr);
+        CHECK(std::strstr(a, other_at) == nullptr);
+        if (scale == 50) {
+          CHECK(std::strstr(a, "1280x720") != nullptr);
+        }
+
+        const std::string toast = session_notice_preset_apply(0, v, p);
+        CHECK(toast.find(renodx_visual_preset_name(0, p)) != std::string::npos);
+        CHECK(toast.find(want) != std::string::npos);
+      }
+    }
+  }
+
+  // Troca de motor em todas as direcoes, nas duas escalas: look muda, work_resolution fica.
+  for (int from_p : motors) {
+    for (int to_p : motors) {
+      for (int v : {0, 1, 2}) {
+        for (int scale : scales) {
+          std::string f = "enabled=1\npreset=9\nwork_resolution=9\nwork_upscale=0\n";
+          f = apply_feed_work_resolution(std::move(f), scale);
+          f = apply_renodx_visual_preset_to_feed(std::move(f), v, from_p);
+          feed_look_and_scale_ok(f, v, from_p, scale);
+
+          std::string reshade = std::string("[GENERAL]\nAddonPath=") + renodx_addon_stack_rel(from_p) +
+                                "\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingStyle=9\n"
+                                "[RenoDX.DLSS5]\nNRPreset=9\nNRStyle=9\nDirectNeuralRenderingStyle=9\n";
+          reshade = apply_reshade_addon_path(std::move(reshade), from_p);
+          reshade = apply_reshade_look_for_current_stack(std::move(reshade), v);
+          CHECK(renodx_files_reflect_visual_preset(f, reshade, v, from_p));
+
+          f = apply_renodx_visual_preset_to_feed(std::move(f), v, to_p);
+          feed_look_and_scale_ok(f, v, to_p, scale);
+          reshade = apply_reshade_addon_path(std::move(reshade), to_p);
+          reshade = apply_reshade_look_for_current_stack(std::move(reshade), v);
+          CHECK(renodx_files_reflect_visual_preset(f, reshade, v, to_p));
+          feed_look_and_scale_ok(f, v, to_p, scale);
+          if (nr_pass_count_uses_multipass_addon(to_p)) {
+            CHECK(every_keyed_int_is(reshade, "DirectNeuralRenderingStyle=", v));
+          }
+        }
+      }
+    }
+  }
+
+  // Salvar da engrenagem: visual primeiro (AddonPath ainda velho), Pass Count depois. Escala 50% sobrevive.
+  {
+    std::string reshade =
+        "[GENERAL]\nAddonPath=.\\addons-stable\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingStyle=9\n"
+        "[RenoDX.DLSS5]\nNRPreset=0\nNRStyle=0\n";
+    std::string f = "preset=0\nwork_resolution=100\nwork_upscale=0\n";
+    f = apply_feed_work_resolution(std::move(f), 50);
+    f = apply_renodx_visual_preset_to_feed(std::move(f), 2, 4);  // Model C feed=2 even before stack swap
+    CHECK(parse_feed_model_preset(f) == 2);
+    CHECK(parse_feed_work_resolution(f) == 50);
+    CHECK(parse_keyed_int(f, "work_upscale=", 0) == 1);
+    reshade = apply_reshade_look_for_current_stack(std::move(reshade), 2);  // still 1x stack
+    CHECK(parse_reshade_nr_preset(reshade) == 1);
+    reshade = apply_reshade_addon_path(std::move(reshade), 4);
+    reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 4, 2);
+    CHECK(renodx_files_reflect_visual_preset(f, reshade, 2, 4));
+    CHECK(every_keyed_int_is(reshade, "DirectNeuralRenderingStyle=", 2));
+    CHECK(parse_feed_work_resolution(f) == 50);
+  }
+}
+
+TEST_CASE("lobby gear and Ctrl+M session CFG share motor names, disk, and scale") {
+  // Os dois menus chamam a mesma API de nome; o disco e o mesmo apply. O que muda e o plano:
+  // lobby (tela principal / F12) aplica look ao vivo no 1x; Ctrl+M sempre reinicia.
+  const int motors[] = {1, 4, 2, 3};
+  const int scales[] = {100, 50};
+  for (int p : motors) {
+    for (int v : {0, 1, 2}) {
+      for (int scale : scales) {
+        const char* radio0 = renodx_visual_preset_name(0, p);
+        const char* radio1 = renodx_visual_preset_name(1, p);
+        const char* radio2 = renodx_visual_preset_name(2, p);
+        const char* want = renodx_visual_preset_name(v, p);
+        const bool radio_ok = (std::string(radio0) == want) || (std::string(radio1) == want) ||
+                              (std::string(radio2) == want);
+        CHECK(radio_ok);
+        if (nr_pass_count_uses_multipass_addon(p)) {
+          CHECK(std::string(radio0) == "Model A");
+          CHECK(std::string(radio1) == "Model B");
+          CHECK(std::string(radio2) == "Model C");
+        } else {
+          CHECK(std::string(radio0) == "Default");
+          CHECK(std::string(radio1) == "Natural");
+          CHECK(std::string(radio2) == "Cinematic");
+        }
+
+        // Lobby: troca de preset sincroniza ficheiros (preview). Ctrl+M: sempre relaunch.
+        const auto lobby = plan_lobby_renodx_preset_change(true, true, 0, v, true);
+        CHECK(lobby.sync_preset_files == (v != 0));
+        CHECK_FALSE(session_cfg_preset_applies_live(nr_pass_count_uses_multipass_addon(p)));
+        CHECK(plan_session_cfg_preset_apply(nr_pass_count_uses_multipass_addon(p)) ==
+              SessionCfgApply::RelaunchPreset);
+
+        PersistedSettings gear = default_settings();
+        gear.enhance_renodx = true;
+        gear.neural_rendering = true;
+        gear.ui.show_fps = true;
+        gear.renodx_preset = v;
+        gear.nr_pass_count = p;
+        gear.scale_percent = scale;
+
+        // Tela principal: Salvar da engrenagem / lobby CFG.
+        const std::string ini = serialize_settings_ini(gear);
+        PersistedSettings loaded;
+        REQUIRE(parse_settings_ini(ini, loaded));
+        CHECK(loaded.renodx_preset == v);
+        CHECK(loaded.nr_pass_count == p);
+        CHECK(loaded.scale_percent == scale);
+
+        AppConfig from_lobby;
+        apply_persisted_to_config(loaded, from_lobby);
+        CHECK(from_lobby.renodx_preset == v);
+        CHECK(from_lobby.nr_pass_count == p);
+        CHECK(from_lobby.scale_percent == scale);
+
+        // Ctrl+M: persist da sessao para o --autostart.
+        AppConfig from_cfg;
+        from_cfg.enhance = EnhanceBackend::Renodx;
+        from_cfg.renodx_preset = v;
+        from_cfg.nr_pass_count = p;
+        from_cfg.scale_percent = scale;
+        PersistedSettings after_ctrl_m = default_settings();
+        apply_session_cfg_to_persisted(from_cfg, after_ctrl_m);
+        CHECK(after_ctrl_m.renodx_preset == v);
+        CHECK(after_ctrl_m.nr_pass_count == p);
+        CHECK(after_ctrl_m.scale_percent == scale);
+
+        std::string feed = "enabled=1\npreset=9\nwork_resolution=9\nwork_upscale=0\n";
+        std::string reshade = std::string("[GENERAL]\nAddonPath=") + renodx_addon_stack_rel(p) +
+                              "\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingStyle=9\n"
+                              "[RenoDX.DLSS5]\nNRPreset=9\nNRStyle=9\nDirectNeuralRenderingStyle=9\n";
+        reshade = apply_reshade_look_for_current_stack(std::move(reshade), v);
+        feed = apply_feed_work_resolution(std::move(feed), scale);
+        feed = apply_renodx_visual_preset_to_feed(std::move(feed), v, p);
+        CHECK(renodx_files_reflect_visual_preset(feed, reshade, v, p));
+        CHECK(parse_feed_work_resolution(feed) == feed_work_resolution_for_session(scale));
+
+        const auto lobby_hud = make_lobby_hud_preview_lines(gear, 60.0);
+        CHECK(lobby_hud_contains(lobby_hud, want));
+        gear.ui.mini_overlay = true;
+        const auto mini = make_lobby_hud_preview_lines(gear, 60.0);
+        CHECK(lobby_hud_contains(mini, want));
+
+        const std::string lobby_toast = std::string("Preset: ") + want + " — olhe o preview";
+        CHECK(lobby_toast.find(want) != std::string::npos);
+        const std::string cfg_toast = session_notice_preset_apply(0, v, p);
+        CHECK(cfg_toast.find(want) != std::string::npos);
+        CHECK(cfg_toast.find("reinicio") != std::string::npos);
+      }
+    }
+  }
+}
+
 
 

@@ -43,7 +43,7 @@ Funcionalidade: CFG na captura (Ctrl+M)
     Dado que o Pass Count atual e <modo>
     E o Neural Rendering esta <estado_inicial>
     Quando eu ligo ou desligo Neural Rendering ON no CFG (ou aperto Delete)
-    Entao aparece o aviso Reiniciando o NexusCap cerca de 1,1 s
+    Entao aparece o aviso Reiniciando o NexusCap cerca de 0,55 s
     E o processo volta para a sessao com --autostart (nunca para o lobby)
     E a imagem e o check do NR ficam iguais a <estado_final>
 
@@ -73,12 +73,12 @@ Funcionalidade: CFG na captura (Ctrl+M)
       | modo | cena       |
       | 1x   | Natural    |
       | 1x   | Cinematic  |
-      | 1,5x | Natural    |
-      | 1,5x | Cinematic  |
-      | 2x   | Natural    |
-      | 2x   | Cinematic  |
-      | 3x   | Natural    |
-      | 3x   | Cinematic  |
+      | 1,5x | Model B    |
+      | 1,5x | Model C    |
+      | 2x   | Model B    |
+      | 2x   | Model C    |
+      | 3x   | Model B    |
+      | 3x   | Model C    |
 
   @critico @hdmi
   Esquema do Cenario: Trocar Pass Count reinicia e volta na sessao

@@ -2,6 +2,7 @@
 
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/imgui_theme.hpp"
+#include "nexuscap/live_mode.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/version.hpp"
 
@@ -182,6 +183,35 @@ void SessionCfgOverlay::draw_panel() {
     if (ImGui::Checkbox("Overlay HUD", &state.hud_visible)) actions_.hud_changed = true;
 
     ImGui::Separator();
+      if (ImGui::Checkbox("Mostrar console", &state.overlay_console)) actions_.console_changed = true;
+      if (state.overlay_console) {
+        LiveConsole cur = clamp_live_console(state.live_console);
+        auto console_imcol = [](LiveConsole c) -> ImVec4 {
+          const COLORREF rgb = live_console_color(c);
+          return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
+        };
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
+        char console_btn[48]{};
+        std::snprintf(console_btn, sizeof(console_btn), "%s##console_pick", live_console_label(cur));
+        if (ImGui::Button(console_btn)) ImGui::OpenPopup("##console_menu");
+        ImGui::PopStyleColor();
+        if (ImGui::BeginPopup("##console_menu")) {
+          for (LiveConsole o : kLiveConsoleOrder) {
+            const bool selected = (o == cur);
+            ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
+            if (ImGui::MenuItem(live_console_label(o), nullptr, selected)) {
+              state.live_console = static_cast<int>(o);
+              actions_.console_changed = true;
+            }
+            ImGui::PopStyleColor();
+          }
+          ImGui::EndPopup();
+        }
+        ImGui::TextDisabled("  -> nome no overlay (padrao PS5)");
+      }
+
+    ImGui::Separator();
     ImGui::TextUnformatted("Neural Rendering");
     const bool nr_toggle_ok = session_cfg_nr_toggle_allowed(state.renodx_stack, state.multipass);
     ImGui::BeginDisabled(!nr_toggle_ok || state.nr_busy);
@@ -199,11 +229,11 @@ void SessionCfgOverlay::draw_panel() {
     ImGui::TextUnformatted("Preset visual");
     const int preset_before = clamp_renodx_visual_preset(state.renodx_preset);
     int preset = preset_before;
-    if (ImGui::RadioButton("Default", preset == 0)) preset = 0;
+    if (ImGui::RadioButton(renodx_visual_preset_name(0, state.nr_pass_count), preset == 0)) preset = 0;
     ImGui::SameLine();
-    if (ImGui::RadioButton("Natural", preset == 1)) preset = 1;
+    if (ImGui::RadioButton(renodx_visual_preset_name(1, state.nr_pass_count), preset == 1)) preset = 1;
     ImGui::SameLine();
-    if (ImGui::RadioButton("Cinematic", preset == 2)) preset = 2;
+    if (ImGui::RadioButton(renodx_visual_preset_name(2, state.nr_pass_count), preset == 2)) preset = 2;
     state.renodx_preset = clamp_renodx_visual_preset(preset);
     if (state.renodx_preset != preset_before) actions_.preset_changed = true;
     ImGui::TextColored(kWarn, "Trocar o preset reinicia o app e volta para a sessao.");
@@ -224,8 +254,8 @@ void SessionCfgOverlay::draw_panel() {
       actions_.pass_count_changed = true;
       actions_.pass_count_before = pass_before;
     }
-    ImGui::TextDisabled("1,5x: mesma res e ~60 fps que o 1x (recomendado).");
-    ImGui::TextDisabled("2x/3x: mais pesados, pouco ganho, look mais processado.");
+    ImGui::TextDisabled("%s", nr_pass_count_15x_hint());
+    ImGui::TextDisabled("%s", nr_pass_count_23x_hint());
     // O addon só lê o PassCount no init: qualquer troca aqui passa por processo novo.
     ImGui::TextColored(kWarn, "Trocar o Pass Count reinicia o app e volta para a sessao.");
     ImGui::EndDisabled();

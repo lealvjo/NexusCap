@@ -151,7 +151,7 @@ void SessionReportWriter::write_header(const SessionReportSnapshot& snap) {
   append_kv(o, "fg_multiplier", snap.fg_multiplier);
   append_kv(o, "neural_rendering", snap.neural_rendering);
   append_kv(o, "nr_runtime_on", snap.nr_runtime_on);
-  append_kv(o, "renodx_preset", renodx_visual_preset_name(snap.renodx_preset));
+  append_kv(o, "renodx_preset", renodx_visual_preset_name(snap.renodx_preset, snap.nr_pass_count));
   append_kv(o, "video_fourcc", snap.video_fourcc);
   append_kv(o, "color_space", snap.color_space);
   append_kv(o, "color_range", snap.color_range);
@@ -175,14 +175,14 @@ void SessionReportWriter::write_header(const SessionReportSnapshot& snap) {
     o << "# dlss5-feed.cfg\n" << snap.feed_snippet;
     o << "# DLSS5MGF.ini\n" << snap.mgf_snippet;
     append_kv(o, "nr_runtime_on", snap.nr_runtime_on);
-    append_kv(o, "app_renodx_preset", renodx_visual_preset_name(snap.renodx_preset));
+    append_kv(o, "app_renodx_preset", renodx_visual_preset_name(snap.renodx_preset, snap.nr_pass_count));
 
     o << "\n=== TUNABLES (app) ===\n";
     append_kv(o, "scale_percent", snap.scale_percent);
     append_kv(o, "fg_enabled", snap.fg_enabled);
     append_kv(o, "fg_multiplier", snap.fg_multiplier);
     append_kv(o, "neural_rendering", snap.neural_rendering);
-    append_kv(o, "renodx_preset", renodx_visual_preset_name(snap.renodx_preset));
+    append_kv(o, "renodx_preset", renodx_visual_preset_name(snap.renodx_preset, snap.nr_pass_count));
     append_kv(o, "sync_image", snap.sync_image);
     append_kv(o, "fullscreen", snap.fullscreen);
     append_kv(o, "mini_overlay", snap.mini_overlay);

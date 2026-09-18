@@ -250,10 +250,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                     nr_pass_count_label(cfg.nr_pass_count));
       }
       // Visual por ultimo: look defaults do Pass Count nao podem deixar NRStyle=0 no Cinema.
-      if (sync_renodx_visual_preset_files(exe_dir.string(), cfg.renodx_preset)) {
-        append_log(cfg.log_dir, std::string("renodx preset → ") + renodx_visual_preset_name(cfg.renodx_preset));
-        std::printf("renodx preset: %s (NR=%d)\n", renodx_visual_preset_name(cfg.renodx_preset),
-                    renodx_nr_preset_index(cfg.renodx_preset));
+      if (sync_renodx_visual_preset_files(exe_dir.string(), cfg.renodx_preset, cfg.nr_pass_count)) {
+        append_log(cfg.log_dir, std::string("renodx preset → ") +
+                                    renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count));
+        std::printf("renodx preset: %s (NR=%d model=%d)\n",
+                    renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count),
+                    renodx_nr_preset_index(cfg.renodx_preset),
+                    renodx_feed_model_preset(cfg.renodx_preset, cfg.nr_pass_count));
       }
     }
 
@@ -508,7 +511,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                       (cfg.dlss && enhance->feature_supported());
   info.dlss_mode = (cfg.enhance == EnhanceBackend::Renodx) ? "renodx-presets" : dlss_mode_name(cfg.dlss_mode);
   info.dlss_backend = (cfg.enhance == EnhanceBackend::Renodx) ? "renodx+feed" : enhance->backend_name();
-  info.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset);
+  info.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
 
   LosslessFgController fg;
   fg.configure(cfg.fg_multiplier, cfg.fg_path);
@@ -555,6 +558,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.fake_capture = cfg.fake_capture;
   overlay.advanced_metrics = cfg.advanced_metrics;
   overlay.mini_overlay = cfg.mini_overlay;
+  overlay.overlay_no_bg = cfg.overlay_no_bg;
   overlay.visible = cfg.show_overlay;
   // HUD work size = what the Feed really builds (floors at 50% under RenoDX), not the
   // requested UI scale — otherwise the overlay reports a scale the Feed refused.
@@ -563,7 +567,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.work_w = scaled_extent(info.width > 0 ? info.width : cap_w, shown_scale);
   overlay.work_h = scaled_extent(info.height > 0 ? info.height : cap_h, shown_scale);
   overlay.renodx_on = g_nr_runtime_on;
-  overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset);
+  overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
   overlay.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
   overlay.feed_on = (cfg.enhance == EnhanceBackend::Renodx) && g_nr_runtime_on;
   overlay.sync_image = cfg.sync_image;
@@ -572,6 +576,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   const bool live_active = live_overlay_active(live_unlocked, cfg.live_overlay);
   overlay.live_overlay = live_active;
   overlay.live_console = cfg.live_console;
+  overlay.overlay_console = cfg.overlay_console;
   if (live_active) {
     // Live owns the HUD surface — suppress mini burn + ADV twin.
     overlay.mini_overlay = false;
@@ -661,6 +666,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       snap.neural_rendering = cfg.neural_rendering;
       snap.nr_runtime_on = g_nr_runtime_on;
       snap.renodx_preset = cfg.renodx_preset;
+      snap.nr_pass_count = cfg.nr_pass_count;
       snap.video_fourcc = cfg.video_fourcc;
       snap.color_space = cfg.color_space;
       snap.color_range = cfg.color_range;
@@ -1058,8 +1064,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.visible = g_overlay;
     overlay.advanced_metrics = cfg.advanced_metrics;
     overlay.mini_overlay = live_active ? false : cfg.mini_overlay;
+    overlay.overlay_no_bg = cfg.overlay_no_bg;
     overlay.live_overlay = live_active;
     overlay.live_console = cfg.live_console;
+    overlay.overlay_console = cfg.overlay_console;
     overlay.analyze_on = analyze_on;
     overlay.frame_ms = interval;
     overlay.e2e_ms = now - frame.cap_qpc_ms;
@@ -1107,6 +1115,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.fg_multiplier = fg.state().multiplier >= 2 ? fg.state().multiplier : cfg.fg_multiplier;
       ui.fg_busy = fg.busy();
       ui.hud_visible = g_overlay.load();
+      ui.live_console = cfg.live_console;
+      ui.overlay_console = cfg.overlay_console;
       ui.signal_w = overlay.capture_w > 0 ? overlay.capture_w : cap_w;
       ui.signal_h = overlay.capture_h > 0 ? overlay.capture_h : cap_h;
       ui.vk_cfg = g_hotkeys.vk_cfg;
@@ -1139,6 +1149,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         session_notice.push(session_notice_cfg_closed(), now);
       }
       if (act.hud_changed) g_overlay = ui.hud_visible;
+      if (act.console_changed) {
+        cfg.live_console = static_cast<int>(clamp_live_console(ui.live_console));
+        cfg.overlay_console = ui.overlay_console;
+        overlay.live_console = cfg.live_console;
+        overlay.overlay_console = cfg.overlay_console;
+        live.set_console(cfg.live_console);
+        PersistedSettings ps = default_settings();
+        std::string serr;
+        load_settings(ps, settings_default_path(), serr);
+        ps.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
+        ps.ui.overlay_console = cfg.overlay_console;
+        save_settings(ps, settings_default_path(), serr);
+      }
       // NR e FG reaproveitam os caminhos das teclas (debounce, ACK por log, async).
       if (act.toggle_nr) g_toggle_nr = true;
       if (act.toggle_fg) g_toggle_fg = true;
@@ -1167,13 +1190,15 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           const int preset_before = clamp_renodx_visual_preset(cfg.renodx_preset);
           cfg.renodx_preset = clamp_renodx_visual_preset(ui.renodx_preset);
           (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
-          (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset);
+          (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset, cfg.nr_pass_count);
           cfg_restart_kind = SessionCfgApply::RelaunchPreset;
           cfg_restart_pending = true;
           cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
-          session_notice.push(session_notice_preset_apply(preset_before, cfg.renodx_preset), now);
+          session_notice.push(session_notice_preset_apply(preset_before, cfg.renodx_preset, cfg.nr_pass_count),
+                              now);
+          overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
           append_log(cfg.log_dir, std::string("cfg preset restart → ") +
-                                      renodx_visual_preset_name(cfg.renodx_preset));
+                                      renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count));
         }
       }
 
@@ -1214,6 +1239,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                                          cfg.renodx_preset);
           cfg.nr_runtime_on = g_nr_runtime_on;
           overlay.nr_pass_count = cfg.nr_pass_count;
+          overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
           session_notice.push(std::string("Pass Count: ") + nr_pass_count_label(cfg.nr_pass_count), now);
           append_log(cfg.log_dir, "cfg pass count → " + std::string(nr_pass_count_label(cfg.nr_pass_count)));
         }
@@ -1266,6 +1292,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       overlay.dlss_backend = "renodx+feed";
       overlay.dlss_status = g_nr_runtime_on ? "nr-on" : "nr-off";
       overlay.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
+      overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, overlay.nr_pass_count);
       overlay.feed_on = g_nr_runtime_on;
     }
     last_dlss_ms = overlay.dlss_ms;
@@ -1377,6 +1404,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         std::string serr;
         load_settings(ps, settings_default_path(), serr);
         ps.ui.live_overlay = true;
+        ps.ui.overlay_console = true;
         ps.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
         save_settings(ps, settings_default_path(), serr);
       }
@@ -1584,6 +1612,12 @@ int main(int argc, char** argv) {
       std::printf("renodx addon: stack missing (run tools\\setup_renodx.ps1)\n");
     }
     (void)nexuscap::sync_nr_pass_count_files(base.string(), settings.nr_pass_count, settings.renodx_preset);
+    (void)nexuscap::sync_renodx_visual_preset_files(base.string(), settings.renodx_preset,
+                                                    settings.nr_pass_count);
+    {
+      const bool want_nr = settings.enhance_renodx && settings.neural_rendering;
+      (void)nexuscap::sync_neural_rendering_enabled_files(base.string(), want_nr, want_nr);
+    }
     // Feed locks work_resolution at the first swapchain: 100% when the lobby opens first
     // (sharp menus), session scale when we boot straight into capture (--autostart).
     const bool lobby_first = cfg.show_lobby && !cfg.autostart;
@@ -1610,6 +1644,7 @@ int main(int argc, char** argv) {
     cfg.show_overlay = settings.ui.show_fps;
     cfg.advanced_metrics = settings.ui.advanced_metrics;
     cfg.mini_overlay = settings.ui.mini_overlay;
+    cfg.overlay_no_bg = settings.ui.overlay_no_bg;
     cfg.hw_info = settings.ui.hw_info;
     cfg.hide_panel_on_capture = settings.ui.hide_panel_on_capture;
     cfg.sync_image = settings.ui.sync_image;
@@ -1617,6 +1652,7 @@ int main(int argc, char** argv) {
     cfg.bug_report = settings.ui.bug_report;
     cfg.perf_report = settings.ui.perf_report;
     cfg.live_overlay = settings.ui.live_overlay;
+    cfg.overlay_console = settings.ui.overlay_console;
     cfg.live_console = static_cast<int>(nexuscap::parse_live_console(settings.ui.live_console));
     cfg.exclusive_fullscreen = settings.ui.fullscreen;
     if (settings.fg_enabled) {
@@ -1676,6 +1712,7 @@ int main(int argc, char** argv) {
     apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == nexuscap::EnhanceBackend::Renodx,
                                   settings);
     settings.ui.live_overlay = cfg.live_overlay;
+    settings.ui.overlay_console = cfg.overlay_console;
     settings.ui.live_console =
         nexuscap::live_console_key(nexuscap::clamp_live_console(cfg.live_console));
     {

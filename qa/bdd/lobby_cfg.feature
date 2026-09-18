@@ -87,9 +87,9 @@ Funcionalidade: CFG do menu principal
       | 1x   | Default    |
       | 1x   | Natural    |
       | 1x   | Cinematic  |
-      | 1,5x | Cinematic  |
-      | 2x   | Natural    |
-      | 3x   | Default    |
+      | 1,5x | Model C    |
+      | 2x   | Model B    |
+      | 3x   | Model A    |
 
   @critico @hdmi
   Esquema do Cenario: Pass Count no lobby reinicia o app no lobby
@@ -97,8 +97,9 @@ Funcionalidade: CFG do menu principal
     E o Pass Count atual e <de>
     Quando eu escolho <para>
     Entao o app grava settings e os ficheiros
-    E aparece o aviso de motor ou Pass Count cerca de 1,1 s
+    E aparece o aviso de motor ou Pass Count cerca de 0,55 s
     E o processo reabre no lobby (nao na sessao)
+    E o painel CFG ja esta aberto (estava aberto no ajuste)
     E o radio fica em <para>
 
     Exemplos:
@@ -107,6 +108,25 @@ Funcionalidade: CFG do menu principal
       | 1,5x | 2x   |
       | 2x   | 3x   |
       | 3x   | 1x   |
+
+  @critico @hdmi
+  Esquema do Cenario: Preset visual e escala 100%/50% nao se pisam
+    Dado que o RenoDX esta ligado
+    E o Pass Count do lobby e <modo>
+    E a escala e <escala>
+    Quando eu escolho <cena>
+    Entao o dlss5-feed.cfg tem o preset da <cena> e work_resolution=<escala>
+    E o overlay mostra a <cena> e a escala <escala>
+    E mudar a escala nao volta o look para Default/Model A
+
+    Exemplos:
+      | modo | cena       | escala |
+      | 1x   | Cinematic  | 100    |
+      | 1x   | Natural    | 50     |
+      | 1,5x | Model C    | 50     |
+      | 1,5x | Model A    | 100    |
+      | 2x   | Model B    | 50     |
+      | 3x   | Model C    | 100    |
 
   @importante @atalho @hdmi
   Cenario: Rebind de atalhos no CFG do lobby

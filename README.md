@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `3.1.4` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `3.1.5` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-3.1.4.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-3.1.5.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-3.1.4.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
+1. Instalar `NexusCap-Setup-3.1.5.exe` (vai para `%LOCALAPPDATA%\NexusCap`).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -43,7 +43,7 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-3.1.4.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-3.1.5.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap` — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -52,6 +52,15 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 7. **Reportar bug / Reportar performance** (checkboxes abaixo do VSYNC, off por padrão): geram `.txt` leves em `report/` e `performance/` ao lado do exe — úteis para suporte / colar numa IA.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
+
+### Novidades 3.1.5
+
+- **Iniciar aplica o CFG do lobby:** escala, DLSS 5, preset e NR entram na sessão (o Feed/ReShade já não ficam travados no preview).
+- **CFG reabre depois do restart no lobby:** troca de Pass Count / motor volta com o painel Configurações aberto.
+- **Console no overlay é opcional:** checkbox Mostrar console; marcado, as opções aparecem (padrão PS5), só texto colorido.
+- **Mais consolas:** PS5, PS4, PS3, Xbox Series X/S, Xbox One, Switch 2 e Switch.
+- **Marca SPIKE** à esquerda do logo N no lobby.
+- **Exibir metricas** no HUD; stalls/clusters por extenso no overlay.
 
 ### Novidades 3.1.4
 
@@ -360,9 +369,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 3.1.4
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 3.1.5
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 3.1.4
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 3.1.5
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (gravável). **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

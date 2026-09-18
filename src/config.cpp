@@ -26,6 +26,8 @@ AppConfig parse_args(int argc, char** argv) {
       c.show_lobby = false;
     } else if (a == "--autostart") {
       c.autostart = true;  // lobby settings still seed cfg; first lobby pass is skipped
+    } else if (a == "--lobby-cfg") {
+      c.open_lobby_cfg = true;  // CFG was open; reopen after lobby motor/Pass Count restart
     } else if (a == "--selftest-cap" || a == "--selftest-vedo") {
       c.selftest_cap = true;
       c.exclusive_fullscreen = false;
@@ -122,12 +124,14 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.show_overlay = s.ui.show_fps;
   cfg.advanced_metrics = s.ui.advanced_metrics;
   cfg.mini_overlay = s.ui.mini_overlay;
+  cfg.overlay_no_bg = s.ui.overlay_no_bg;
   cfg.hw_info = s.ui.hw_info;
   cfg.hide_panel_on_capture = s.ui.hide_panel_on_capture;
   cfg.sync_image = s.ui.sync_image;
   cfg.bug_report = s.ui.bug_report;
   cfg.perf_report = s.ui.perf_report;
   cfg.live_overlay = s.ui.live_overlay;
+  cfg.overlay_console = s.ui.overlay_console;
   cfg.live_console = static_cast<int>(parse_live_console(s.ui.live_console));
   cfg.hotkeys = s.hotkeys;
   // Keep preferred x2/x3/x4 armed even when checkbox is off (PageDn can enable).

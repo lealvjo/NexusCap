@@ -258,7 +258,7 @@ flowchart TB
 
 - Não embute Lossless Scaling.
 - Preview do lobby **não** passa por RenoDX/NR no ImGui (CPU → textura); o Present do lobby ainda carrega dxgi se o stack estiver ao lado do exe.
-- Com RenoDX ligado, Streamline fica off (sem processar duas vezes).
+- **Streamline não entra no uso normal.** O enhance do app é RenoDX. Com RenoDX ligado o Streamline fica off (HDMI não se dá bem com DLSS nativo de jogo; os dois no mesmo Present ainda processariam duas vezes).
 
 ---
 
@@ -298,15 +298,19 @@ Avisos leves (lobby toast + HUD na sessão): ao **ligar FG**, ao **subir** o mul
 
 ---
 
-## Enhance: RenoDX vs Streamline
+## Enhance: RenoDX (o que usamos)
 
-| Backend | Quando | O que faz |
-|---------|--------|-----------|
-| **RenoDX** (default CFG) | `enhance_renodx` | ReShade + addons DLSS5; NR via Bridge. |
-| **Streamline** | `--enhance streamline` | DLSS nativo; para HDMI prefira **DLAA**. |
-| **Off** | sem RenoDX | Passthrough + FG se quiser. |
+O caminho do produto é **RenoDX** — ReShade + addons DLSS 5 no Present, NR via Bridge, presets no CFG. É o que o lobby liga.
 
-Setup: `tools\setup_renodx.ps1` copia `dxgi.dll`, addons, `nvngx_dlss*.dll`, shaders/preset para ao lado do exe.
+**Streamline** (DLSS nativo NVIDIA) ficou no código/instalador como backend antigo (`--enhance streamline`). Não aparece no menu. HDMI não tem vetores de movimento de jogo, então esse caminho é pior; com RenoDX ligado ele **não** roda.
+
+| Backend | No app | Papel |
+|---------|--------|--------|
+| **RenoDX** | default do CFG (`enhance_renodx`) | Feed + Neural Rendering. **Usamos isto.** |
+| **Off** | RenoDX desmarcado | Passthrough + FG se quiser. |
+| **Streamline** | só CLI legado | Não usar no HDMI. |
+
+Setup: `tools\setup_renodx.ps1` copia `dxgi.dll`, addons, `nvngx_dlss*.dll`, shaders/preset para ao lado do exe. O `nvngx_dlss.dll` é da NVIDIA para o **RenoDX/DLSS 5**, não é o Streamline.
 
 ---
 
@@ -329,7 +333,7 @@ Setup: `tools\setup_renodx.ps1` copia `dxgi.dll`, addons, `nvngx_dlss*.dll`, sha
 | `src/renderer_d3d11.cpp` | Decode, scale, Present, HUD, ícone |
 | `src/lossless_fg.cpp` | Resolve LS, mira-lock, Job Object |
 | `src/dlss5_bridge.cpp` | Pulse Neural Rendering |
-| `src/enhance_dlss_streamline.cpp` | Streamline DLSS |
+| `src/enhance_dlss_streamline.cpp` | Streamline DLSS (legado, off com RenoDX) |
 | `src/enhance_passthrough.cpp` | Sem enhance |
 | `src/settings_store.cpp` | `settings.ini` + sync feed/ReShade |
 | `src/config.cpp` | CLI + persist → config |
@@ -339,14 +343,14 @@ Setup: `tools\setup_renodx.ps1` copia `dxgi.dll`, addons, `nvngx_dlss*.dll`, sha
 | `tests/test_core.cpp` | Unit (doctest) |
 | `resources/nexuscap.rc` | Ícone no `.exe` |
 | `assets/logo.png` | Brand |
-| `third_party/` | imgui, doctest, Streamline SDK |
+| `third_party/` | imgui, doctest, Streamline SDK (vendored, não é o enhance do CFG) |
 | `tools/setup_renodx.ps1` | Stack RenoDX ao lado do Release |
 
 ---
 
 ## Build
 
-**Requisitos:** VS 2022 (C++), CMake ≥ 3.20, Windows SDK. NVIDIA recomendada para RenoDX/Streamline.
+**Requisitos:** VS 2022 (C++), CMake ≥ 3.20, Windows SDK. NVIDIA recomendada para RenoDX / Neural Rendering.
 
 ```bat
 cd C:\Users\Leo\Documents\NexusCap
@@ -356,7 +360,7 @@ ctest --test-dir build -C Release --output-on-failure
 powershell -ExecutionPolicy Bypass -File tools\setup_renodx.ps1
 ```
 
-Ou `build.bat`. POST_BUILD copia Streamline + `assets/logo.png`. Ícone do exe vem do `.rc`.
+Ou `build.bat`. POST_BUILD copia DLLs NVIDIA (`nvngx` / Streamline legado) + `assets/logo.png` e `assets/watermark.png`. Ícone do exe vem do `.rc`.
 
 ---
 
@@ -403,8 +407,8 @@ build\Release\NexusCap.exe --selftest-fg --fake-capture
 | Flag | Efeito |
 |------|--------|
 | `--no-lobby` | Direto à sessão |
-| `--renodx` / `--enhance renodx\|streamline\|off` | Backend |
-| `--dlss` / `--dlss-mode dlaa\|quality\|…` | Streamline |
+| `--renodx` / `--enhance renodx\|off` | Backend do produto (RenoDX) |
+| `--enhance streamline` / `--dlss` / `--dlss-mode …` | Legado Streamline — não usar no HDMI |
 | `--fg-x 1\|2\|3\|4` | FG (1 = off) |
 | `--fg-path <exe>` | Override Lossless Scaling |
 | `--scale 25–100` | Trabalho GPU |
@@ -421,7 +425,7 @@ build\Release\NexusCap.exe --selftest-fg --fake-capture
 | Ctrl+M | CFG na captura (por cima do jogo) |
 | F3 | HUD |
 | F4 | Analyze |
-| F5 | Streamline DLSS (se não for RenoDX) |
+| F5 | Streamline DLSS (legado; com RenoDX não faz nada) |
 | Page Down | FG on/off |
 | Page Up | Ciclo FG |
 | Home | Overlay RenoDX |
@@ -456,4 +460,4 @@ Unitários cobrem CLI, escala, mira-lock, Esc/WM_QUIT no lobby, F12 do CFG, Brid
 
 ## Terceiros
 
-imgui · doctest · NVIDIA Streamline/nvngx · RenoDX/ReShade/feed (via setup) · Lossless Scaling (Steam do usuário).
+imgui · doctest · NVIDIA nvngx (RenoDX/DLSS 5) · RenoDX/ReShade/feed (via setup) · Lossless Scaling (Steam do usuário). Streamline SDK fica vendored/legado e não entra no fluxo do CFG.

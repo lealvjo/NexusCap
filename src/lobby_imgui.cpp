@@ -11,6 +11,7 @@
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/imgui_theme.hpp"
 #include "nexuscap/lossless_fg.hpp"
+#include "nexuscap/perf_test.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/system_metrics.hpp"
 #include "nexuscap/version.hpp"
@@ -55,6 +56,10 @@ HWND g_hwnd = nullptr;
 bool g_lobby_running = true;
 bool g_start_requested = false;
 bool g_open_gear = false;
+bool g_open_perf = false;
+bool g_show_perf_result = false;
+PerfTestPlan g_perf_plan{};
+PerfTestResult g_perf_result{};
 int* g_capture_vk_target = nullptr;
 int g_lobby_gear_vk = 0x7B;  // default F12 — atualizado do settings a cada frame
 SystemMetricsSampler g_lobby_hw;
@@ -134,6 +139,7 @@ struct LobbyPreview {
   int color_range = 0;
   int visual_preset = 0;
   bool enhance_preview = false;
+  bool file_mode = false;
   double fps_ema = 0;
   double last_frame_ms = 0;
   uint64_t frames_seen = 0;
@@ -212,6 +218,7 @@ struct LobbyPreview {
       capture.reset();
     }
     live = false;
+    file_mode = false;
     slot.clear();
     release_tex();
     started_dev.clear();
@@ -240,6 +247,7 @@ struct LobbyPreview {
       return true;
     }
     stop();
+    file_mode = false;
     // USB capture cards often need a beat before reopen after format change.
     Sleep(static_cast<DWORD>(capture_device_settle_ms()));
     err.clear();
@@ -284,6 +292,42 @@ struct LobbyPreview {
     return ensure(device, opt);
   }
 
+  bool ensure_file(const std::string& path, const CaptureStartOptions& opt) {
+    const int w = opt.width;
+    const int h = opt.height;
+    const double fps = opt.fps;
+    if (path.empty() || w <= 0 || h <= 0 || fps <= 0) {
+      err = "video do teste invalido";
+      stop();
+      return false;
+    }
+    if (capture && live && file_mode && started_dev == path && started_w == w && started_h == h &&
+        std::abs(started_fps - fps) < 0.5) {
+      apply_color(opt.color_space, opt.color_range);
+      return true;
+    }
+    stop();
+    err.clear();
+    frames_seen = 0;
+    file_mode = true;
+    started_dev = path;
+    started_w = w;
+    started_h = h;
+    started_fps = fps;
+    started_fourcc = static_cast<int>(VideoFourcc::Nv12);
+    started_buf = opt.capture_buffering;
+    apply_color(opt.color_space, opt.color_range);
+    capture = std::make_unique<FileCapture>();
+    if (!capture->start(path, opt, slot, clock, err)) {
+      capture.reset();
+      live = false;
+      file_mode = false;
+      return false;
+    }
+    live = true;
+    return true;
+  }
+
   void tick() {
     FramePayload frame;
     if (!slot.consume(frame) || frame.width <= 0 || frame.height <= 0 || frame.nv12.empty()) return;
@@ -291,7 +335,8 @@ struct LobbyPreview {
     ++frames_seen;
     const double now = clock.now_ms();
     if (last_frame_ms > 0) {
-      const double inst = 1000.0 / (std::max)(0.001, now - last_frame_ms);
+      const double dt = now - last_frame_ms;
+      const double inst = 1000.0 / (std::max)(0.001, dt);
       fps_ema = fps_ema > 1.0 ? fps_ema * 0.90 + inst * 0.10 : inst;
     }
     last_frame_ms = now;
@@ -355,8 +400,12 @@ LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       if (wp == VK_ESCAPE) {
         // Esc never closes the lobby / app — only gear or hotkey capture (see lobby_esc_action).
-        const LobbyEscAction act = lobby_esc_action(g_open_gear, false);
-        if (act == LobbyEscAction::CloseGear) g_open_gear = false;
+        const LobbyEscAction act = lobby_esc_action(g_open_gear || g_open_perf || g_show_perf_result, false);
+        if (act == LobbyEscAction::CloseGear) {
+          g_open_gear = false;
+          g_open_perf = false;
+          g_show_perf_result = false;
+        }
         return 0;
       }
       if (lobby_gear_hotkey_toggles_cfg(static_cast<int>(wp), g_lobby_gear_vk, false)) {
@@ -554,29 +603,6 @@ void apply_window_app_icon(HWND hwnd, HINSTANCE hi) {
   SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
 }
 
-// Mute/unmute WASAPI preview — bottom-right of letterboxed image.
-void draw_preview_mute_button(PersistedSettings& settings, ImVec2 img_min, ImVec2 img_max) {
-  const float pad = 10.f;
-  const float sz = 28.f;
-  ImGui::SetCursorScreenPos(ImVec2(img_max.x - pad - sz, img_max.y - pad - sz));
-  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.f, 0.f, 0.f, 0.45f));
-  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.12f, 0.12f, 0.14f, 0.7f));
-  ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.18f, 0.18f, 0.2f, 0.85f));
-  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.f);
-  const char* label = settings.ui.preview_mute ? "M" : "S";
-  if (ImGui::Button(label, ImVec2(sz, sz))) {
-    settings.ui.preview_mute = !settings.ui.preview_mute;
-    std::string serr;
-    save_settings(settings, settings_default_path(), serr);
-  }
-  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-    ImGui::SetTooltip("%s", settings.ui.preview_mute ? "Som do preview (clique p/ ligar)"
-                                                     : "Som do preview (clique p/ mutar)");
-  }
-  ImGui::PopStyleVar();
-  ImGui::PopStyleColor(3);
-}
-
 // Live HUD on left black bar of letterboxed preview — bright text readable on black.
 void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPreview& preview,
                               ImVec2 band_min, ImVec2 band_max, ImVec2 img_min, ImVec2 img_max) {
@@ -677,7 +703,9 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
     paint_row(wrap_l600, nseg, y0 + (font_sz + line_gap) * 2.f);
 
     if (gw >= 48.f) {
-      dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + gw, gy + gh), IM_COL32(20, 24, 30, 220), 2.f);
+      if (overlay_draws_plate(settings.ui.overlay_no_bg)) {
+        dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + gw, gy + gh), IM_COL32(20, 24, 30, 220), 2.f);
+      }
       const float tgt = settings.fps > 0 ? static_cast<float>(1000.0 / settings.fps) : 16.67f;
       const float t = ft > 0.f ? (std::min)(1.f, ft / (tgt * 2.5f)) : 0.2f;
       dl->AddRectFilled(ImVec2(gx + 2, gy + 2), ImVec2(gx + 2 + (gw - 4) * t, gy + gh - 2),
@@ -719,7 +747,7 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
   box.y = img_min.y - band_min.y;
   box.w = img_max.x - img_min.x;
   box.h = img_max.y - img_min.y;
-  const auto lay = lobby_hud_left_bar_layout(box, band_w, band_h, preferred_w, pad);
+  const auto lay = lobby_preview_hud_layout(box, band_w, band_h, preferred_w, pad);
   const float box_w = (std::min)(preferred_w, lay.max_w);
   const float box_h = pad * 2.f + line_h * static_cast<float>(total_lines) +
                       (settings.ui.advanced_metrics ? 36.f : 0.f);
@@ -728,7 +756,7 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
   ImVec2 p1(p0.x + box_w, p0.y + box_h);
 
   // No dark card on the black pillar — text sits directly on the bar.
-  if (!lay.on_black_bar) {
+  if (!lay.on_black_bar && overlay_draws_plate(settings.ui.overlay_no_bg)) {
     dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 160), 4.f);
   }
 
@@ -760,7 +788,9 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
     const float gy = p1.y - 28.f;
     const float gw = (std::max)(24.f, box_w - 4.f);
     const float gh = 18.f;
-    dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + gw, gy + gh), IM_COL32(20, 24, 30, 220), 3.f);
+    if (overlay_draws_plate(settings.ui.overlay_no_bg)) {
+      dl->AddRectFilled(ImVec2(gx, gy), ImVec2(gx + gw, gy + gh), IM_COL32(20, 24, 30, 220), 3.f);
+    }
     const float tgt = settings.fps > 0 ? static_cast<float>(1000.0 / settings.fps) : 16.67f;
     const float t = ft > 0.f ? (std::min)(1.f, ft / (tgt * 2.5f)) : 0.2f;
     dl->AddRectFilled(ImVec2(gx + 2, gy + 2), ImVec2(gx + 2 + (gw - 4) * t, gy + gh - 2),
@@ -774,6 +804,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   g_lobby_running = true;
   g_start_requested = false;
   g_open_gear = lobby_consume_open_cfg(cfg.open_lobby_cfg);
+  g_open_perf = false;
+  const bool have_last =
+      read_perf_test_result_file(default_perf_test_result_path(app_data_dir()), g_perf_result) &&
+      g_perf_result.valid;
+  g_show_perf_result = perf_test_should_popup_result(cfg.popup_perf_result, have_last);
+  cfg.popup_perf_result = false;
+  if (!read_perf_test_plan_file(default_perf_test_plan_path(app_data_dir()), g_perf_plan)) {
+    g_perf_plan = PerfTestPlan{};
+  }
   g_capture_vk_target = nullptr;
 
   // Scale is session-only. ReShade hooks lobby Present too — force feed 100% or the menu blurs.
@@ -793,6 +832,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     sync_neural_rendering_enabled_files(exe_dir.string(), want_nr,
                                         feed_pipeline_on_for_renodx(settings.enhance_renodx));
     if (want_nr != nr_runtime_on) nr_boot_retries = 180;
+  }
+
+  // Toda vez que o lobby abre: regrava mira-lock (a pessoa pode ter mexido no Lossless).
+  {
+    LosslessFgController fg;
+    fg.configure(armed_fg_multiplier(settings.fg_enabled, settings.fg_multiplier), settings.fg_path);
+    std::string ferr;
+    (void)fg.apply_profile(ferr);
   }
 
   WNDCLASSEXW wc{sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hi, nullptr, nullptr, nullptr, nullptr, L"NexusCapLobby",
@@ -908,6 +955,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   refresh_fourccs();
 
   auto restart_preview = [&]() -> bool {
+    if (!lobby_preview_capture_wanted(settings.ui.preview_enabled)) {
+      preview.stop();
+      return false;
+    }
     settings.device_name = current_device();
     CaptureStartOptions opt;
     opt.width = settings.width;
@@ -930,7 +981,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   double lobby_toast_until = 0.0;
   bool motor_swap_pending = false;
   double motor_swap_until = 0.0;
-  std::string motor_swap_title = "Trocando motor DLSS 5";
+  std::string motor_swap_title = lobby_pipeline_hold_title();
   std::string motor_swap_line;
   std::string motor_swap_args;  // "--autostart" resumes the session after the restart
   auto push_lobby_toast = [&](std::string msg) {
@@ -969,11 +1020,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     preview.set_visual_preview(settings.renodx_preset,
                                want_neural_rendering(settings.enhance_renodx, settings.neural_rendering));
-    preview.tick();
+    if (lobby_preview_capture_wanted(settings.ui.preview_enabled)) {
+      preview.tick();
+    } else if (preview.live) {
+      preview.stop();
+    }
 
     // Preview audio: start/stop with live capture; mute zeros WASAPI frames (keeps path warm).
     {
-      const bool want_audio = preview.live;
+      const bool want_audio = lobby_preview_audio_wanted(settings.ui.preview_enabled, preview.live);
       if (want_audio != lobby_audio_want) {
         lobby_audio_want = want_audio;
         if (want_audio) {
@@ -1043,8 +1098,18 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       ImGui::SetWindowFontScale(1.0f);
       ImGui::TextDisabled("Console de captura");
       ImGui::EndGroup();
-      ImGui::SameLine(ImGui::GetWindowWidth() - 72);
-      if (ImGui::Button("CFG", ImVec2(56, 40))) g_open_gear = true;
+      ImGui::SameLine(ImGui::GetWindowWidth() - 220);
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.95f, 1.f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.62f, 1.f, 1.f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.45f, 0.85f, 1.f));
+      if (ImGui::Button(perf_test_lobby_button(), ImVec2(120, 40))) {
+        g_open_perf = true;
+        g_open_gear = false;
+        (void)resolve_perf_test_video(exe_dir_utf8(), g_perf_plan.width, g_perf_plan.height, g_perf_plan.video);
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("CFG", ImVec2(72, 40))) g_open_gear = true;
+      ImGui::PopStyleColor(3);
     }
     ImGui::EndChild();
     ImGui::Separator();
@@ -1222,13 +1287,45 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
       {
         ImGui::TextDisabled("PRE-VISUALIZACAO  ·  %dx%d @ %.0f", settings.width, settings.height, settings.fps);
-        ImGui::SameLine(ImGui::GetWindowWidth() - 160);
-        if (preview.live && preview.frames_seen > 0) {
-          ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.45f, 1.f), "AO VIVO");
-        } else if (preview.live) {
-          ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.f), "AGUARDANDO");
-        } else {
-          ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.f), "OFF");
+        {
+          const char* pv = lobby_preview_toggle_label(settings.ui.preview_enabled);
+          const char* sm = lobby_audio_toggle_label(settings.ui.preview_mute);
+          const float pad_x = ImGui::GetStyle().FramePadding.x * 2.f;
+          const float gap = ImGui::GetStyle().ItemSpacing.x;
+          const float bw1 = ImGui::CalcTextSize(pv).x + pad_x;
+          const float bw2 = ImGui::CalcTextSize(sm).x + pad_x;
+          const float status_w = 88.f;
+          const float total = bw1 + gap + bw2 + gap + status_w + 12.f;
+          ImGui::SameLine(ImGui::GetWindowWidth() - total);
+          if (ImGui::SmallButton(pv)) {
+            settings.ui.preview_enabled = !settings.ui.preview_enabled;
+            std::string serr;
+            save_settings(settings, settings_default_path(), serr);
+            if (settings.ui.preview_enabled) {
+              restart_preview();
+            } else {
+              preview.stop();
+              lobby_audio.stop();
+              lobby_audio_want = false;
+            }
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton(sm)) {
+            settings.ui.preview_mute = !settings.ui.preview_mute;
+            std::string serr;
+            save_settings(settings, settings_default_path(), serr);
+            if (lobby_audio.running()) lobby_audio.set_muted(settings.ui.preview_mute);
+          }
+          ImGui::SameLine();
+          if (!settings.ui.preview_enabled) {
+            ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.f), "OFF");
+          } else if (preview.live && preview.frames_seen > 0) {
+            ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.45f, 1.f), "AO VIVO");
+          } else if (preview.live) {
+            ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.f), "AGUARDANDO");
+          } else {
+            ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.f), "OFF");
+          }
         }
 
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -1242,7 +1339,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         band_min = origin;
         band_max = ImVec2(origin.x + avail.x, origin.y + avail.y);
-        if (preview.srv && preview.tex_w > 0 && preview.tex_h > 0 && avail.x > 1.f && avail.y > 1.f) {
+        if (!settings.ui.preview_enabled) {
+          img_min = band_min;
+          img_max = band_max;
+          hud_has_img = false;
+          ImGui::SetCursorPos(ImVec2(16.f, avail.y * 0.35f));
+          ImGui::TextDisabled("Preview desligado");
+          ImGui::TextDisabled("Ative o preview para ver o sinal HDMI (o Iniciar nao muda).");
+        } else if (preview.srv && preview.tex_w > 0 && preview.tex_h > 0 && avail.x > 1.f && avail.y > 1.f) {
           // Fill center column — no letterbox black bars (side menus already own that space).
           const auto box =
               fit_fill(preview.tex_w, preview.tex_h, static_cast<int>(avail.x), static_cast<int>(avail.y));
@@ -1268,9 +1372,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           ImGui::TextDisabled("  %s · %s · %s", video_fourcc_name(settings.video_fourcc),
                               color_space_name(settings.color_space), color_range_name(settings.color_range));
         }
-        if (hud_has_img) {
+        if (hud_has_img && settings.ui.preview_enabled) {
           draw_hud_preview_overlay(settings, preview, band_min, band_max, img_min, img_max);
-          draw_preview_mute_button(settings, img_min, img_max);
         }
         if (!settings.ui.show_fps) {
           ImGui::SetCursorPos(ImVec2(12, 8));
@@ -1300,10 +1403,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                                                  : "  -> HUD multi-linha · latencia cap + present");
     if (settings.ui.mini_overlay) {
       ImGui::TextDisabled("  present+NR ≈ processamento c/ DLSS5 (~2ms) · cap = captura pura");
-      ImGui::Checkbox("Overlay sem fundo", &settings.ui.overlay_no_bg);
-      ImGui::TextDisabled(settings.ui.overlay_no_bg ? "  -> so texto no jogo, sem placa preta"
-                                                    : "  -> placa preta atras do texto");
     }
+    ImGui::Checkbox("Overlay sem fundo", &settings.ui.overlay_no_bg);
+    ImGui::TextDisabled(settings.ui.overlay_no_bg ? "  -> so texto no jogo, sem placa preta"
+                                                  : "  -> placa preta atras do texto");
 
     ImGui::BeginDisabled(settings.ui.mini_overlay);
     ImGui::Checkbox("Metricas avancadas", &settings.ui.advanced_metrics);
@@ -1311,7 +1414,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::EndDisabled();
 
     ImGui::Checkbox("Tela cheia", &settings.ui.fullscreen);
-    ImGui::Checkbox("Ocultar lobby na captura", &settings.ui.hide_panel_on_capture);
+    settings.ui.hide_panel_on_capture = true;
     ImGui::TextDisabled(settings.ui.fullscreen ? "  -> Iniciar fullscreen" : "  -> Iniciar em janela");
 
     ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
@@ -1347,8 +1450,6 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::TextDisabled(settings.ui.bug_report ? "  -> modo diagnostico (report/*.txt)"
                                                : "  -> off (sem overhead)");
     ImGui::Checkbox("Reportar performance", &settings.ui.perf_report);
-    ImGui::TextDisabled(settings.ui.perf_report ? "  -> snapshot p/ IA (performance/*.txt)"
-                                                : "  -> off (sem overhead)");
     ImGui::EndChild();
 
     // Footer sits directly under body; natural ItemSpacing.y is the only gap (already reserved).
@@ -1402,13 +1503,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         motor_swap_pending = true;
         motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
         if (feed_scale_change_needs_relaunch(settings.enhance_renodx, feed_loaded_scale, session_scale)) {
-          motor_swap_title = "Aplicando escala do Feed";
+          motor_swap_title = lobby_pipeline_hold_title();
           motor_swap_line = std::to_string(effective_scale_percent(true, feed_loaded_scale)) + "%  \xE2\x86\x92  " +
                             std::to_string(effective_scale_percent(true, session_scale)) + "%";
           push_lobby_toast(session_notice_feed_scale_apply(effective_scale_percent(true, feed_loaded_scale),
                                                           effective_scale_percent(true, session_scale)));
         } else {
-          motor_swap_title = "Aplicando configuracao";
+          motor_swap_title = lobby_pipeline_hold_title();
           motor_swap_line = "DLSS 5, preset e escala do CFG entram na sessao";
           push_lobby_toast(session_notice_lobby_iniciar_apply());
         }
@@ -1449,8 +1550,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::RadioButton("x4", &settings.fg_multiplier, 4);
         ImGui::EndDisabled();
         if (settings.fg_enabled && !fg_was) {
-          const std::string resolved = resolve_lossless_exe(settings.fg_path);
-          if (resolved.empty()) {
+          if (!lobby_fg_can_enable(settings.fg_path)) {
             settings.fg_enabled = false;
             push_lobby_toast(session_notice_fg_missing());
           } else {
@@ -1464,7 +1564,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           ImGui::TextUnformatted("Exe do Lossless Scaling");
           if (ImGui::Button("Pasta##fg_browse", ImVec2(72, 0))) {
             std::string picked;
-            if (browse_lossless_exe_path(g_hwnd, picked)) settings.fg_path = picked;
+            if (browse_lossless_exe_path(g_hwnd, picked)) {
+              settings.fg_path = picked;
+              if (lobby_fg_can_enable(settings.fg_path)) {
+                push_lobby_toast("Lossless Scaling — caminho manual OK");
+              } else {
+                push_lobby_toast(session_notice_fg_missing());
+              }
+            }
           }
           ImGui::SameLine();
           if (ImGui::Button("Auto##fg_auto", ImVec2(56, 0))) settings.fg_path.clear();
@@ -1611,7 +1718,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                 exe_dir, feed_work_resolution_for_session(settings.scale_percent));
             const bool motor_change =
                 nr_pass_count_change_needs_relaunch(pass_before, settings.nr_pass_count);
-            motor_swap_title = motor_change ? "Trocando motor DLSS 5" : "Aplicando Pass Count";
+            motor_swap_title = lobby_pipeline_hold_title();
             motor_swap_line = std::string(nr_pass_count_label(pass_before)) + "  \xE2\x86\x92  " +
                               nr_pass_count_label(settings.nr_pass_count);
             motor_swap_args = lobby_cfg_relaunch_args();
@@ -1672,6 +1779,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           ImGui::SameLine();
           ImGui::Checkbox("Ctrl##hud_ctrl", &settings.hotkeys.hud_ctrl);
         }
+        ImGui::TextDisabled("  cicla Compact / Mini / Advanced / Live; no fim desliga e recomeça");
         {
           ImGui::AlignTextToFramePadding();
           ImGui::TextUnformatted("Menu na captura");
@@ -1725,6 +1833,171 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::PopTextWrapPos();
       }
       ImGui::End();
+    }
+
+    if (g_open_perf) {
+      const ImGuiViewport* mvp = ImGui::GetMainViewport();
+      const float gear_w = (std::max)(420.f, (std::min)(mvp->WorkSize.x * 0.32f, 860.f));
+      const float gear_h = (std::max)(240.f, mvp->WorkSize.y - 120.f);
+      ImGui::SetNextWindowPos(ImVec2(mvp->WorkPos.x + mvp->WorkSize.x - gear_w - 40.f, mvp->WorkPos.y + 80.f),
+                              ImGuiCond_Appearing);
+      ImGui::SetNextWindowSize(ImVec2(gear_w, gear_h), ImGuiCond_Appearing);
+      if (ImGui::Begin(perf_test_lobby_title(), &g_open_perf, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::TextColored(nexuscap_accent_color(), "Simula a carga sem placa de captura");
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("%s", perf_test_lobby_blurb());
+        ImGui::Separator();
+
+        ImGui::TextUnformatted("Pass Count");
+        int pass_i = clamp_nr_pass_count(g_perf_plan.nr_pass_count);
+        if (ImGui::RadioButton("1x##perfpass", pass_i == 1)) pass_i = 1;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("1,5x##perfpass", pass_i == 4)) pass_i = 4;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("2x##perfpass", pass_i == 2)) pass_i = 2;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("3x##perfpass", pass_i == 3)) pass_i = 3;
+        g_perf_plan.nr_pass_count = clamp_nr_pass_count(pass_i);
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Resolucao do sinal");
+        int sig = 1;
+        if (g_perf_plan.width >= 3200) sig = 2;
+        else if (g_perf_plan.width >= 2200) sig = 1;
+        else sig = 0;
+        if (ImGui::RadioButton("1920x1080##perfsig", sig == 0)) {
+          g_perf_plan.width = 1920;
+          g_perf_plan.height = 1080;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("2560x1440##perfsig", sig == 1)) {
+          g_perf_plan.width = 2560;
+          g_perf_plan.height = 1440;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("3840x2160##perfsig", sig == 2)) {
+          g_perf_plan.width = 3840;
+          g_perf_plan.height = 2160;
+        }
+
+        ImGui::TextUnformatted("Meta de FPS");
+        int fps_i = g_perf_plan.fps < 45.0 ? 30 : 60;
+        if (ImGui::RadioButton("30##perffps", fps_i == 30)) g_perf_plan.fps = 30;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("60##perffps", fps_i == 60)) g_perf_plan.fps = 60;
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Escala do Feed");
+        int scale_i = clamp_scale_percent(g_perf_plan.scale_percent);
+        if (scale_i < kMinFeedWorkResolution) scale_i = kMinFeedWorkResolution;
+        ImGui::SliderInt("##perfscale", &scale_i, kMinFeedWorkResolution, kMaxScalePercent, "%d%%");
+        g_perf_plan.scale_percent = clamp_scale_percent(scale_i);
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Tom da cena");
+        int preset_i = clamp_renodx_visual_preset(g_perf_plan.renodx_preset);
+        char p0[64], p1[64], p2[64];
+        std::snprintf(p0, sizeof(p0), "%s##perfpreset0", renodx_visual_preset_name(0, g_perf_plan.nr_pass_count));
+        std::snprintf(p1, sizeof(p1), "%s##perfpreset1", renodx_visual_preset_name(1, g_perf_plan.nr_pass_count));
+        std::snprintf(p2, sizeof(p2), "%s##perfpreset2", renodx_visual_preset_name(2, g_perf_plan.nr_pass_count));
+        if (ImGui::RadioButton(p0, preset_i == 0)) preset_i = 0;
+        ImGui::SameLine();
+        if (ImGui::RadioButton(p1, preset_i == 1)) preset_i = 1;
+        ImGui::SameLine();
+        if (ImGui::RadioButton(p2, preset_i == 2)) preset_i = 2;
+        g_perf_plan.renodx_preset = clamp_renodx_visual_preset(preset_i);
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Frame Gen");
+        int fg_i = clamp_fg_multiplier(g_perf_plan.fg_multiplier);
+        if (ImGui::RadioButton("off##perffg", fg_i < 2)) fg_i = 1;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("x2##perffg", fg_i == 2)) fg_i = 2;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("x3##perffg", fg_i == 3)) fg_i = 3;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("x4##perffg", fg_i == 4)) fg_i = 4;
+        g_perf_plan.fg_multiplier = clamp_fg_multiplier(fg_i);
+        if (g_perf_plan.fg_multiplier >= 2 && !lobby_fg_can_enable(settings.fg_path)) {
+          ImGui::TextColored(ImVec4(1.f, 0.55f, 0.35f, 1.f), "Lossless Scaling nao encontrado — FG fica off");
+        }
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Video do app");
+        (void)resolve_perf_test_video(exe_dir_utf8(), g_perf_plan.width, g_perf_plan.height, g_perf_plan.video);
+        if (g_perf_plan.video.empty()) {
+          ImGui::TextColored(ImVec4(1.f, 0.55f, 0.35f, 1.f), "falta o clipe 1080/1440/4K em assets");
+        } else {
+          {
+            std::string name = g_perf_plan.video;
+            const auto slash = name.find_last_of("\\/");
+            if (slash != std::string::npos) name = name.substr(slash + 1);
+            ImGui::TextDisabled("O clipe segue a resolucao do plano: %s (60 fps).", name.c_str());
+          }
+        }
+        ImGui::TextDisabled("Mesmo Present da sessao HDMI. O clipe 1440 e o da captura, nao um 22 Mbps mole.");
+        ImGui::TextDisabled("Se so o Frame Gen chega a meta: Jogavel com FG (fps gerado, latencia maior).");
+        ImGui::TextDisabled("Se o cap ja e a meta e o FG pesou: Apertado (desliga o FG e ficas nativo).");
+        ImGui::TextDisabled("Se nao for Bom, a escala sai de (fps/meta)^(2/3). Se 50% ainda nao chega, Pass 1x.");
+        ImGui::TextDisabled("Roda 40 s no Present+NR+FG em janela tela cheia.");
+        ImGui::TextDisabled("So grava o plano do teste. Pass, tom e escala do CFG HDMI nao mudam.");
+
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.95f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.62f, 1.f, 1.f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.45f, 0.85f, 1.f));
+        if (ImGui::Button(perf_test_lobby_start(), ImVec2(240, 44))) {
+          g_perf_plan = clamp_perf_test_plan(g_perf_plan);
+          (void)resolve_perf_test_video(exe_dir_utf8(), g_perf_plan.width, g_perf_plan.height, g_perf_plan.video);
+          if (g_perf_plan.video.empty()) {
+            push_lobby_toast("Falta o video do plano em assets (1080/1440/4K)");
+          } else if (!write_perf_test_plan_file(default_perf_test_plan_path(app_data_dir()), g_perf_plan)) {
+            push_lobby_toast("Nao gravou o plano do teste");
+          } else {
+            motor_swap_title = perf_test_pipeline_notice_title();
+            motor_swap_line = perf_test_pipeline_notice_detail();
+            motor_swap_args = perf_test_cli_args(g_perf_plan);
+            motor_swap_pending = true;
+            motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+            g_open_perf = false;
+          }
+        }
+        ImGui::PopStyleColor(3);
+        ImGui::PopTextWrapPos();
+      }
+      ImGui::End();
+    }
+
+    if (g_show_perf_result && g_perf_result.valid) {
+      const ImGuiViewport* tv = ImGui::GetMainViewport();
+      ImGui::SetNextWindowPos(ImVec2(tv->WorkPos.x + tv->WorkSize.x * 0.5f, tv->WorkPos.y + tv->WorkSize.y * 0.42f),
+                              ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+      ImGui::SetNextWindowBgAlpha(0.97f);
+      ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.10f, 0.16f, 0.98f));
+      const ImVec4 grade_col = g_perf_result.grade == PerfTestGrade::Good
+                                   ? ImVec4(0.35f, 0.90f, 0.50f, 1.f)
+                                   : (g_perf_result.grade == PerfTestGrade::Tight
+                                          ? ImVec4(1.f, 0.82f, 0.35f, 1.f)
+                                          : (g_perf_result.grade == PerfTestGrade::PlayableFg
+                                                 ? ImVec4(0.95f, 0.78f, 0.35f, 1.f)
+                                                 : ImVec4(1.f, 0.45f, 0.35f, 1.f)));
+      ImGui::PushStyleColor(ImGuiCol_Border, grade_col);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.f);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28.f, 20.f));
+      if (ImGui::Begin("##perf_result", &g_show_perf_result,
+                       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize |
+                           ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::TextColored(grade_col, "%s", perf_test_grade_label(g_perf_result.grade));
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.f);
+        ImGui::TextUnformatted(g_perf_result.summary.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        if (ImGui::Button("OK", ImVec2(120, 36))) g_show_perf_result = false;
+      }
+      ImGui::End();
+      ImGui::PopStyleVar(2);
+      ImGui::PopStyleColor(2);
     }
 
     // Soft tip: FG on / FG up / NR on-off — mirrors session HUD notices.

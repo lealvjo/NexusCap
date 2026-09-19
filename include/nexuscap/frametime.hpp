@@ -11,6 +11,12 @@ class FrametimeWindow {
 public:
   explicit FrametimeWindow(size_t capacity = 120) : cap_(capacity) { samples_.reserve(capacity); }
 
+  void reset() {
+    samples_.clear();
+    idx_ = 0;
+    filled_ = false;
+  }
+
   void push(double interval_ms) {
     if (samples_.size() < cap_) {
       samples_.push_back(interval_ms);

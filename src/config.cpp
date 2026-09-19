@@ -1,5 +1,6 @@
 #include "nexuscap/config.hpp"
 #include "nexuscap/live_mode.hpp"
+#include "nexuscap/perf_test.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,16 @@ AppConfig parse_args(int argc, char** argv) {
       c.show_lobby = false;
     } else if (a == "--autostart") {
       c.autostart = true;  // lobby settings still seed cfg; first lobby pass is skipped
+    } else if (a.rfind("--hud=", 0) == 0) {
+      OverlayHudStep step = OverlayHudStep::Compact;
+      if (parse_overlay_hud_step(a.c_str() + 6, step)) {
+        c.overlay_hud_restore = static_cast<int>(step);
+      }
+    } else if (a == "--hud" && i + 1 < argc) {
+      OverlayHudStep step = OverlayHudStep::Compact;
+      if (parse_overlay_hud_step(argv[++i], step)) {
+        c.overlay_hud_restore = static_cast<int>(step);
+      }
     } else if (a == "--lobby-cfg") {
       c.open_lobby_cfg = true;  // CFG was open; reopen after lobby motor/Pass Count restart
     } else if (a == "--selftest-cap" || a == "--selftest-vedo") {
@@ -65,6 +76,7 @@ AppConfig parse_args(int argc, char** argv) {
       c.frames_limited = true;
     } else if (a == "--scale" && i + 1 < argc) {
       c.scale_percent = clamp_scale_percent(std::atoi(argv[++i]));
+      c.perf_cli_override = true;
     } else if (a == "--device" && i + 1 < argc) {
       next(c.device_name);
     } else if (a == "--log-dir" && i + 1 < argc) {
@@ -98,12 +110,54 @@ AppConfig parse_args(int argc, char** argv) {
       if (parse_dlss_mvec(argv[++i], s)) c.dlss_mvec = s;
     } else if (a == "--fg-x" && i + 1 < argc) {
       int m = c.fg_multiplier;
-      if (parse_fg_multiplier(argv[++i], m)) c.fg_multiplier = m;
+      if (parse_fg_multiplier(argv[++i], m)) {
+        c.fg_multiplier = m;
+        c.perf_cli_override = true;
+      }
     } else if (a == "--fg-path" && i + 1 < argc) {
       next(c.fg_path);
+    } else if (a == "--perf-test") {
+      c.perf_test = true;
+    } else if (a.rfind("--video=", 0) == 0) {
+      c.video_path = a.substr(8);
+    } else if (a == "--video" && i + 1 < argc) {
+      next(c.video_path);
+    } else if (a == "--width" && i + 1 < argc) {
+      c.width = std::atoi(argv[++i]);
+      c.perf_cli_override = true;
+    } else if (a == "--height" && i + 1 < argc) {
+      c.height = std::atoi(argv[++i]);
+      c.perf_cli_override = true;
+    } else if (a == "--fps" && i + 1 < argc) {
+      c.fps = std::atof(argv[++i]);
+      c.perf_cli_override = true;
+    } else if (a == "--pass" && i + 1 < argc) {
+      c.nr_pass_count = clamp_nr_pass_count(std::atoi(argv[++i]));
+      c.perf_cli_override = true;
+    } else if (a == "--preset" && i + 1 < argc) {
+      c.renodx_preset = clamp_renodx_visual_preset(std::atoi(argv[++i]));
+      c.perf_cli_override = true;
     } else if (a == "--help" || a == "-h") {
       // handled by main
     }
+  }
+  if (c.perf_test) {
+    clamp_perf_test_signal(c.width, c.height);
+    c.fps = clamp_perf_test_fps(c.fps);
+    c.scale_percent = clamp_scale_percent(c.scale_percent);
+    if (c.scale_percent < kMinFeedWorkResolution) c.scale_percent = kMinFeedWorkResolution;
+    c.exclusive_fullscreen = false;
+    c.sync_image = true;
+    c.show_overlay = true;
+    c.mini_overlay = true;
+    c.advanced_metrics = false;
+    c.live_overlay = false;
+    c.enhance = EnhanceBackend::Renodx;
+    c.dlss = false;
+    c.neural_rendering = true;
+    c.nr_runtime_on = true;
+    if (c.fg_multiplier >= 2) c.fg_auto_start = true;
+    else c.fg_auto_start = false;
   }
   return c;
 }
@@ -126,7 +180,7 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.mini_overlay = s.ui.mini_overlay;
   cfg.overlay_no_bg = s.ui.overlay_no_bg;
   cfg.hw_info = s.ui.hw_info;
-  cfg.hide_panel_on_capture = s.ui.hide_panel_on_capture;
+  cfg.hide_panel_on_capture = true;  // captura sempre limpa (opcao do lobby saiu)
   cfg.sync_image = s.ui.sync_image;
   cfg.bug_report = s.ui.bug_report;
   cfg.perf_report = s.ui.perf_report;

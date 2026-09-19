@@ -75,6 +75,39 @@ inline int next_fg_multiplier(int m) {
 
 inline bool fg_wants_process(int multiplier) { return clamp_fg_multiplier(multiplier) >= 2; }
 
+// Graph traces: capture (k=1) plus one line per FG multiplier up to x4.
+// x2 → 2 lines, x3 → 3, x4 → 4. Off → only the capture line.
+// Interval is capture_ms / k so 30 fps (33.3 ms) still stacks x2/x3/x4 above the base.
+inline int fg_frametime_trace_count(bool fg_on, int fg_mult) {
+  if (!fg_on) return 1;
+  const int m = clamp_fg_multiplier(fg_mult);
+  return m < 2 ? 1 : m;
+}
+
+inline double fg_frametime_trace_ms(double capture_ms, int trace_k) {
+  const int k = trace_k < 1 ? 1 : trace_k;
+  return capture_ms / static_cast<double>(k);
+}
+
+struct FgFtRgb {
+  unsigned char r = 90;
+  unsigned char g = 220;
+  unsigned char b = 255;
+};
+
+inline FgFtRgb fg_frametime_trace_rgb(int trace_k, bool stable) {
+  switch (trace_k) {
+    case 2:
+      return {255, 196, 72};  // gold x2
+    case 3:
+      return {210, 120, 255};  // purple x3
+    case 4:
+      return {80, 255, 160};  // mint x4
+    default:
+      return stable ? FgFtRgb{90, 220, 255} : FgFtRgb{255, 140, 90};
+  }
+}
+
 // Lobby HUD: checkbox on = "off" until session PageDn (never imply running dual FPS).
 inline void format_lobby_hud_fps_line(char* out, size_t out_n, double fps, bool fg_enabled, int fg_mult) {
   if (!out || out_n == 0) return;
@@ -460,6 +493,29 @@ inline int armed_fg_multiplier(bool /*fg_enabled*/, int fg_mult) {
 std::string default_steam_lossless_exe();
 std::string resolve_lossless_exe(const std::string& override_path);
 bool lossless_exe_exists(const std::string& path);
+
+// Lobby CFG: só liga FG se o exe existir (auto Steam ou Pasta).
+inline bool lobby_fg_can_enable(const std::string& fg_path) { return !resolve_lossless_exe(fg_path).empty(); }
+
+inline bool mira_lock_xml_ok(const std::string& xml) {
+  return xml.find("LSFGFlowScale>100") != std::string::npos && xml.find("LSFGFlowScale>70") == std::string::npos &&
+         xml.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos;
+}
+
+// Hide only the LS settings UI. The FG output is topmost/layered — hiding it
+// leaves the user looking at our 40 Hz Present with the LS FPS chip on top.
+inline bool ls_should_hide_window(const wchar_t* title, const wchar_t* cls, unsigned ex_style) {
+  if (!title) title = L"";
+  if (!cls) cls = L"";
+  const bool named = wcsstr(title, L"Lossless Scaling") != nullptr || wcsstr(cls, L"Lossless") != nullptr;
+  if (!named) return false;
+  if (ex_style & WS_EX_TOPMOST) return false;
+  if (ex_style & WS_EX_LAYERED) return false;
+  return true;
+}
+inline bool mira_lock_ini_ok(const std::string& ini) {
+  return ini.find("flow_scale = 100") != std::string::npos && ini.find("ui_detection_rate = 2") != std::string::npos;
+}
 
 // Patch or inject mira-lock tags into existing Settings.xml text. Never writes Flow 70.
 std::string patch_mira_settings_xml(const std::string& xml, int multiplier);

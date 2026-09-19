@@ -171,9 +171,10 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "overlay_no_bg=" << (s.ui.overlay_no_bg ? 1 : 0) << "\n";
   o << "hw_info=" << (s.ui.hw_info ? 1 : 0) << "\n";
   o << "fullscreen=" << (s.ui.fullscreen ? 1 : 0) << "\n";
-  o << "hide_panel_on_capture=" << (s.ui.hide_panel_on_capture ? 1 : 0) << "\n";
+  o << "hide_panel_on_capture=1\n";  // captura sempre limpa; ini antigo com 0 e ignorado
   o << "sync_image=" << (s.ui.sync_image ? 1 : 0) << "\n";
   o << "preview_mute=" << (s.ui.preview_mute ? 1 : 0) << "\n";
+  o << "preview_enabled=" << (s.ui.preview_enabled ? 1 : 0) << "\n";
   o << "bug_report=" << (s.ui.bug_report ? 1 : 0) << "\n";
   o << "perf_report=" << (s.ui.perf_report ? 1 : 0) << "\n";
   o << "live_overlay=" << (s.ui.live_overlay ? 1 : 0) << "\n";
@@ -243,9 +244,10 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "overlay_no_bg") s.ui.overlay_no_bg = (val == "1" || val == "true");
       else if (key == "hw_info") s.ui.hw_info = (val == "1" || val == "true");
       else if (key == "fullscreen") s.ui.fullscreen = (val == "1" || val == "true");
-      else if (key == "hide_panel_on_capture") s.ui.hide_panel_on_capture = (val == "1" || val == "true");
+      else if (key == "hide_panel_on_capture") s.ui.hide_panel_on_capture = true;
       else if (key == "sync_image") s.ui.sync_image = (val == "1" || val == "true");
       else if (key == "preview_mute") s.ui.preview_mute = (val == "1" || val == "true");
+      else if (key == "preview_enabled") s.ui.preview_enabled = (val == "1" || val == "true");
       else if (key == "bug_report") s.ui.bug_report = (val == "1" || val == "true");
       else if (key == "perf_report") s.ui.perf_report = (val == "1" || val == "true");
       else if (key == "live_overlay") s.ui.live_overlay = (val == "1" || val == "true");
@@ -269,6 +271,7 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "cfg_ctrl") s.hotkeys.cfg_ctrl = (val == "1" || val == "true");
     }
   }
+  s.ui.hide_panel_on_capture = true;
   return true;
 }
 

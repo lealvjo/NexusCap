@@ -38,12 +38,22 @@ Funcionalidade: CFG na captura (Ctrl+M)
     Entao o overlay aparece ou some na hora
     E o processo nao reinicia
 
+  @importante @hdmi
+  Cenario: Overlay sem fundo liga e desliga sem reiniciar
+    Dado que o CFG da sessao esta aberto
+    Entao Overlay sem fundo esta sempre clicavel
+    Quando eu marco ou desmarco Overlay sem fundo
+    Entao compacto, mini, ADV e live perdem ou ganham a placa preta na hora
+    E o processo nao reinicia
+
   @critico @hdmi
   Esquema do Cenario: NR on/off em qualquer Pass Count reinicia e volta na sessao
     Dado que o Pass Count atual e <modo>
     E o Neural Rendering esta <estado_inicial>
     Quando eu ligo ou desligo Neural Rendering ON no CFG (ou aperto Delete)
-    Entao aparece o aviso Reiniciando o NexusCap cerca de 0,55 s
+    Entao aparece o aviso Otimizando o pipeline cerca de 0,55 s
+    E o overlay da sessao volta igual (nao cai no default do lobby)
+    E o aviso de HDMI do console nao aparece
     E o processo volta para a sessao com --autostart (nunca para o lobby)
     E a imagem e o check do NR ficam iguais a <estado_final>
 
@@ -64,6 +74,7 @@ Funcionalidade: CFG na captura (Ctrl+M)
     E o preset visual atual e Default
     Quando eu escolho <cena> no CFG da sessao
     Entao o app reinicia e volta para a sessao
+    E o aviso de HDMI do console nao aparece
     E a imagem fica diferente de Default (Cinema vs Default e o minimo)
     E ReShade.ini na secao [RenoDX.DLSS5] tem NRPreset e NRStyle da <cena>
     E se <modo> for 1,5x ou 2x ou 3x o DirectNeuralRenderingStyle tambem bate
@@ -85,6 +96,7 @@ Funcionalidade: CFG na captura (Ctrl+M)
     Dado que o Pass Count atual e <de>
     Quando eu escolho <para> no CFG da sessao
     Entao aparece o aviso de motor ou de Pass Count
+    E o aviso de HDMI do console nao aparece
     E o processo volta para a sessao (nao para o lobby)
     E o HUD mostra <para>
     E o AddonPath e o DirectNeuralRenderingPassCount batem com <para>
@@ -111,8 +123,23 @@ Funcionalidade: CFG na captura (Ctrl+M)
     Dado que a sessao esta com RenoDX e o Feed travou em 100%
     Quando eu movo o slider e clico Aplicar escala (reinicio)
     Entao o aviso de escala aparece
+    E o aviso de HDMI do console nao aparece
     E o processo volta para a sessao
     E o texto Trabalho Feed/NR mostra a nova resolucao efetiva (piso 50%)
+
+  @importante @hdmi
+  Cenario: Troca de jogo mantem o pino HDMI aberto
+    Dado que a sessao captura o modo NV12 escolhido no lobby (nao um 2560x1440 travado)
+    Quando eu entro ou saio de um jogo no console
+    Entao o ecran fica no ultimo frame bom se o handshake sujar (nao preto nem magenta)
+    E o aviso de cartao HDMI NAO aparece nessa troca
+    E a captura NAO faz Stop/Run — o pino fica aberto
+    E o primeiro frame bom volta ao Present logo
+    E esse aviso so aparece se o HDMI cair de verdade (~2,5 s sem sinal / cabo)
+    E esse aviso nao aparece em Delete, preset, Pass Count, escala do Feed nem no --autostart
+    E frames rosa/magenta do handshake nao vao ao Present
+    E buffers cujo tamanho nao e o modo aberto sao deitados fora e nao vao ao Neural Rendering
+    E se o pin ficar no tamanho errado varios segundos (mudanca real de modo), a sessao segue esse modo
 
   @critico @auto
   Cenario: Selftest do CFG so confirma que o menu desenha

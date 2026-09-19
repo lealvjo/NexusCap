@@ -53,6 +53,44 @@ inline WindowGeom windowed_client_geom(int signal_w, int signal_h, int monitor_w
   return g;
 }
 
+inline constexpr int kPerfTestWindowPercent = 55;
+
+// Teste usa janela maximizada da sessao. 50/55% e Present pequeno — DWM trava 40 fps.
+inline bool perf_test_present_is_half_window(int present_w, int present_h, int monitor_w, int monitor_h) {
+  if (monitor_w <= 0 || monitor_h <= 0 || present_w <= 0 || present_h <= 0) return false;
+  return present_w * 100 < monitor_w * 70 || present_h * 100 < monitor_h * 70;
+}
+
+inline int clamp_display_refresh_hz(int hz) {
+  if (hz < 30) return 60;
+  if (hz > 360) return 360;
+  return hz;
+}
+
+// Perf test: percent of the monitor, same aspect as the plan, centered. Never SW_MAXIMIZE.
+inline WindowGeom half_centered_window_geom(int signal_w, int signal_h, int monitor_w, int monitor_h,
+                                           int percent = kPerfTestWindowPercent) {
+  if (monitor_w <= 0) monitor_w = 1920;
+  if (monitor_h <= 0) monitor_h = 1080;
+  if (signal_w <= 0) signal_w = 16;
+  if (signal_h <= 0) signal_h = 9;
+  if (percent < 20) percent = 20;
+  if (percent > 100) percent = 100;
+  const int box_w = (std::max)(320, (monitor_w * percent / 100) & ~1);
+  const int box_h = (std::max)(240, (monitor_h * percent / 100) & ~1);
+  const float sx = static_cast<float>(box_w) / static_cast<float>(signal_w);
+  const float sy = static_cast<float>(box_h) / static_cast<float>(signal_h);
+  const float s = (std::min)(sx, sy);
+  WindowGeom g;
+  g.w = (std::max)(2, static_cast<int>(signal_w * s + 0.5f) & ~1);
+  g.h = (std::max)(2, static_cast<int>(signal_h * s + 0.5f) & ~1);
+  g.x = (monitor_w - g.w) / 2;
+  g.y = (monitor_h - g.h) / 2;
+  if (g.x < 0) g.x = 0;
+  if (g.y < 0) g.y = 0;
+  return g;
+}
+
 inline bool windowed_fits_monitor(int client_w, int client_h, int monitor_w, int monitor_h) {
   if (monitor_w <= 0 || monitor_h <= 0) return true;
   return client_w <= monitor_w && client_h <= monitor_h;
@@ -134,6 +172,20 @@ inline LobbyHudLeftBarLayout lobby_hud_left_bar_layout(const ViewportGeom& box, 
     L.max_w = (std::max)(48.f, (std::min)(preferred_hud_w, band_w - pad * 2.f));
   }
   (void)band_h;
+  return L;
+}
+
+// Preview usa fit_fill (sem pillar). Sem barra preta o HUD senta no canto da imagem, como na sessao.
+inline constexpr float kLobbyPreviewHudInset = 24.f;
+inline LobbyHudLeftBarLayout lobby_preview_hud_layout(const ViewportGeom& img, float band_w, float band_h,
+                                                     float preferred_hud_w, float pad = 8.f) {
+  auto L = lobby_hud_left_bar_layout(img, band_w, band_h, preferred_hud_w, pad);
+  if (!L.on_black_bar) {
+    L.x = img.x + kLobbyPreviewHudInset;
+    L.y = img.y + kLobbyPreviewHudInset;
+    const float inner = img.w - kLobbyPreviewHudInset * 2.f;
+    L.max_w = (std::max)(48.f, (std::min)(preferred_hud_w, inner > 0.f ? inner : preferred_hud_w));
+  }
   return L;
 }
 

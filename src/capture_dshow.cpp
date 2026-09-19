@@ -160,15 +160,24 @@ struct DShowCapture::Impl {
 
 void DShowCapture::push_buffer(const uint8_t* data, size_t len) {
   if (!running_ || !slot_ || !clock_ || !impl_) return;
+  last_sample_bytes_.store(len, std::memory_order_relaxed);
   const int w = impl_->width;
   const int h = impl_->height;
-  const size_t need = static_cast<size_t>(w) * static_cast<size_t>(h) * 3 / 2;
-  if (len < need) return;
+  if (!nv12_buffer_matches_mode(len, w, h)) {
+    rejected_samples_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  const size_t need = nv12_packed_bytes(w, h);
+  if (need == 0 || !data) return;
   if (nv12_scratch_.size() != need) {
     slot_->take_recycle_nv12(nv12_scratch_);
     if (nv12_scratch_.size() != need) nv12_scratch_.resize(need);
   }
   std::memcpy(nv12_scratch_.data(), data, need);
+  if (nv12_looks_like_hdmi_junk(nv12_scratch_.data(), w, h)) {
+    rejected_samples_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
   FramePayload p;
   p.width = w;
   p.height = h;
@@ -190,6 +199,8 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   stop();
   slot_ = &slot;
   clock_ = &clock;
+  last_sample_bytes_.store(0, std::memory_order_relaxed);
+  rejected_samples_.store(0, std::memory_order_relaxed);
   const int width = opt.width;
   const int height = opt.height;
   const double fps = opt.fps;
@@ -407,11 +418,14 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   }
 
   // Reject silent downscale (4K60 NV12 → 1080p) — that looked like "OK" then white/wrong session.
+  // HDMI recovery may follow the pin when the console comes back at another advertised mode.
   if (std::abs(impl_->width - width) > 16 || std::abs(impl_->height - height) > 16) {
-    err = "negociou " + std::to_string(impl_->width) + "x" + std::to_string(impl_->height) +
-          " em vez de " + std::to_string(width) + "x" + std::to_string(height);
-    stop();
-    return false;
+    if (!opt.follow_hdmi_size) {
+      err = "negociou " + std::to_string(impl_->width) + "x" + std::to_string(impl_->height) +
+            " em vez de " + std::to_string(width) + "x" + std::to_string(height);
+      stop();
+      return false;
+    }
   }
 
   impl_->graph->QueryInterface(IID_IMediaControl, reinterpret_cast<void**>(&impl_->control));
@@ -423,6 +437,12 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   }
   running_ = true;
   frames_ = 0;
+  if (!opt.wait_first_frame) {
+    err.clear();
+    (void)com_init;
+    (void)fps;
+    return true;
+  }
   // White-screen guard: mode churn / 4K can Run() with delayed or zero NV12 samples.
   {
     const int wait_ms = capture_first_frame_wait_ms(impl_->width, impl_->height);

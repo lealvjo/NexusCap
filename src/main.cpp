@@ -5,6 +5,7 @@
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/clock.hpp"
 #include "nexuscap/config.hpp"
+#include "nexuscap/display_geom.hpp"
 #include "nexuscap/dlss_options.hpp"
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/enhance.hpp"
@@ -13,6 +14,7 @@
 #include "nexuscap/live_mode.hpp"
 #include "nexuscap/lobby.hpp"
 #include "nexuscap/lossless_fg.hpp"
+#include "nexuscap/perf_test.hpp"
 #include "nexuscap/renderer.hpp"
 #include "nexuscap/session_cfg.hpp"
 #include "nexuscap/session_report.hpp"
@@ -53,6 +55,7 @@ int g_nr_boot_retries = 0;
 double g_nr_toggle_last_ms = 0;  // Delete debounce (bit30 + time)
 nexuscap::NrConfirmPending g_nr_confirm{};  // async log ACK — no Present freeze
 std::atomic<bool> g_cycle_fg{false};
+std::atomic<bool> g_cycle_overlay{false};
 // CFG na captura (Ctrl+M): a janela só encosta nas flags; o loop aplica.
 std::atomic<bool> g_toggle_cfg{false};
 std::atomic<bool> g_close_cfg{false};
@@ -60,6 +63,7 @@ std::atomic<bool> g_cfg_open{false};
 nexuscap::SessionCfgOverlay* g_session_cfg = nullptr;
 // Global de propósito: tem de continuar na tela depois do run_app, até o ExitProcess do relaunch.
 nexuscap::RestartNotice g_restart_notice;
+nexuscap::RestartNotice g_hdmi_notice;
 std::atomic<bool> g_return_to_lobby{false};
 std::atomic<bool> g_session_exiting{false};
 bool g_session_from_lobby = false;
@@ -72,6 +76,29 @@ nexuscap::SessionQuitGate g_quit_gate{};
 nexuscap::QpcClock* g_quit_clock = nullptr;  // set for duration of run_app
 
 constexpr int kExitBackToLobby = nexuscap::kSessionExitBackToLobby;
+
+void write_perf_test_session_result(const nexuscap::AppConfig& cfg, const nexuscap::PerfScoreAcc* acc,
+                                    const char* fail_reason) {
+  if (!cfg.perf_test) return;
+  nexuscap::PerfTestResult r;
+  r.valid = true;
+  r.plan = nexuscap::perf_test_plan_from_config(cfg);
+  r.sample.target_fps = r.plan.fps;
+  r.sample.fg_multiplier = r.plan.fg_multiplier;
+  if (fail_reason && *fail_reason) {
+    r.grade = nexuscap::PerfTestGrade::Fail;
+    r.summary = fail_reason;
+  } else if (acc && nexuscap::perf_test_score_ready(acc->frames())) {
+    r.sample = nexuscap::perf_test_sample_from_acc(*acc, r.plan.fps, r.plan.fg_multiplier);
+    r.grade = nexuscap::grade_perf_test(r.sample);
+    r.summary = nexuscap::format_perf_test_card(r.plan, r.sample, r.grade);
+  } else {
+    r.grade = nexuscap::PerfTestGrade::Fail;
+    r.summary = "O teste acabou sem amostras suficientes — nao usa o fps do vsync.";
+  }
+  (void)nexuscap::write_perf_test_result_file(nexuscap::default_perf_test_result_path(nexuscap::app_data_dir()),
+                                              r);
+}
 
 LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   // Mouse e teclado do CFG (ImGui). Só devolve true no que o backend realmente consome.
@@ -124,12 +151,12 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // Stale / held Esc right after Iniciar — ignore.
         return 0;
       }
-      // Bit 30 = auto-repeat KEYDOWN — one key = one overlay toggle.
+      // Bit 30 = auto-repeat KEYDOWN — one key = one overlay cycle.
       const bool is_repeat = (lp & (1u << 30)) != 0;
       const bool ctrl_down = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
       if (!is_repeat &&
           nexuscap::hud_hotkey_fired(vk, ctrl_down, g_hotkeys.vk_hud, g_hotkeys.hud_ctrl)) {
-        g_overlay = !g_overlay;
+        g_cycle_overlay = true;
       }
       if (vk == g_hotkeys.vk_analyze || vk == VK_INSERT || vk == 'A' || vk == 'a') g_analyze = !g_analyze;
       if (vk == g_hotkeys.vk_dlss) g_toggle_dlss = true;
@@ -192,7 +219,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   // Escala que o Feed travou neste processo (lobby abre em 100%, --autostart já entra escalado).
   // O CFG da sessão compara com ela pra saber se aplicar a escala pede reinício.
   int feed_locked_scale =
-      feed_work_resolution_at_boot(cfg.show_lobby && !cfg.autostart, cfg.scale_percent);
+      feed_work_resolution_at_boot(cfg.show_lobby && !cfg.autostart && !cfg.perf_test, cfg.scale_percent);
 
   // Session: RenoDX feed scale + NR state. Disk NeuralUplift alone never enables runtime NR.
   {
@@ -291,7 +318,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (!w.empty() && w.back() == 0) w.pop_back();
     return w;
   }();
-  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, session_title.c_str());
+  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, session_title.c_str(), false);
   if (!hwnd) {
     std::fprintf(stderr, "create window failed\n");
     return 1;
@@ -408,18 +435,23 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   cap_opt.color_space = cfg.color_space;
   cap_opt.color_range = cfg.color_range;
   cap_opt.capture_buffering = cfg.capture_buffering;
+  cap_opt.hold_playhead = cfg.perf_test;
+  const bool synthetic_capture = cfg.fake_capture || cfg.perf_test;
   if (cfg.fake_capture) {
     capture = std::make_unique<FakeCapture>();
+  } else if (cfg.perf_test) {
+    capture = std::make_unique<VirtualCapturePin>();
   } else {
     capture = std::make_unique<DShowCapture>();
   }
+  const std::string capture_name = cfg.perf_test ? cfg.video_path : cfg.device_name;
   auto try_start_capture = [&]() -> bool {
     err.clear();
-    return capture->start(cfg.device_name, cap_opt, slot, clock, err);
+    return capture->start(capture_name, cap_opt, slot, clock, err);
   };
   if (!try_start_capture()) {
     // Mode churn / exclusive device: one settle+retry before fake fallback.
-    if (!cfg.fake_capture) {
+    if (!synthetic_capture) {
       append_log(cfg.log_dir, "capture start fail: " + err + " — retry apos settle");
       Sleep(static_cast<DWORD>(capture_device_settle_ms()));
       capture = std::make_unique<DShowCapture>();
@@ -438,6 +470,22 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       DestroyWindow(hwnd);
       return 0;
     }
+    if (cfg.perf_test) {
+      write_perf_test_session_result(cfg, nullptr, ("Video nao abriu: " + err).c_str());
+      std::fprintf(stderr, "perf-test: %s — voltando ao lobby\n", err.c_str());
+      append_log(cfg.log_dir, "perf-test fail → lobby: " + err);
+      g_session_renderer = nullptr;
+      if (enhance) {
+        renderer.set_enhance(nullptr);
+        enhance->shutdown();
+        enhance.reset();
+      }
+      renderer.shutdown();
+      DestroyWindow(hwnd);
+      hwnd = nullptr;
+      g_return_to_lobby = true;
+      return kExitBackToLobby;
+    }
     // Lobby sessions: NEVER fake — fake+RenoDX = tela branca (visto em 4K MJPEG).
     if (g_session_from_lobby) {
       std::fprintf(stderr, "capture falhou — voltando ao lobby (sem fake)\n");
@@ -454,7 +502,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       g_return_to_lobby = true;
       return kExitBackToLobby;
     }
-    if (!cfg.fake_capture) {
+    if (!synthetic_capture) {
       std::fprintf(stderr, "falling back to fake capture\n");
       capture = std::make_unique<FakeCapture>();
       err.clear();
@@ -484,7 +532,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   const std::string audio_prefer = is_auto_device(cfg.device_name) ? std::string{} : cfg.device_name;
 
   AudioMonitor audio;
-  if (!cfg.fake_capture && !cfg.smoke) {
+  if (!synthetic_capture && !cfg.smoke) {
     std::string aerr;
     if (!audio.start(audio_prefer, aerr)) {
       std::fprintf(stderr, "audio: %s (continuando sem som)\n", aerr.c_str());
@@ -517,15 +565,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   fg.configure(cfg.fg_multiplier, cfg.fg_path);
   {
     std::string ferr;
-    if (cfg.fg_multiplier >= 2) {
-      if (!fg.apply_profile(ferr)) {
-        std::fprintf(stderr, "fg profile: %s\n", ferr.c_str());
-      } else {
-        std::printf("fg: LSFG profile mira-lock flow100 WGC x%d (%s)\n", cfg.fg_multiplier,
-                    fg.state().exe_path.empty() ? "exe missing" : "Steam OK");
-      }
+    // Sempre grava mira-lock (Flow 100 / WGC), auto Steam ou Pasta — mesmo com FG off.
+    if (!fg.apply_profile(ferr)) {
+      std::fprintf(stderr, "fg profile: %s\n", ferr.c_str());
     } else {
-      std::printf("fg: off (use --fg-x 2|3|4, PageDn toggle, PageUp cycle)\n");
+      const char* src = fg.state().exe_path.empty() ? "exe missing" : (cfg.fg_path.empty() ? "auto" : "manual");
+      std::printf("fg: LSFG profile mira-lock flow100 WGC x%d (%s)\n", fg.state().multiplier, src);
     }
   }
   info.fg_enabled = fg.state().active;
@@ -573,7 +618,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.sync_image = cfg.sync_image;
   overlay.hw_info = cfg.hw_info;
   const bool live_unlocked = live_mode_unlocked();
-  const bool live_active = live_overlay_active(live_unlocked, cfg.live_overlay);
+  bool live_active = live_overlay_active(live_unlocked, cfg.live_overlay);
   overlay.live_overlay = live_active;
   overlay.live_console = cfg.live_console;
   overlay.overlay_console = cfg.overlay_console;
@@ -595,9 +640,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   MetricsHud hud;
   hud.create(hwnd, hi);
   LiveOverlay live;
+  live.create(hwnd, hi);
+  live.set_console(cfg.live_console);
   if (live_active) {
-    live.create(hwnd, hi);
-    live.set_console(cfg.live_console);
     live.update(overlay);
   } else {
     hud.update(overlay);  // size + show advanced panel immediately on Iniciar
@@ -735,15 +780,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     std::printf("selftest-cfg: menu aberto na sessao\n");
   }
 
-  SessionControlPanel session_panel;
-  const bool show_session_panel = session_shows_control_panel(cfg.hide_panel_on_capture);
-  if (show_session_panel) {
-    session_panel.create(hwnd, hi);
-    session_panel.set_visible(true);
-    std::printf("session panel: ON (hide_panel_on_capture=0)\n");
-  } else {
-    std::printf("session panel: off (captura limpa)\n");
-  }
+  std::printf("session panel: off (captura limpa)\n");
   std::printf("present sync: %s Present(%u) — %s\n", sync_image_badge(cfg.sync_image),
               present_sync_interval(cfg.sync_image), sync_image_how_to_see(cfg.sync_image));
 
@@ -751,7 +788,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     std::string ferr;
     if (fg.state().status == FgStatus::Missing || fg.state().exe_path.empty()) {
       std::printf("SKIP selftest-fg: LosslessScaling.exe not found\n");
-      session_panel.destroy();
       live.destroy();
       hud.destroy();
       renderer.set_enhance(nullptr);
@@ -763,7 +799,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (!fg.ensure_process(ferr)) {
       std::printf("FAIL selftest-fg: ensure_process %s\n", ferr.c_str());
       fg.shutdown();
-      session_panel.destroy();
       live.destroy();
       hud.destroy();
       return 7;
@@ -772,7 +807,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                 static_cast<unsigned long>(fg.state().pid));
     fg.shutdown();
     std::printf("PASS selftest-fg\n");
-    session_panel.destroy();
     live.destroy();
     hud.destroy();
     renderer.set_enhance(nullptr);
@@ -789,6 +823,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
   double prev_t = clock.now_ms();
   uint64_t presented = 0;
+  double perf_t0 = 0;
+  double perf_hold_t0 = 0;
+  bool perf_scoring = false;
+  bool perf_revealed = true;
+  bool perf_fg_kicked = false;
+  int perf_score_skip = 0;
+  PerfScoreAcc perf_acc;
   uint64_t cluster_count = 0;
   uint64_t stalls_since_600 = 0;
   uint64_t stalls_after_warmup = 0;
@@ -800,9 +841,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   double fps_smooth = 0;
   double last_dlss_ms = 0;
   bool analyze_was = false;
+  HdmiRecover hdmi;
+  FramePayload last_good;
+  FramePayload file_last;
+  FramePayload hold_black;
+  Nv12ChromaMean last_chroma;
+  Nv12ChromaMean last_reject_ch;
+  double last_hold_present_ms = 0;
+  double hdmi_notice_until_ms = 0;
+  bool hdmi_hold_logged = false;
 
   // Gear FG on → liga na abertura (não só perfil pronto). Off = PageDn habilita.
-  if (cfg.fg_auto_start && cfg.fg_multiplier >= 2) {
+  // No teste a janela fica oculta até o NR aquecer; o LS precisa dela visível.
+  if (cfg.fg_auto_start && cfg.fg_multiplier >= 2 && !cfg.perf_test) {
     std::string ferr;
     if (fg.toggle(hwnd, ferr)) {
       std::printf("fg auto-on x%d\n", fg.state().multiplier);
@@ -951,7 +1002,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
     }
 
-    if (g_toggle_fs.exchange(false)) {
+    if (g_toggle_fs.exchange(false) && !cfg.perf_test) {
       g_session_fullscreen = !g_session_fullscreen;
       cfg.exclusive_fullscreen = g_session_fullscreen;
       int cw = 0, ch = 0;
@@ -993,6 +1044,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                             clock.now_ms());
         append_log(cfg.log_dir, "fg cycle requested (async)");
       }
+    }
+    if (g_cycle_overlay.exchange(false)) {
+      const OverlayHudFlags next =
+          cycle_overlay_hud(g_overlay.load(), cfg.mini_overlay, cfg.advanced_metrics, cfg.live_overlay);
+      g_overlay = next.visible;
+      cfg.show_overlay = next.visible;
+      cfg.mini_overlay = next.mini;
+      cfg.advanced_metrics = next.advanced;
+      cfg.live_overlay = next.live;
+      if (cfg_ui_ready) cfg_ui.state.hud_visible = next.visible;
     }
 
     // Finish async FG without blocking Present (same idea as NR log confirm).
@@ -1039,9 +1100,156 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     analyze_was = analyze_on;
 
     FramePayload frame;
-    if (!slot.consume(frame)) {
-      Sleep(1);
-      continue;
+    const double now_idle = clock.now_ms();
+    bool have_new = slot.consume(frame);
+    bool holding = false;
+    HdmiRecoverAction hdmi_act = HdmiRecoverAction::None;
+    const bool app_relaunching = hdmi_blocked_by_nexuscap_restart(
+        cfg_restart_pending, g_restart_notice.visible() && !cfg.perf_test,
+        cfg.autostart && !cfg.perf_test && presented < kStatsWarmupFrames);
+    if (!synthetic_capture && !app_relaunching) {
+      const int ow = capture->opened_width() > 0 ? capture->opened_width() : cap_w;
+      const int oh = capture->opened_height() > 0 ? capture->opened_height() : cap_h;
+      if (have_new) {
+        const bool size_ok = frame.width == ow && frame.height == oh &&
+                             nv12_buffer_matches_mode(frame.nv12.size(), ow, oh);
+        const Nv12ChromaMean now_ch = nv12_chroma_mean(frame.nv12, frame.width, frame.height);
+        const bool jumped = nv12_chroma_jumped_to_pink(last_chroma, now_ch);
+        const bool junk = size_ok && nv12_looks_like_hdmi_junk(frame.nv12, frame.width, frame.height);
+        const bool content_ok = size_ok && !junk && !jumped;
+        if (!content_ok) last_reject_ch = now_ch;
+        hdmi_act = hdmi_on_arrived(hdmi, now_idle, size_ok, content_ok);
+      } else {
+        hdmi_act = hdmi_on_idle(hdmi, now_idle);
+        if (hdmi.lost) {
+          const size_t nbytes = capture->last_sample_bytes();
+          if (nbytes > 0 && !nv12_buffer_matches_mode(nbytes, ow, oh)) {
+            const HdmiRecoverAction pulse = hdmi_on_sample(hdmi, now_idle, false, false);
+            if (pulse == HdmiRecoverAction::Reopen) hdmi_act = pulse;
+          }
+        }
+      }
+
+      if (hdmi_act == HdmiRecoverAction::Reopen && !cfg_restart_pending) {
+        const size_t last_bytes = capture->last_sample_bytes();
+        const int prev_w = ow;
+        const int prev_h = oh;
+        char hbuf[192];
+        std::snprintf(hbuf, sizeof(hbuf),
+                      "hdmi recover: Stop/Run bytes=%zu rejected=%llu opened=%dx%d user=%dx%d", last_bytes,
+                      static_cast<unsigned long long>(capture->rejected_samples()), ow, oh, cap_w, cap_h);
+        append_log(cfg.log_dir, hbuf);
+        slot.clear();
+        capture = std::make_unique<DShowCapture>();
+        CaptureStartOptions rec = cap_opt;
+        rec.follow_hdmi_size = true;
+        rec.wait_first_frame = false;
+        int try_w = prev_w > 0 ? prev_w : rec.width;
+        int try_h = prev_h > 0 ? prev_h : rec.height;
+        if (last_bytes > 0 && !nv12_buffer_matches_mode(last_bytes, try_w, try_h)) {
+          const auto modes = list_video_capture_modes(cfg.device_name);
+          (void)hdmi_pick_reopen_size(last_bytes, cap_opt.width, cap_opt.height, modes, &try_w, &try_h);
+        }
+        rec.width = try_w;
+        rec.height = try_h;
+        err.clear();
+        bool ok = capture->start(cfg.device_name, rec, slot, clock, err);
+        if (!ok && (try_w != cap_opt.width || try_h != cap_opt.height)) {
+          append_log(cfg.log_dir, std::string("hdmi recover retry user mode: ") + err);
+          capture = std::make_unique<DShowCapture>();
+          rec.width = cap_opt.width;
+          rec.height = cap_opt.height;
+          rec.follow_hdmi_size = true;
+          rec.wait_first_frame = false;
+          err.clear();
+          ok = capture->start(cfg.device_name, rec, slot, clock, err);
+        }
+        hdmi_note_reopened(hdmi, clock.now_ms());
+        if (ok && capture->running()) {
+          info.width = capture->opened_width() > 0 ? capture->opened_width() : try_w;
+          info.height = capture->opened_height() > 0 ? capture->opened_height() : try_h;
+          const bool size_changed =
+              std::abs(info.width - prev_w) > 16 || std::abs(info.height - prev_h) > 16;
+          if (size_changed) {
+            wchar_t exe_path[MAX_PATH]{};
+            GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+            (void)sync_feed_work_resolution_in_dir(fs::path(exe_path).parent_path().string(),
+                                                   feed_work_resolution_for_session(cfg.scale_percent));
+          }
+          char okbuf[192];
+          std::snprintf(okbuf, sizeof(okbuf), "hdmi recover ok signal %dx%d (pedido %dx%d) feed_rebuild=%d",
+                        capture->opened_width(), capture->opened_height(), rec.width, rec.height,
+                        size_changed ? 1 : 0);
+          append_log(cfg.log_dir, okbuf);
+          std::printf("%s\n", okbuf);
+        } else {
+          append_log(cfg.log_dir, std::string("hdmi recover fail: ") + err);
+        }
+        have_new = false;
+        hdmi_act = HdmiRecoverAction::Hold;
+      }
+
+      if (hdmi_keep_last_good(hdmi_act)) {
+        have_new = false;
+        hdmi_act = HdmiRecoverAction::Hold;
+      }
+    }
+
+    const bool last_good_ok =
+        last_good.width > 0 && last_good.height > 0 && !last_good.nv12.empty() &&
+        !nv12_looks_like_hdmi_junk(last_good.nv12, last_good.width, last_good.height);
+    bool file_repeat = false;
+    if (app_relaunching) {
+      if (!have_new) {
+        Sleep(1);
+        continue;
+      }
+    } else if (!have_new || hdmi_act == HdmiRecoverAction::Hold) {
+      if (synthetic_capture && file_cap_repeat_ok(file_last.width, file_last.height, file_last.nv12)) {
+        // Capture card always has a current buffer. Empty slot + VSYNC = 33ms red spike.
+        file_repeat = true;
+        file_last.cap_qpc_ms = now_idle;
+      } else if (!synthetic_capture && (hdmi_act == HdmiRecoverAction::Hold || hdmi.lost)) {
+        if ((now_idle - last_hold_present_ms) < static_cast<double>(hdmi_hold_present_gap_ms())) {
+          Sleep(1);
+          continue;
+        }
+        last_hold_present_ms = now_idle;
+        holding = true;
+        if (hdmi_lost_long_enough(hdmi, now_idle) &&
+            (hdmi_notice_until_ms <= 0.0 || now_idle >= hdmi_notice_until_ms)) {
+          hdmi_notice_until_ms = now_idle + static_cast<double>(hdmi_notice_dwell_ms());
+        }
+        if (hdmi_lost_long_enough(hdmi, now_idle) && !hdmi_hold_logged) {
+          char hbuf[256];
+          std::snprintf(hbuf, sizeof(hbuf),
+                        "hdmi hold: console dropped HDMI — last good frozen, notice burned (lost=%d discard=%d u=%d v=%d yrange=%d)",
+                        hdmi.lost ? 1 : 0, hdmi.discard_left, last_reject_ch.u, last_reject_ch.v,
+                        last_reject_ch.y_range);
+          append_log(cfg.log_dir, hbuf);
+          hdmi_hold_logged = true;
+        }
+        if (!last_good_ok) {
+          const int bw_h = capture->opened_width() > 0 ? capture->opened_width() : cap_w;
+          const int bh_h = capture->opened_height() > 0 ? capture->opened_height() : cap_h;
+          if (hold_black.width != bw_h || hold_black.height != bh_h) {
+            hold_black.width = bw_h;
+            hold_black.height = bh_h;
+            nv12_fill_limited_black(hold_black.nv12, bw_h, bh_h);
+          }
+          hold_black.cap_qpc_ms = now_idle;
+          frame.width = bw_h;
+          frame.height = bh_h;
+          frame.cap_qpc_ms = now_idle;
+        } else {
+          frame.width = last_good.width;
+          frame.height = last_good.height;
+          frame.cap_qpc_ms = last_good.cap_qpc_ms;
+        }
+      } else {
+        Sleep(1);
+        continue;
+      }
     }
 
     const double now = clock.now_ms();
@@ -1061,6 +1269,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
 
     double present_ms = 0;
+    live_active = live_overlay_active(live_unlocked, cfg.live_overlay);
     overlay.visible = g_overlay;
     overlay.advanced_metrics = cfg.advanced_metrics;
     overlay.mini_overlay = live_active ? false : cfg.mini_overlay;
@@ -1070,11 +1279,21 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.overlay_console = cfg.overlay_console;
     overlay.analyze_on = analyze_on;
     overlay.frame_ms = interval;
-    overlay.e2e_ms = now - frame.cap_qpc_ms;
+    {
+      const double cap_t = holding ? last_good.cap_qpc_ms : (file_repeat ? file_last.cap_qpc_ms : frame.cap_qpc_ms);
+      overlay.e2e_ms = (cap_t > 0.0 && now >= cap_t) ? (now - cap_t) : 0.0;
+    }
     overlay.fps = instant_fps;
     overlay.fps_smooth = fps_smooth;
-    overlay.capture_w = frame.width > 0 ? frame.width : cap_w;
-    overlay.capture_h = frame.height > 0 ? frame.height : cap_h;
+    if (cfg.perf_test) {
+      overlay.perf_remain_sec = perf_scoring ? perf_test_remain_sec(now, perf_t0) : -1;
+    } else {
+      overlay.perf_remain_sec = -2;
+    }
+    overlay.capture_w = holding ? (last_good_ok ? last_good.width : frame.width)
+                                : (frame.width > 0 ? frame.width : cap_w);
+    overlay.capture_h = holding ? (last_good_ok ? last_good.height : frame.height)
+                                : (frame.height > 0 ? frame.height : cap_h);
     overlay.output_w = bw;
     overlay.output_h = bh;
     overlay.frames = presented;
@@ -1092,6 +1311,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.fg_flow_scale = fg.state().flow_scale;
     overlay.fg_capture_api = fg.state().capture_api;
     overlay.session_notice = session_notice.visible(now);
+    overlay.hdmi_hold_notice =
+        !app_relaunching &&
+        (hdmi_lost_long_enough(hdmi, now) || hdmi_notice_visible(holding, now, hdmi_notice_until_ms));
+    if (overlay.hdmi_hold_notice) {
+      overlay.hdmi_notice_title = session_hdmi_notice_title();
+      overlay.hdmi_notice_detail = session_hdmi_notice_detail();
+    } else {
+      overlay.hdmi_notice_title.clear();
+      overlay.hdmi_notice_detail.clear();
+    }
     // Soft tips must be readable even if the user hid the HUD.
     if (session_notice.active(now)) overlay.visible = true;
     if (overlay.fg_on && overlay.fg_multiplier >= 2) {
@@ -1115,6 +1344,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.fg_multiplier = fg.state().multiplier >= 2 ? fg.state().multiplier : cfg.fg_multiplier;
       ui.fg_busy = fg.busy();
       ui.hud_visible = g_overlay.load();
+      ui.overlay_no_bg = cfg.overlay_no_bg;
       ui.live_console = cfg.live_console;
       ui.overlay_console = cfg.overlay_console;
       ui.signal_w = overlay.capture_w > 0 ? overlay.capture_w : cap_w;
@@ -1130,10 +1360,30 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
     }
 
-    if (!renderer.present_frame(frame, overlay, present_ms, err)) {
+    const FramePayload& present_src =
+        holding ? (last_good_ok ? last_good : hold_black) : (file_repeat ? file_last : frame);
+    if (!renderer.present_frame(present_src, overlay, present_ms, err)) {
       append_log(cfg.log_dir, "present error: " + err);
       bug_exc("present", err);
       if (perf_rep.active()) perf_rep.note_event(now, "present_error", err.c_str());
+    }
+    if (g_hdmi_notice.visible()) g_hdmi_notice.destroy();
+    if (!overlay.hdmi_hold_notice) hdmi_hold_logged = false;
+    if (!holding && have_new && synthetic_capture && frame.width > 0 && !frame.nv12.empty()) {
+      file_last.width = frame.width;
+      file_last.height = frame.height;
+      file_last.cap_qpc_ms = frame.cap_qpc_ms;
+      file_last.frame_index = frame.frame_index;
+      file_last.nv12.swap(frame.nv12);
+    } else if (!holding && !synthetic_capture &&
+               (hdmi_act == HdmiRecoverAction::Present || hdmi_act == HdmiRecoverAction::None) &&
+               frame.width > 0 && !frame.nv12.empty() &&
+               !nv12_looks_like_hdmi_junk(frame.nv12, frame.width, frame.height)) {
+      last_good.width = frame.width;
+      last_good.height = frame.height;
+      last_good.cap_qpc_ms = frame.cap_qpc_ms;
+      last_chroma = nv12_chroma_mean(frame.nv12, frame.width, frame.height);
+      last_good.nv12.swap(frame.nv12);
     }
 
     if (cfg_ui_ready && cfg.selftest_cfg) {
@@ -1149,18 +1399,31 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         session_notice.push(session_notice_cfg_closed(), now);
       }
       if (act.hud_changed) g_overlay = ui.hud_visible;
+      if (act.overlay_no_bg_changed) {
+        cfg.overlay_no_bg = ui.overlay_no_bg;
+        overlay.overlay_no_bg = cfg.overlay_no_bg;
+        if (!cfg.perf_test) {
+          PersistedSettings ps = default_settings();
+          std::string serr;
+          load_settings(ps, settings_default_path(), serr);
+          ps.ui.overlay_no_bg = cfg.overlay_no_bg;
+          save_settings(ps, settings_default_path(), serr);
+        }
+      }
       if (act.console_changed) {
         cfg.live_console = static_cast<int>(clamp_live_console(ui.live_console));
         cfg.overlay_console = ui.overlay_console;
         overlay.live_console = cfg.live_console;
         overlay.overlay_console = cfg.overlay_console;
         live.set_console(cfg.live_console);
-        PersistedSettings ps = default_settings();
-        std::string serr;
-        load_settings(ps, settings_default_path(), serr);
-        ps.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
-        ps.ui.overlay_console = cfg.overlay_console;
-        save_settings(ps, settings_default_path(), serr);
+        if (!cfg.perf_test) {
+          PersistedSettings ps = default_settings();
+          std::string serr;
+          load_settings(ps, settings_default_path(), serr);
+          ps.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
+          ps.ui.overlay_console = cfg.overlay_console;
+          save_settings(ps, settings_default_path(), serr);
+        }
       }
       // NR e FG reaproveitam os caminhos das teclas (debounce, ACK por log, async).
       if (act.toggle_nr) g_toggle_nr = true;
@@ -1299,10 +1562,75 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.present_ms = present_ms;
     ++presented;
     overlay.frames = presented;
+    if (cfg.perf_test && presented % 120 == 0) {
+      char vbuf[192];
+      std::snprintf(vbuf, sizeof(vbuf),
+                    "perf-test video idx=%llu published=%llu dropped=%llu",
+                    static_cast<unsigned long long>(file_last.frame_index),
+                    static_cast<unsigned long long>(slot.published()),
+                    static_cast<unsigned long long>(slot.dropped()));
+      append_log(cfg.log_dir, vbuf);
+    }
     // Sessão de volta na tela: só agora o aviso de reinício pode sair.
-    if (presented == 1 && g_restart_notice.visible()) g_restart_notice.destroy();
+    // No teste, o aviso fica até o DLSS 5 ligar — o relógio não começa no 1º frame.
+    if (presented == 1 && g_restart_notice.visible() && !cfg.perf_test) g_restart_notice.destroy();
+    if (cfg.perf_test && !perf_scoring) {
+      if (perf_hold_t0 <= 0) perf_hold_t0 = now;
+      const bool want_fg = cfg.fg_auto_start && cfg.fg_multiplier >= 2;
+      const bool fg_on = overlay.fg_on && overlay.fg_multiplier >= 2;
+      bool fg_unavailable = false;
+      if (want_fg && perf_fg_kicked && !fg.busy()) {
+        const FgStatus st = fg.state().status;
+        fg_unavailable = (st == FgStatus::Missing || st == FgStatus::Error);
+      }
+      if (!perf_revealed &&
+          perf_test_should_reveal_window(perf_test_dlss5_ready(g_nr_runtime_on, presented), now - perf_hold_t0)) {
+        show_session_window(hwnd, true);
+        perf_revealed = true;
+        append_log(cfg.log_dir, "perf-test window reveal nr=" + std::to_string(g_nr_runtime_on ? 1 : 0) +
+                                    " frames=" + std::to_string(presented));
+      }
+      if (perf_revealed && want_fg && !perf_fg_kicked && !fg.busy()) {
+        std::string ferr;
+        perf_fg_kicked = true;
+        if (!fg.request_toggle(hwnd, ferr)) {
+          append_log(cfg.log_dir, "perf-test fg kick fail: " + ferr);
+          if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
+            session_notice.push(session_notice_fg_missing(), now);
+          }
+        }
+      }
+      if (perf_test_should_start_clock(g_nr_runtime_on, presented, want_fg, fg_on, fg_unavailable)) {
+        if (!perf_revealed) {
+          show_session_window(hwnd, true);
+          perf_revealed = true;
+        }
+        perf_scoring = true;
+        perf_t0 = now;
+        capture->rebase_playhead(now);
+        perf_score_skip = 2;
+        stats600.reset();
+        perf_acc.reset();
+        ft_win.reset();
+        stalls_since_600 = 0;
+        overlay.has_stats600 = false;
+        if (g_restart_notice.visible()) g_restart_notice.destroy();
+        session_notice.push(perf_test_counting_notice(), now);
+        append_log(cfg.log_dir, "perf-test clock start nr=" + std::to_string(g_nr_runtime_on ? 1 : 0) +
+                                    " fg=" + std::to_string(fg_on ? 1 : 0) +
+                                    " frames=" + std::to_string(presented));
+      }
+    }
 
-    const bool is_stall = interval >= hitch_ms;
+    const bool is_stall =
+        cfg.perf_test ? perf_test_is_stall(interval, cfg.fps, cfg.hitch_threshold_ms) : (interval >= hitch_ms);
+    if (cfg.perf_test && perf_scoring) {
+      if (perf_score_skip > 0) {
+        --perf_score_skip;
+      } else {
+        perf_acc.push(interval, present_ms, is_stall);
+      }
+    }
     if (!stats_frame_counts_toward_window(presented)) {
       max_boot_interval_ms = (std::max)(max_boot_interval_ms, interval);
     } else if (!warmup_logged) {
@@ -1347,7 +1675,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     analyze.frame_sample(now, presented, 0, 0, present_ms, overlay.e2e_ms, interval, slot.dropped(),
                          overlay.e2e_ms);
 
-    if (stats_frame_counts_toward_window(presented)) {
+    if (stats_frame_counts_toward_window(presented) && (!cfg.perf_test || perf_scoring)) {
       ++steady_presented;
       if (auto s = stats600.push(interval, overlay.e2e_ms, present_ms, is_stall)) {
         hitch.reset_window_log_cap();
@@ -1395,11 +1723,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       overlay.cpu_name = hw.cpu_name;
       overlay.gpu_name = hw.gpu_name;
     }
-    if (live_active) {
-      live.update(overlay);
-      if (live.take_console_changed()) {
-        cfg.live_console = live.console();
-        overlay.live_console = cfg.live_console;
+    live.update(overlay);
+    if (live_active && live.take_console_changed()) {
+      cfg.live_console = live.console();
+      overlay.live_console = cfg.live_console;
+      if (!cfg.perf_test) {
         PersistedSettings ps = default_settings();
         std::string serr;
         load_settings(ps, settings_default_path(), serr);
@@ -1408,11 +1736,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         ps.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
         save_settings(ps, settings_default_path(), serr);
       }
-    } else {
-      hud.update(overlay);
     }
-    if (session_panel.visible()) session_panel.reposition();
-
+    hud.update(overlay);
     {
       const bool ov = g_overlay.load();
       if (ov != overlay_was) {
@@ -1439,9 +1764,17 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (cfg.selftest_cap && presented >= 180) {
       g_running = false;
     }
+    if (cfg.perf_test) {
+      const bool time_up = perf_t0 > 0 && (now - perf_t0) >= static_cast<double>(kPerfTestMaxSec) * 1000.0;
+      if (perf_test_should_stop(time_up)) {
+        g_running = false;
+        if (g_session_from_lobby) g_return_to_lobby = true;
+      }
+    }
   }
 
   cfg.nr_runtime_on = g_nr_runtime_on;
+  if (cfg.perf_test) write_perf_test_session_result(cfg, &perf_acc, nullptr);
 
   if (bug_rep.active()) {
     bug_rep.end(clock.now_ms(), presented, 0, report_hitch_count, cluster_count);
@@ -1450,13 +1783,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     perf_rep.end(clock.now_ms(), presented, 0, report_hitch_count, cluster_count);
   }
 
-  session_panel.destroy();
   live.destroy();
   hud.destroy();
   g_session_cfg = nullptr;
   renderer.set_ui_draw_callback(nullptr, nullptr);
   cfg_ui.shutdown();
   g_cfg_open = false;
+  g_hdmi_notice.destroy();
   g_restart_notice.pump();  // o aviso segue vivo enquanto FG/captura/D3D caem
   fg.shutdown();
   if (analyze_was || analyze.line_count() > 1) {
@@ -1587,7 +1920,7 @@ int main(int argc, char** argv) {
   // Logs always in AppData — Program Files is not writable after install.
   cfg.log_dir = nexuscap::app_logs_dir();
   // Reinício pedido pelo CFG: o aviso reaparece aqui e só sai no primeiro frame da sessão.
-  if (nexuscap::restart_notice_visible_at_boot(cfg.autostart)) {
+  if (nexuscap::restart_notice_visible_at_boot(cfg.autostart) && !cfg.perf_test) {
     g_restart_notice.show(GetModuleHandleW(nullptr), nexuscap::session_restart_notice_title(),
                           nexuscap::session_restart_notice_detail(nexuscap::SessionCfgApply::Live));
   }
@@ -1601,32 +1934,51 @@ int main(int argc, char** argv) {
     std::string err;
     nexuscap::load_settings(settings, nexuscap::settings_default_path(), err);
   }
+  if (cfg.perf_test) {
+    nexuscap::PerfTestPlan plan;
+    if (!cfg.perf_cli_override &&
+        nexuscap::read_perf_test_plan_file(nexuscap::default_perf_test_plan_path(nexuscap::app_data_dir()),
+                                           plan)) {
+      nexuscap::apply_perf_test_plan_to_config(plan, cfg);
+    } else {
+      nexuscap::apply_perf_test_plan_to_config(nexuscap::perf_test_plan_from_config(cfg), cfg);
+    }
+    if (cfg.fg_path.empty()) cfg.fg_path = settings.fg_path;
+    {
+      std::string bundled;
+      if (nexuscap::resolve_perf_test_video(base.string(), cfg.width, cfg.height, bundled))
+        cfg.video_path = bundled;
+    }
+  }
   // Before ReShade loads: Pass Count 1 → addons-stable, 2/3/4 → addons-multipass (AddonPath).
   {
-    const auto ar = nexuscap::sync_renodx_addon_variant(base.string(), settings.nr_pass_count);
+    const int boot_pass = cfg.perf_test ? cfg.nr_pass_count : settings.nr_pass_count;
+    const int boot_preset = cfg.perf_test ? cfg.renodx_preset : settings.renodx_preset;
+    const int boot_scale = cfg.perf_test ? cfg.scale_percent : settings.scale_percent;
+    const auto ar = nexuscap::sync_renodx_addon_variant(base.string(), boot_pass);
     if (ar == nexuscap::RenodxAddonSyncResult::OkSwapped) {
       std::printf("renodx addon: %s\n",
-                  nexuscap::nr_pass_count_uses_multipass_addon(settings.nr_pass_count) ? "multipass"
-                                                                                       : "stable");
+                  nexuscap::nr_pass_count_uses_multipass_addon(boot_pass) ? "multipass" : "stable");
     } else if (ar == nexuscap::RenodxAddonSyncResult::MissingVariant) {
       std::printf("renodx addon: stack missing (run tools\\setup_renodx.ps1)\n");
     }
-    (void)nexuscap::sync_nr_pass_count_files(base.string(), settings.nr_pass_count, settings.renodx_preset);
-    (void)nexuscap::sync_renodx_visual_preset_files(base.string(), settings.renodx_preset,
-                                                    settings.nr_pass_count);
+    (void)nexuscap::sync_nr_pass_count_files(base.string(), boot_pass, boot_preset);
+    (void)nexuscap::sync_renodx_visual_preset_files(base.string(), boot_preset, boot_pass);
     {
-      const bool want_nr = settings.enhance_renodx && settings.neural_rendering;
+      const bool want_nr = cfg.perf_test ? true : (settings.enhance_renodx && settings.neural_rendering);
       (void)nexuscap::sync_neural_rendering_enabled_files(base.string(), want_nr, want_nr);
     }
     // Feed locks work_resolution at the first swapchain: 100% when the lobby opens first
-    // (sharp menus), session scale when we boot straight into capture (--autostart).
-    const bool lobby_first = cfg.show_lobby && !cfg.autostart;
+    // (sharp menus), session scale when we boot straight into capture (--autostart / --perf-test).
+    const bool lobby_first = cfg.show_lobby && !cfg.autostart && !cfg.perf_test;
     (void)nexuscap::sync_feed_work_resolution_in_dir(
-        base.string(), nexuscap::feed_work_resolution_at_boot(lobby_first, settings.scale_percent));
+        base.string(), nexuscap::feed_work_resolution_at_boot(lobby_first, boot_scale));
   }
   // CLI overrides persisted where explicit.
   if (!cfg.show_lobby) {
     // keep cfg from CLI
+  } else if (cfg.perf_test) {
+    // Plano ja aplicado — nao sobrescrever com o CFG HDMI.
   } else {
     // Seed lobby from disk unless CLI forced renodx/fg/device already atypical — lobby owns UX.
     cfg.device_name = settings.device_name;
@@ -1646,7 +1998,7 @@ int main(int argc, char** argv) {
     cfg.mini_overlay = settings.ui.mini_overlay;
     cfg.overlay_no_bg = settings.ui.overlay_no_bg;
     cfg.hw_info = settings.ui.hw_info;
-    cfg.hide_panel_on_capture = settings.ui.hide_panel_on_capture;
+    cfg.hide_panel_on_capture = true;
     cfg.sync_image = settings.ui.sync_image;
     // Also needed for --autostart (lobby skipped): reports must survive a scale relaunch.
     cfg.bug_report = settings.ui.bug_report;
@@ -1672,6 +2024,8 @@ int main(int argc, char** argv) {
       cfg.neural_rendering = false;
     }
   }
+  // Motor / Pass Count / escala: o overlay da sessão volta; os checks do lobby ficam.
+  (void)nexuscap::apply_autostart_overlay_hud(cfg);
 
   HINSTANCE hi = GetModuleHandleW(nullptr);
   if (!cfg.show_lobby) {
@@ -1679,11 +2033,16 @@ int main(int argc, char** argv) {
     const int rc = run_app(hi, cfg);
     // Sessão sem lobby (--no-lobby / selftests) também reinicia pelo CFG e volta pra captura.
     if (rc == nexuscap::kSessionExitRelaunch) {
-      nexuscap::apply_session_cfg_to_persisted(cfg, settings);
-      std::string err;
-      nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
-      std::printf("cfg restart: relaunch %s\n", nexuscap::session_cfg_relaunch_args());
-      if (nexuscap::relaunch_current_process(nexuscap::session_cfg_relaunch_args())) return 0;
+      if (!cfg.perf_test) {
+        nexuscap::apply_session_cfg_to_persisted(cfg, settings);
+        std::string err;
+        nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
+      }
+      const std::string relaunch =
+          nexuscap::session_cfg_relaunch_args_for_hud(cfg.show_overlay, cfg.mini_overlay,
+                                                     cfg.advanced_metrics, cfg.live_overlay);
+      std::printf("cfg restart: relaunch %s\n", relaunch.c_str());
+      if (nexuscap::relaunch_current_process(relaunch.c_str())) return 0;
       g_restart_notice.destroy();
       std::fprintf(stderr, "cfg restart: falha ao reiniciar\n");
       return rc;
@@ -1693,7 +2052,7 @@ int main(int argc, char** argv) {
 
   // Lobby ↔ session loop: always open lobby first (maximized window). Esc from capture returns.
   g_session_from_lobby = true;
-  bool skip_lobby_once = cfg.autostart;  // relaunch for feed scale resumes straight into the session
+  bool skip_lobby_once = cfg.autostart || cfg.perf_test;
   for (;;) {
     if (skip_lobby_once) {
       skip_lobby_once = false;
@@ -1701,33 +2060,61 @@ int main(int argc, char** argv) {
       std::printf("lobby cancelled\n");
       return 0;
     }
-    {
+    if (!cfg.perf_test) {
       std::string err;
       nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
     }
+    const bool was_perf_test = cfg.perf_test;
+    const int session_scale = cfg.scale_percent;
+    const bool session_renodx = cfg.enhance == nexuscap::EnhanceBackend::Renodx;
     const int rc = run_app(hi, cfg);
-    // PageDn/PageUp mid-session must stick after Esc → lobby (checkbox + xN).
-    apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, settings);
-    // Delete mid-session must stick after Esc → lobby (NR flag), but keep RenoDX loaded.
-    apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == nexuscap::EnhanceBackend::Renodx,
-                                  settings);
-    settings.ui.live_overlay = cfg.live_overlay;
-    settings.ui.overlay_console = cfg.overlay_console;
-    settings.ui.live_console =
-        nexuscap::live_console_key(nexuscap::clamp_live_console(cfg.live_console));
-    {
-      std::string err;
-      nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
+    if (was_perf_test) {
+      // Teste so vive em perf_test_plan/last. Devolve Pass/tom/NR/Feed ao CFG HDMI.
+      cfg.perf_test = false;
+      nexuscap::apply_persisted_to_config(settings, cfg);
+      cfg.popup_perf_result = true;
+      {
+        wchar_t exe_path[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+        const auto exe_dir = fs::path(exe_path).parent_path().string();
+        (void)nexuscap::restore_hdmi_pipeline_after_perf_test(exe_dir, settings);
+      }
+    } else {
+      // PageDn/PageUp mid-session must stick after Esc → lobby (checkbox + xN).
+      apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, settings);
+      // Delete mid-session must stick after Esc → lobby (NR flag), but keep RenoDX loaded.
+      apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == nexuscap::EnhanceBackend::Renodx,
+                                    settings);
+      settings.ui.live_overlay = cfg.live_overlay;
+      settings.ui.overlay_console = cfg.overlay_console;
+      settings.ui.overlay_no_bg = cfg.overlay_no_bg;
+      settings.ui.live_console =
+          nexuscap::live_console_key(nexuscap::clamp_live_console(cfg.live_console));
+      {
+        std::string err;
+        nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
+      }
     }
     // CFG na captura mudou o motor 1x ou a escala do Feed: salva e volta direto pra sessão.
     if (rc == nexuscap::kSessionExitRelaunch) {
+      if (was_perf_test) {
+        nexuscap::write_perf_test_plan_file(nexuscap::default_perf_test_plan_path(nexuscap::app_data_dir()),
+                                            nexuscap::perf_test_plan_from_config(cfg));
+        const std::string relaunch = "--perf-test";
+        std::printf("cfg restart: relaunch %s\n", relaunch.c_str());
+        if (nexuscap::relaunch_current_process(relaunch.c_str())) return 0;
+      } else {
       nexuscap::apply_session_cfg_to_persisted(cfg, settings);
       {
         std::string err;
         nexuscap::save_settings(settings, nexuscap::settings_default_path(), err);
       }
-      std::printf("cfg restart: relaunch %s\n", nexuscap::session_cfg_relaunch_args());
-      if (nexuscap::relaunch_current_process(nexuscap::session_cfg_relaunch_args())) return 0;
+      const std::string relaunch =
+          nexuscap::session_cfg_relaunch_args_for_hud(cfg.show_overlay, cfg.mini_overlay,
+                                                     cfg.advanced_metrics, cfg.live_overlay);
+      std::printf("cfg restart: relaunch %s\n", relaunch.c_str());
+      if (nexuscap::relaunch_current_process(relaunch.c_str())) return 0;
+      }
       // Não deu pra relançar: fecha o aviso e abre o lobby em vez de sair calado.
       g_restart_notice.destroy();
       std::fprintf(stderr, "cfg restart: falha ao reiniciar — abrindo o lobby\n");
@@ -1736,8 +2123,8 @@ int main(int argc, char** argv) {
     if (rc != kExitBackToLobby) return rc;
     // Session ran below 100%: this process' Feed is locked there and would blur the menus.
     // The Esc path already rewrote the cfg to 100%, so a fresh process opens a sharp lobby.
-    if (nexuscap::feed_scale_change_needs_relaunch(cfg.enhance == nexuscap::EnhanceBackend::Renodx,
-                                                   cfg.scale_percent, nexuscap::kLobbyFeedWorkResolution)) {
+    if (nexuscap::feed_scale_change_needs_relaunch(session_renodx, session_scale,
+                                                   nexuscap::kLobbyFeedWorkResolution)) {
       std::printf("back to lobby: restarting so menus present at 100%%\n");
       if (nexuscap::relaunch_current_process()) return 0;
     }

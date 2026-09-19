@@ -32,9 +32,10 @@ struct AppConfig {
   bool show_lobby = true;       // false with --no-lobby / --smoke / selftests
   bool autostart = false;       // --autostart: seed from settings, skip lobby once (feed scale relaunch)
   bool open_lobby_cfg = false;  // --lobby-cfg: reopen lobby CFG after a motor/Pass Count restart
+  int overlay_hud_restore = -1; // --hud=: session overlay after OUR restart (not lobby checks)
   bool advanced_metrics = false;
   bool mini_overlay = false;    // Steam Deck-style top bar
-  bool overlay_no_bg = false;   // mini overlay sem placa preta
+  bool overlay_no_bg = false;   // todos os overlays: sem placa preta
   bool hw_info = false;  // painel Infos GPU/CPU
   bool hide_panel_on_capture = true;
   bool sync_image = true;  // vsync Present — default after 2.0.1 A/B (TEAR felt shakier)
@@ -69,6 +70,10 @@ struct AppConfig {
   std::string fg_path;  // optional override of LosslessScaling.exe
   bool selftest_fg = false;
   bool selftest_cfg = false;  // --selftest-cfg: desenha o CFG da sessão e valida o draw data
+  bool perf_test = false;     // --perf-test: FileCapture em janela, sem gravar no CFG HDMI
+  bool popup_perf_result = false;  // so no regresso deste benchmark; nao reabrir no HDMI/preview
+  bool perf_cli_override = false;  // --width/--pass/--scale/--preset no CLI; nao sobrescrever com o plano
+  std::string video_path;     // --video=: mp4/mkv do teste de performance
 
   HotkeyConfig hotkeys{};
 };
@@ -78,18 +83,31 @@ AppConfig parse_args(int argc, char** argv);
 // Lobby Sessão/CFG → AppConfig (tested).
 void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg);
 
-// HUD starts visible when "Exibir metricas" is on. "Ocultar painel" does NOT hide the metrics HUD.
+// HUD starts visible when "Exibir metricas" is on. The old lobby strip is gone.
 inline bool initial_hud_visible(const SessionUiFlags& ui) { return ui.show_fps; }
 inline bool initial_hud_visible(bool show_fps, bool /*hide_panel_on_capture*/) { return show_fps; }
 
-// hide_panel_on_capture=true → captura limpa; false → mostra faixa de controle na sessão.
-inline bool session_shows_control_panel(bool hide_panel_on_capture) { return !hide_panel_on_capture; }
-inline bool session_shows_control_panel(const SessionUiFlags& ui) {
-  return session_shows_control_panel(ui.hide_panel_on_capture);
-}
+// Captura sempre limpa: a faixa SessionControlPanel saiu (nao tinha funcao real).
+inline bool session_shows_control_panel(bool /*hide_panel_on_capture*/ = false) { return false; }
+inline bool session_shows_control_panel(const SessionUiFlags& /*ui*/) { return false; }
+inline bool session_capture_is_clean() { return true; }
 
 // sync_image → DXGI Present sync interval (1 = vsync, 0 = uncapped / tearing OK).
 inline unsigned present_sync_interval(bool sync_image) { return sync_image ? 1u : 0u; }
+
+// Windowed vsync follows the monitor Hz. On 120 Hz, Present(1) = 120 fps and the
+// 30 fps clip looks slow (NR runs 4×). Interval = Hz / meta, clamped 1..4.
+inline unsigned present_interval_for_target(bool sync_image, double target_fps, int monitor_hz) {
+  if (!sync_image) return 0u;
+  const double fps = target_fps >= 45.0 ? 60.0 : 30.0;
+  int hz = monitor_hz;
+  if (hz < 30) hz = 60;
+  if (hz > 360) hz = 360;
+  int iv = static_cast<int>((static_cast<double>(hz) + fps * 0.5) / fps);
+  if (iv < 1) iv = 1;
+  if (iv > 4) iv = 4;
+  return static_cast<unsigned>(iv);
+}
 
 // Compact vs advanced metrics panel size (MetricsHud).
 // Advanced needs room for long signal/hotkey lines; HW adds 5 stacked rows.
@@ -108,8 +126,135 @@ inline int hud_mini_overlay_rows() { return 3; }
 // When mini overlay is on, multi-line compact/advanced HUD is suppressed.
 inline bool hud_uses_mini_overlay(bool show_fps, bool mini_overlay) { return show_fps && mini_overlay; }
 inline bool overlay_draws_plate(bool overlay_no_bg) { return !overlay_no_bg; }
+// Overlay sem fundo vale em compacto, mini, advanced e live — o check nunca fica preso ao mini.
+inline bool overlay_no_bg_locked_to_mini() { return false; }
+inline bool overlay_no_bg_ui_enabled(bool /*mini_overlay*/ = false, bool /*live_overlay*/ = false,
+                                    bool /*advanced_metrics*/ = false) {
+  return !overlay_no_bg_locked_to_mini();
+}
 inline bool hud_uses_advanced_metrics(bool show_fps, bool mini_overlay, bool advanced_metrics) {
   return show_fps && !mini_overlay && advanced_metrics;
+}
+
+// Ctrl+Espaço na sessão: Compact → Mini → Advanced → Live → Off → Compact.
+// Só a sessão muda; os checks do lobby ficam como estavam.
+enum class OverlayHudStep : int { Compact = 0, Mini = 1, Advanced = 2, Live = 3, Off = 4 };
+inline constexpr int kOverlayHudStepCount = 5;
+
+struct OverlayHudFlags {
+  bool visible = true;
+  bool mini = false;
+  bool advanced = false;
+  bool live = false;
+};
+
+inline OverlayHudFlags overlay_hud_flags_for(OverlayHudStep step) {
+  OverlayHudFlags f{};
+  switch (step) {
+    case OverlayHudStep::Mini:
+      f.visible = true;
+      f.mini = true;
+      return f;
+    case OverlayHudStep::Advanced:
+      f.visible = true;
+      f.advanced = true;
+      return f;
+    case OverlayHudStep::Live:
+      f.visible = true;
+      f.live = true;
+      return f;
+    case OverlayHudStep::Off:
+      f.visible = false;
+      f.mini = false;
+      f.advanced = false;
+      f.live = false;
+      return f;
+    case OverlayHudStep::Compact:
+    default:
+      f.visible = true;
+      return f;
+  }
+}
+
+inline OverlayHudStep overlay_hud_step_of(bool visible, bool mini, bool advanced, bool live) {
+  if (!visible) return OverlayHudStep::Off;
+  if (live) return OverlayHudStep::Live;
+  if (mini) return OverlayHudStep::Mini;
+  if (advanced) return OverlayHudStep::Advanced;
+  return OverlayHudStep::Compact;
+}
+
+inline OverlayHudStep next_overlay_hud_step(OverlayHudStep cur) {
+  const int i = static_cast<int>(cur);
+  const int n = (i < 0) ? 0 : i;
+  return static_cast<OverlayHudStep>((n + 1) % kOverlayHudStepCount);
+}
+
+inline OverlayHudFlags cycle_overlay_hud(bool visible, bool mini, bool advanced, bool live) {
+  return overlay_hud_flags_for(next_overlay_hud_step(overlay_hud_step_of(visible, mini, advanced, live)));
+}
+
+inline const char* overlay_hud_step_cli(OverlayHudStep s) {
+  switch (s) {
+    case OverlayHudStep::Mini:
+      return "mini";
+    case OverlayHudStep::Advanced:
+      return "advanced";
+    case OverlayHudStep::Live:
+      return "live";
+    case OverlayHudStep::Off:
+      return "off";
+    case OverlayHudStep::Compact:
+    default:
+      return "compact";
+  }
+}
+
+inline bool parse_overlay_hud_step(const char* raw, OverlayHudStep& out) {
+  if (!raw || !raw[0]) return false;
+  if (std::strcmp(raw, "compact") == 0) {
+    out = OverlayHudStep::Compact;
+    return true;
+  }
+  if (std::strcmp(raw, "mini") == 0) {
+    out = OverlayHudStep::Mini;
+    return true;
+  }
+  if (std::strcmp(raw, "advanced") == 0 || std::strcmp(raw, "adv") == 0) {
+    out = OverlayHudStep::Advanced;
+    return true;
+  }
+  if (std::strcmp(raw, "live") == 0) {
+    out = OverlayHudStep::Live;
+    return true;
+  }
+  if (std::strcmp(raw, "off") == 0) {
+    out = OverlayHudStep::Off;
+    return true;
+  }
+  return false;
+}
+
+inline void apply_overlay_hud_flags(const OverlayHudFlags& f, AppConfig& cfg) {
+  cfg.show_overlay = f.visible;
+  cfg.mini_overlay = f.mini;
+  cfg.advanced_metrics = f.advanced;
+  cfg.live_overlay = f.live;
+}
+
+// --autostart --hud=Y: volta o overlay da sessão. Não grava os checks do lobby.
+inline bool apply_autostart_overlay_hud(AppConfig& cfg) {
+  if (cfg.overlay_hud_restore < 0 || cfg.overlay_hud_restore >= kOverlayHudStepCount) return false;
+  apply_overlay_hud_flags(overlay_hud_flags_for(static_cast<OverlayHudStep>(cfg.overlay_hud_restore)), cfg);
+  return true;
+}
+
+inline std::string session_cfg_relaunch_args_for_hud(OverlayHudStep step) {
+  return std::string("--autostart --hud=") + overlay_hud_step_cli(step);
+}
+
+inline std::string session_cfg_relaunch_args_for_hud(bool visible, bool mini, bool advanced, bool live) {
+  return session_cfg_relaunch_args_for_hud(overlay_hud_step_of(visible, mini, advanced, live));
 }
 
 // Separate floating strip for CPU/GPU/RAM/VRAM/PWR when "Infos GPU / CPU" is on.
@@ -415,21 +560,22 @@ inline SessionCfgApply plan_session_cfg_nr_apply(bool renodx_stack, bool multipa
 }
 
 // Aviso de reinício: sessão, teardown e boot do processo novo mostram o mesmo texto.
-inline std::string session_restart_notice_title() { return "Reiniciando o NexusCap"; }
+inline std::string session_restart_notice_title() { return "Otimizando o pipeline"; }
+inline std::string lobby_pipeline_hold_title() { return session_restart_notice_title(); }
 inline std::string session_restart_notice_detail(SessionCfgApply a) {
   switch (a) {
     case SessionCfgApply::RelaunchMotor:
-      return "Trocando o motor DLSS 5 — volto para a sessao";
+      return "Motor do pipeline — volto para a sessao";
     case SessionCfgApply::RelaunchPassCount:
-      return "Aplicando o Pass Count — volto para a sessao";
+      return "Pass Count do pipeline — volto para a sessao";
     case SessionCfgApply::RelaunchFeedScale:
-      return "Aplicando a escala do Feed — volto para a sessao";
+      return "Escala do Feed — volto para a sessao";
     case SessionCfgApply::RelaunchPreset:
-      return "Aplicando o preset visual — volto para a sessao";
+      return "Preset visual — volto para a sessao";
     case SessionCfgApply::RelaunchNr:
-      return "Aplicando o Neural Rendering — volto para a sessao";
+      return "Neural Rendering — volto para a sessao";
     default:
-      return "Volto para a sessao";
+      return "Motor do pipeline — volto para a sessao";
   }
 }
 inline bool restart_notice_visible_at_boot(bool autostart) { return autostart; }
@@ -453,6 +599,13 @@ inline constexpr double kSessionNoticeTtlMs = 3200.0;
 // Delay before Krish↔multipass relaunch so the swap does not look like a crash.
 inline constexpr double kDlss5MotorSwapHoldSec = 0.55;
 
+inline std::string session_hdmi_notice_title() { return "O console parou de mandar o sinal HDMI"; }
+inline std::string session_hdmi_notice_detail() {
+  return "Nao e um erro do NexusCap. Limpamos os pixels para quando o sinal voltar ficar limpo, sem bugs.";
+}
+inline std::string session_notice_hdmi_recover() {
+  return session_hdmi_notice_title() + " — " + session_hdmi_notice_detail();
+}
 inline std::string session_notice_fg_on() {
   return "Frame Gen ON — latencia / artefatos podem subir";
 }
@@ -484,12 +637,12 @@ inline std::string session_notice_fg_confirmed_on(int mult) {
   return std::string("Frame Gen ON — Confirmado x") + std::to_string(clamp_fg_multiplier(mult));
 }
 inline std::string session_notice_dlss5_motor_swap(int from_pass, int to_pass) {
-  return std::string("Trocando motor DLSS 5 — ") + nr_pass_count_label(from_pass) + " → " +
-         nr_pass_count_label(to_pass) + " (reinicio)";
+  return std::string("Otimizando o pipeline — ") + nr_pass_count_label(from_pass) + " → " +
+         nr_pass_count_label(to_pass) + " (motor)";
 }
 inline std::string session_notice_nr_pass_count_apply(int from_pass, int to_pass) {
-  return std::string("Aplicando Pass Count — ") + nr_pass_count_label(from_pass) + " → " +
-         nr_pass_count_label(to_pass) + " (reinicio)";
+  return std::string("Otimizando o pipeline — ") + nr_pass_count_label(from_pass) + " → " +
+         nr_pass_count_label(to_pass) + " (Pass Count)";
 }
 inline std::string session_notice_preset_apply(int from_preset, int to_preset, int pass_count = 1) {
   return std::string("Aplicando preset — ") + renodx_visual_preset_name(from_preset, pass_count) + " → " +
@@ -516,6 +669,14 @@ inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
 }
 inline std::string session_notice_lobby_iniciar_apply() {
   return "Aplicando configuracao — DLSS 5, preset e escala do CFG entram na sessao";
+}
+
+inline std::string perf_test_pipeline_notice_title() { return "Repreparando o pipeline do Benchmark"; }
+inline std::string perf_test_pipeline_notice_detail() {
+  return "O relogio comeca quando NR e FG ja tiverem carregado";
+}
+inline std::string session_notice_perf_test_hold() {
+  return perf_test_pipeline_notice_title() + " — " + perf_test_pipeline_notice_detail();
 }
 
 // Split "titulo — detalhe" so HUD/toast never clip the second half.
@@ -575,6 +736,7 @@ inline bool session_nr_hotkey_allowed(EnhanceBackend enhance) {
 // é que grava OFF quando o RenoDX é desmarcado de propósito.
 inline bool session_writes_renodx_off_files(const AppConfig& cfg) {
   if (cfg.enhance == EnhanceBackend::Renodx) return false;
+  if (cfg.perf_test) return false;
   if (cfg.smoke || cfg.fake_capture || cfg.selftest_cap || cfg.selftest_cfg || cfg.selftest_fg ||
       cfg.selftest_dlss) {
     return false;
@@ -583,12 +745,15 @@ inline bool session_writes_renodx_off_files(const AppConfig& cfg) {
 }
 
 // CFG da sessão → disco. O processo novo (--autostart) lê isto para voltar igual.
+// Teste de performance nunca toca nos presets HDMI (Pass / tom / escala / FG / NR).
 inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettings& s) {
+  if (cfg.perf_test) return;
   s.renodx_preset = clamp_renodx_visual_preset(cfg.renodx_preset);
   s.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
   s.scale_percent = clamp_scale_percent(cfg.scale_percent);
   s.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
   s.ui.overlay_console = cfg.overlay_console;
+  s.ui.overlay_no_bg = cfg.overlay_no_bg;
   apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, s);
   apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == EnhanceBackend::Renodx, s);
 }

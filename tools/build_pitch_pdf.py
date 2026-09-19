@@ -188,13 +188,47 @@ def main() -> None:
     )
     title(c, bold, "Instalação", y=H - 160)
     steps = [
-        "1.  NexusCap-Setup-3.1.0.exe na Release do GitHub.",
-        "2.  Instala em %LOCALAPPDATA%\\NexusCap  (evita Program Files).",
+        "1.  NexusCap-Setup-3.1.7.exe na Release do GitHub.",
+        "2.  Instala em %LOCALAPPDATA%\\NexusCap  — pasta da tua conta, sem administrador.",
         "3.  Abre, escolhe a placa, RenoDX se quiseres NR. Pass Count: 1,5x recomendado.",
         "4.  Frame Gen: se o Lossless Scaling estiver na Steam, o NexusCap liga até 4x sozinho.",
         "5.  VSYNC ON  ·  Ctrl+Espaço = HUD  ·  reports bug/perf no CFG.",
     ]
     body_lines(c, regular, steps, H - 190, 20)
+    c.showPage()
+
+    # Instalador menos invasivo (sem UAC de propósito)
+    fill(c)
+    kicker(c, regular, scene)
+    title(c, bold, "Instalador menos invasivo")
+    c.setFillColorRGB(*MUTED)
+    c.setFont(regular, 12)
+    c.drawString(36, H - 80, "O setup não pede admin. Não é menos seguro — é menos poder no sistema.")
+    inv = [
+        ("Pasta do utilizador", "%LOCALAPPDATA%\\NexusCap.\nComo Steam, Discord,\nSpotify: a tua conta."),
+        ("Sem aviso de admin", "Sem o UAC “permitir\nalterações no dispositivo”.\nO setup não mexe no PC."),
+        ("Menos invasivo", "Pedir admin só para parecer\n“oficial” seria pior: poder\nno sistema inteiro, à toa."),
+        ("RenoDX precisa gravar", "ini / cfg / cache ao lado\ndo exe. Program Files\nbloqueia a escrita."),
+    ]
+    cw, ch, gap = 210, 188, 14
+    y_card = 72
+    for i, (head, copy) in enumerate(inv):
+        x = 36 + i * (cw + gap)
+        card(c, x, y_card, cw, ch)
+        c.setFillColorRGB(*ACCENT)
+        c.roundRect(x + 14, y_card + ch - 18, 22, 4, 2, fill=1, stroke=0)
+        c.setFillColorRGB(*INK)
+        c.setFont(bold, 13)
+        c.drawString(x + 14, y_card + ch - 42, head)
+        c.setFillColorRGB(*MUTED)
+        c.setFont(regular, 10)
+        ty = y_card + ch - 64
+        for line in copy.split("\n"):
+            c.drawString(x + 14, ty, line)
+            ty -= 14
+    c.setFillColorRGB(*GOOD)
+    c.setFont(bold, 11)
+    c.drawString(36, 36, "Um exe. Sem pasta manual. Sem mexer no sistema. Instala e usa.")
     c.showPage()
 
     # 3 architecture
@@ -226,6 +260,40 @@ def main() -> None:
     lobby = PITCH / "print_lobby_preview.jpg"
     if lobby.is_file():
         fit(c, lobby, 36, 36, W - 72, H - 130)
+    c.showPage()
+
+    # A imagem na tua frente (preview, Present, OBS) — sem nomear outros apps
+    fill(c)
+    kicker(c, regular, scene)
+    title(c, bold, "A imagem na tua frente")
+    c.setFillColorRGB(*MUTED)
+    c.setFont(regular, 12)
+    c.drawString(36, H - 80, "Vês o HDMI direto. O que está no ecran é o frame. O OBS pega o mesmo Present.")
+    vis = [
+        ("Lobby ao vivo", "Preview HDMI antes de Iniciar.\nVês o sinal da consola,\nnão um recorte da mesa."),
+        ("Captura no Present", "O monitor mostra o frame real.\nDLSS 5 corre nesse Present,\nna resolução do sinal."),
+        ("OBS vê o mesmo", "Game Capture pega o swapchain.\nHUD e mini overlay queimados\nna imagem — o OBS vê igual."),
+        ("1x nativo e leve", "100% · ~59,9 fps · stalls 0.\nFeed ~1 ms. VSYNC no Hz.\nRitmo estável, imagem nítida."),
+    ]
+    cw, ch, gap = 210, 188, 14
+    y_card = 72
+    for i, (head, copy) in enumerate(vis):
+        x = 36 + i * (cw + gap)
+        card(c, x, y_card, cw, ch)
+        c.setFillColorRGB(*ACCENT)
+        c.roundRect(x + 14, y_card + ch - 18, 22, 4, 2, fill=1, stroke=0)
+        c.setFillColorRGB(*INK)
+        c.setFont(bold, 13)
+        c.drawString(x + 14, y_card + ch - 42, head)
+        c.setFillColorRGB(*MUTED)
+        c.setFont(regular, 10)
+        ty = y_card + ch - 64
+        for line in copy.split("\n"):
+            c.drawString(x + 14, ty, line)
+            ty -= 14
+    c.setFillColorRGB(*GOOD)
+    c.setFont(bold, 11)
+    c.drawString(36, 36, "Sem recapturar a mesa. A imagem que vês é a que sai.")
     c.showPage()
 
     # 5 CFG

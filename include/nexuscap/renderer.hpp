@@ -17,7 +17,7 @@ struct OverlayState {
   bool visible = true;
   bool advanced_metrics = false;  // lobby "Metricas avancadas" → full HUD
   bool mini_overlay = false;      // lobby "Mini overlay" → single top bar
-  bool overlay_no_bg = false;     // sem placa preta no mini overlay queimado
+  bool overlay_no_bg = false;     // sem placa preta (compacto/mini/ADV/live)
   bool analyze_on = false;
   bool fake_capture = false;
   bool dlss_on = false;
@@ -74,6 +74,9 @@ struct OverlayState {
   int fg_flow_scale = 100;
   std::string fg_capture_api = "WGC";
   std::string session_notice;  // soft tip (FG / NR); empty = none
+  bool hdmi_hold_notice = false;  // restart-style card burned into Present (exclusive FS)
+  std::string hdmi_notice_title;
+  std::string hdmi_notice_detail;
   double e2e_ms = 0;
   double present_ms = 0;
   uint64_t frames = 0;
@@ -92,6 +95,8 @@ struct OverlayState {
   int live_console = 0;  // LiveConsole
   int nr_pass_count = 1;
   bool feed_on = true;
+  // Perf/benchmark HUD: -2 off, -1 loading, 0..40 remaining seconds.
+  int perf_remain_sec = -2;
 };
 
 class MetricsHud {
@@ -115,27 +120,7 @@ private:
   std::string last_notice_;
 };
 
-// Thin topmost strip when "Ocultar lobby na captura" is OFF — proves the toggle does something.
-class SessionControlPanel {
-public:
-  ~SessionControlPanel() { destroy(); }
-  bool create(HWND owner, HINSTANCE hi);
-  void destroy();
-  void set_visible(bool visible);
-  void reposition();
-  bool visible() const { return visible_; }
-  HWND hwnd() const { return hwnd_; }
-
-private:
-  static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
-  void paint(HDC hdc) const;
-
-  HWND hwnd_ = nullptr;
-  HWND owner_ = nullptr;
-  bool visible_ = false;
-};
-
-// "Reiniciando o NexusCap" — janela sem owner que sobrevive ao teardown da sessão e
+// "Otimizando o pipeline" — janela sem owner que sobrevive ao teardown da sessão e
 // reaparece no processo novo (--autostart) até o primeiro frame. Sem ela a tela apagava
 // e parecia que o app tinha fechado sozinho.
 class RestartNotice {
@@ -217,6 +202,8 @@ public:
   void set_enhance(IFrameEnhance* enhance) { enhance_ = enhance; }
   void set_vsync(bool enabled) { vsync_ = enabled; }
   bool vsync() const { return vsync_; }
+  void set_present_interval(unsigned interval) { present_interval_ = interval > 0 ? interval : 1u; }
+  unsigned present_interval() const { return present_interval_; }
   void set_scale_percent(int percent);  // 25–100; lower = softer image, less GPU work
   int scale_percent() const { return scale_percent_; }
   // Under RenoDX the app RT stays native and the scale lives in the Feed — report that
@@ -245,6 +232,7 @@ private:
   bool create_pipeline(std::string& err);
   bool create_blit_pipeline(std::string& err);
   void burn_mini_overlay(const OverlayState& overlay);
+  void burn_hdmi_hold_notice(const OverlayState& overlay);
 
   HWND hwnd_ = nullptr;
   int back_w_ = 0;
@@ -253,6 +241,7 @@ private:
   int tex_h_ = 0;
   uint32_t swap_flags_ = 0;
   bool vsync_ = false;
+  unsigned present_interval_ = 1;
   int scale_percent_ = 100;
   int hud_work_scale_percent_ = 0;  // 0 = HUD follows the app RT scale
   int color_space_ = 0;
@@ -264,7 +253,10 @@ private:
   Impl* impl_ = nullptr;
 };
 
-HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_t* title);
+HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_t* title,
+                       bool start_hidden = false);
+
+void show_session_window(HWND hwnd, bool maximize = false);
 
 // Switch borderless fullscreen ↔ overlapped window and resize the swapchain client.
 // Returns client width/height written into out_client_w/h when non-null.

@@ -19,8 +19,15 @@ Funcionalidade: Tela principal (lobby)
     Quando o lobby esta aberto
     Entao o preview mostra imagem (nao tela branca)
     E o audio HDMI toca se o mute do preview estiver off
-    Quando eu mudo o mute do preview
-    Entao o audio para ou volta na hora
+    Quando eu clico Desativar som
+    Entao o audio para na hora
+    Quando eu clico Ativar som
+    Entao o audio volta
+    Quando eu clico Desativar preview
+    Entao a imagem para (DShow e WASAPI param)
+    E o Iniciar continua disponivel
+    Quando eu clico Ativar preview
+    Entao a imagem e o audio voltam
 
   @critico @hdmi
   Cenario: Botao CFG e F12 abrem o CFG do menu principal
@@ -52,9 +59,9 @@ Funcionalidade: Tela principal (lobby)
       | Metricas avancadas         |
       | Infos GPU / CPU            |
       | Tela cheia                 |
-      | Ocultar lobby na captura   |
       | Sincronizar imagem         |
       | Overlay live               |
+      | Overlay sem fundo          |
       | Reportar bug               |
       | Reportar performance       |
 
@@ -66,12 +73,28 @@ Funcionalidade: Tela principal (lobby)
     E o HUD da sessao fica no modo barra de topo
 
   @importante @hdmi
+  Cenario: Overlay sem fundo vale para todos os estilos
+    Dado que estou no lobby
+    Entao Overlay sem fundo esta sempre clicavel (nao preso ao Mini overlay)
+    Quando eu marco Overlay sem fundo em compacto, mini, metricas avancadas ou overlay live
+    Entao o preview e a sessao mostram so o texto, sem placa preta
+    E o check permanece disponivel ao trocar de estilo
+
+  @importante @hdmi
   Cenario: Console na captura e publico
     Dado que estou no lobby
     Quando eu escolho PS5, PS4, PS3, Xbox Series X, Xbox Series S, Xbox One, Switch 2 ou Switch
     Entao o checkbox Mostrar console fica desligado
     E ao marcar aparecem as opcoes (padrao PS5)
     E compacto, mini, ADV e overlay live mostram o nome colorido so quando marcado
+
+  @importante @hdmi
+  Cenario: Captura sem faixa de lobby
+    Dado que estou no lobby
+    Entao nao existe a opcao Ocultar lobby na captura
+    Quando eu clico Iniciar processamento
+    Entao a sessao nao mostra faixa de painel no topo
+    E Ctrl+M, metricas e mini overlay continuam iguais
 
   @critico @hdmi
   Cenario: Iniciar processamento entra na captura

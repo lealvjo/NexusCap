@@ -98,11 +98,8 @@ BOOL CALLBACK enum_hide_ls(HWND hwnd, LPARAM) {
   GetWindowTextW(hwnd, title, 256);
   wchar_t cls[128]{};
   GetClassNameW(hwnd, cls, 128);
-  const std::wstring t(title);
-  const std::wstring c(cls);
-  if (t.find(L"Lossless Scaling") != std::wstring::npos || c.find(L"Lossless") != std::wstring::npos) {
-    ShowWindow(hwnd, SW_HIDE);
-  }
+  const unsigned ex = static_cast<unsigned>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+  if (ls_should_hide_window(title, cls, ex)) ShowWindow(hwnd, SW_HIDE);
   return TRUE;
 }
 
@@ -155,7 +152,7 @@ std::string build_mira_settings_xml(int multiplier) {
     << "      <FrameGeneration>LSFG3</FrameGeneration>\n"
     << "      <SyncMode>VSYNC1</SyncMode>\n"
     << "      <GsyncSupport>false</GsyncSupport>\n"
-    << "      <DrawFps>true</DrawFps>\n"
+      << "      <DrawFps>false</DrawFps>\n"
     << "      <CaptureApi>WGC</CaptureApi>\n"
     << "      <QueueTarget>1</QueueTarget>\n"
     << "    </Profile>\n"
@@ -186,7 +183,7 @@ std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier) {
   replace_tag(xml, "FrameGeneration", "LSFG3");
   replace_tag(xml, "SyncMode", "VSYNC1");
   replace_tag(xml, "GsyncSupport", "false");
-  replace_tag(xml, "DrawFps", "true");
+  replace_tag(xml, "DrawFps", "false");
   replace_tag(xml, "CaptureApi", "WGC");
   replace_tag(xml, "QueueTarget", "1");
 

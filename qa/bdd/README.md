@@ -1,6 +1,6 @@
 # BDD NexusCap (ponta a ponta)
 
-Cenarios Gherkin em portugues (release **3.1.5**). Correr **na mao** no HDMI; o `ctest` so cobre o que esta marcado `@auto`.
+Cenarios Gherkin em portugues (release **3.1.9**). Correr **na mao** no HDMI; o `ctest` so cobre o que esta marcado `@auto`.
 
 `run_e2e.ps1` e um atalho HDMI (F12, Ctrl+M, Pass Count, FG). Nao substitui olhar Cinema vs Default no ecran.
 

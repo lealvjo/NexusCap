@@ -181,6 +181,9 @@ void SessionCfgOverlay::draw_panel() {
     ImGui::Separator();
 
     if (ImGui::Checkbox("Overlay HUD", &state.hud_visible)) actions_.hud_changed = true;
+    if (ImGui::Checkbox("Overlay sem fundo", &state.overlay_no_bg)) actions_.overlay_no_bg_changed = true;
+    ImGui::TextDisabled(state.overlay_no_bg ? "so texto, sem placa preta"
+                                            : "placa preta atras do texto");
 
     ImGui::Separator();
       if (ImGui::Checkbox("Mostrar console", &state.overlay_console)) actions_.console_changed = true;

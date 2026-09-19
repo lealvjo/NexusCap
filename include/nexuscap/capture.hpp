@@ -1,7 +1,11 @@
 #pragma once
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -20,6 +24,12 @@ struct CaptureStartOptions {
   int color_space = static_cast<int>(kDefaultColorSpace);
   int color_range = static_cast<int>(kDefaultColorRange);
   int capture_buffering = static_cast<int>(kDefaultCaptureBuffering);
+  // Recovery: keep the pin's negotiated WxH when HDMI comes back at another advertised mode.
+  bool follow_hdmi_size = false;
+  // Recovery already holds last_good on screen — don't block 0.9–3.5 s waiting for BufferCB.
+  bool wait_first_frame = true;
+  // Perf-test: prime the ring but keep clip 0 until rebase_playhead (NR/FG ready).
+  bool hold_playhead = false;
 };
 
 class CaptureBase {
@@ -42,6 +52,10 @@ public:
   virtual int opened_width() const { return 0; }
   virtual int opened_height() const { return 0; }
   virtual int opened_fourcc() const { return static_cast<int>(kDefaultVideoFourcc); }
+  virtual size_t last_sample_bytes() const { return 0; }
+  virtual uint64_t rejected_samples() const { return 0; }
+  virtual bool finished() const { return false; }
+  virtual void rebase_playhead(double /*t0_ms*/) {}
 };
 
 class FakeCapture final : public CaptureBase {
@@ -70,6 +84,165 @@ private:
   std::thread th_;
 };
 
+inline double file_cap_src_fps_or(double native_fps) { return native_fps > 1.0 ? native_fps : 30.0; }
+
+inline bool file_cap_is_integer_scale(int sw, int sh, int dw, int dh) {
+  return sw > 0 && sh > 0 && dw >= sw && dh >= sh && (dw % sw) == 0 && (dh % sh) == 0 && (dw / sw) == (dh / sh);
+}
+
+// Keep the 30/60 grid. Catch-up bursts make the overlay spike red.
+inline bool file_cap_repeat_ok(int w, int h, const std::vector<uint8_t>& nv12) {
+  if (w <= 0 || h <= 0) return false;
+  const size_t need = static_cast<size_t>(w) * static_cast<size_t>(h) * 3u / 2u;
+  return nv12.size() >= need;
+}
+
+// Virtual capture pin: same 30|60 clamp as clamp_perf_test_fps (no extra tables).
+inline double virtual_pin_fps(double plan_fps) { return plan_fps < 45.0 ? 30.0 : 60.0; }
+
+inline double virtual_pin_period_ms(double plan_fps) { return 1000.0 / virtual_pin_fps(plan_fps); }
+
+inline uint64_t virtual_pin_src_index(double now_ms, double t0_ms, double plan_fps, uint64_t n = 0) {
+  const double fps = virtual_pin_fps(plan_fps);
+  const double t = (now_ms - t0_ms) / 1000.0;
+  if (t <= 0.0) return 0;
+  uint64_t i = static_cast<uint64_t>(std::floor(t * fps + 1e-9));
+  if (n > 0) i %= n;
+  return i;
+}
+
+// Content time is wall-clock. A 60 fps clip at plan 30 still maps t→floor(t*clip_fps).
+inline uint64_t virtual_pin_clip_index(double now_ms, double t0_ms, double clip_fps, uint64_t n = 0) {
+  const double fps = clip_fps > 1.0 ? clip_fps : 60.0;
+  const double t = (now_ms - t0_ms) / 1000.0;
+  if (t <= 0.0) return 0;
+  uint64_t i = static_cast<uint64_t>(std::floor(t * fps + 1e-9));
+  if (n > 0) i %= n;
+  return i;
+}
+
+// Playhead off (A carregar): wall clock must not advance clip or pin time.
+inline uint64_t virtual_pin_held_src_index(bool playhead_on, double now_ms, double t0_ms, double plan_fps,
+                                          uint64_t n = 0) {
+  if (!playhead_on) return 0;
+  return virtual_pin_src_index(now_ms, t0_ms, plan_fps, n);
+}
+
+inline uint64_t virtual_pin_held_clip_index(bool playhead_on, double now_ms, double t0_ms, double clip_fps,
+                                           uint64_t n = 0) {
+  if (!playhead_on) return 0;
+  return virtual_pin_clip_index(now_ms, t0_ms, clip_fps, n);
+}
+
+inline int virtual_pin_ring_frames(double plan_fps, double hold_sec = 1.5) {
+  const double fps = virtual_pin_fps(plan_fps);
+  const double sec = hold_sec >= 0.5 ? hold_sec : 1.5;
+  int n = static_cast<int>(std::ceil(sec * fps));
+  if (n < 8) n = 8;
+  return n;
+}
+
+inline int virtual_pin_ring_frames_for(double plan_fps, int width, int height, double hold_sec = 1.5) {
+  int n = virtual_pin_ring_frames(plan_fps, hold_sec);
+  if (width <= 0 || height <= 0) return n;
+  const size_t bytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 3u / 2u;
+  if (bytes == 0) return n;
+  const size_t cap = 768ull * 1024ull * 1024ull;
+  int maxn = static_cast<int>(cap / bytes);
+  if (maxn < 16) maxn = 16;
+  if (n > maxn) n = maxn;
+  return n;
+}
+
+inline int virtual_pin_prime_frames(double plan_fps, double prime_sec = 1.0) {
+  const double fps = virtual_pin_fps(plan_fps);
+  const double sec = prime_sec >= 0.25 ? prime_sec : 1.0;
+  int n = static_cast<int>(std::ceil(sec * fps));
+  if (n < 4) n = 4;
+  return n;
+}
+
+// Decode lag / hitch: never block Present. Serve latest written.
+inline uint64_t virtual_pin_take_index(uint64_t want, uint64_t decoded) {
+  if (decoded == 0) return 0;
+  if (want < decoded) return want;
+  return decoded - 1;
+}
+
+inline uint64_t virtual_pin_ahead(uint64_t decoded_next, uint64_t play, uint64_t clip_n, uint64_t ring_n) {
+  if (ring_n == 0) return 0;
+  if (clip_n == 0) {
+    if (decoded_next <= play) return 0;
+    return decoded_next - play;
+  }
+  const uint64_t p = play % clip_n;
+  const uint64_t d = decoded_next % clip_n;
+  return (d + clip_n - p) % clip_n;
+}
+
+inline bool virtual_pin_should_throttle_decode(uint64_t decoded_next, uint64_t play, uint64_t clip_n,
+                                              uint64_t ring_n) {
+  if (ring_n <= 1) return false;
+  return virtual_pin_ahead(decoded_next, play, clip_n, ring_n) + 1 >= ring_n;
+}
+
+class VirtualCapturePin final : public CaptureBase {
+public:
+  bool start(const std::string& device_name, const CaptureStartOptions& opt, FrameSlot& slot, IClock& clock,
+             std::string& err) override;
+  void stop() override;
+  bool running() const override { return running_; }
+  uint64_t frames() const override { return frames_; }
+  std::string opened_device() const override { return opened_; }
+  int opened_width() const override { return width_; }
+  int opened_height() const override { return height_; }
+  int opened_fourcc() const override { return static_cast<int>(VideoFourcc::Nv12); }
+  bool finished() const override { return finished_; }
+  void rebase_playhead(double t0_ms) override {
+    t0_ms_.store(t0_ms, std::memory_order_relaxed);
+    playhead_on_.store(true, std::memory_order_relaxed);
+  }
+
+private:
+  struct RingSlot {
+    uint64_t clip_index = ~uint64_t{0};
+    std::vector<uint8_t> nv12;
+    int width = 0;
+    int height = 0;
+  };
+
+  void decode_main();
+  void publish_main();
+  bool copy_ring_locked(uint64_t clip_i, FramePayload& out);
+
+  FrameSlot* slot_ = nullptr;
+  IClock* clock_ = nullptr;
+  int width_ = 0;
+  int height_ = 0;
+  double fps_ = 60;
+  std::string path_;
+  std::string opened_;
+  std::string thread_err_;
+  std::atomic<bool> running_{false};
+  std::atomic<bool> finished_{false};
+  std::atomic<bool> have_frame_{false};
+  std::atomic<bool> primed_{false};
+  std::atomic<bool> playhead_on_{false};
+  std::atomic<uint64_t> frames_{0};
+  std::atomic<uint64_t> clip_n_{0};
+  std::atomic<uint64_t> decoded_next_{0};
+  std::atomic<double> native_fps_{60.0};
+  std::atomic<double> t0_ms_{0};
+  std::mutex ring_mu_;
+  std::vector<RingSlot> ring_;
+  FramePayload last_nv12_;
+  std::thread decode_th_;
+  std::thread pub_th_;
+};
+
+// Old PTS publisher. Perf-test uses the virtual pin.
+using FileCapture = VirtualCapturePin;
+
 class DShowCapture final : public CaptureBase {
 public:
   DShowCapture();
@@ -83,6 +256,8 @@ public:
   int opened_width() const override;
   int opened_height() const override;
   int opened_fourcc() const override { return opened_fourcc_; }
+  size_t last_sample_bytes() const override { return last_sample_bytes_.load(std::memory_order_relaxed); }
+  uint64_t rejected_samples() const override { return rejected_samples_.load(std::memory_order_relaxed); }
 
   void push_buffer(const uint8_t* data, size_t len);
 
@@ -95,6 +270,8 @@ private:
   int opened_fourcc_ = static_cast<int>(kDefaultVideoFourcc);
   std::atomic<bool> running_{false};
   std::atomic<uint64_t> frames_{0};
+  std::atomic<size_t> last_sample_bytes_{0};
+  std::atomic<uint64_t> rejected_samples_{0};
   // Reused NV12 scratch — avoids per-frame heap churn when resolution is stable.
   std::vector<uint8_t> nv12_scratch_;
 };
@@ -131,5 +308,322 @@ std::vector<CaptureMode> list_video_capture_modes(const std::string& device_name
 // Fourccs (VideoFourcc ints) the device offers for a given mode — dynamic like OBS.
 std::vector<int> list_video_fourccs_for_mode(const std::string& device_name, int width, int height,
                                              double fps);
+
+// Packed NV12 size of the opened capture mode (not a hardcoded 2560×1440).
+inline size_t nv12_packed_bytes(int width, int height) {
+  if (width <= 0 || height <= 0) return 0;
+  const size_t w = static_cast<size_t>(width);
+  const size_t h = static_cast<size_t>(height);
+  return w * h + w * h / 2;
+}
+
+// Accept exact packed size or a small stride pad. Reject 4K-into-1440p / 1080p-into-1440p junk.
+inline bool nv12_buffer_matches_mode(size_t len, int width, int height) {
+  const size_t need = nv12_packed_bytes(width, height);
+  if (need == 0 || len < need) return false;
+  const size_t stride = (static_cast<size_t>((std::max)(width, 0)) + 63u) & ~size_t{63};
+  const size_t h = static_cast<size_t>((std::max)(height, 0));
+  const size_t padded = stride * h + stride * h / 2;
+  const size_t slack = static_cast<size_t>((std::max)(width, 32)) * 8;
+  const size_t max_ok = (std::max)(padded, need + slack);
+  return len <= max_ok;
+}
+
+// Pick an advertised mode whose NV12 size matches `len` (HDMI may come back at another res).
+inline bool guess_nv12_wh_from_bytes(size_t len, const std::vector<CaptureMode>& modes, int* out_w, int* out_h) {
+  int best_w = 0;
+  int best_h = 0;
+  size_t best_need = 0;
+  for (const auto& m : modes) {
+    if (!nv12_buffer_matches_mode(len, m.width, m.height)) continue;
+    const size_t need = nv12_packed_bytes(m.width, m.height);
+    if (need < best_need) continue;
+    const long long px = static_cast<long long>(m.width) * m.height;
+    const long long best_px = static_cast<long long>(best_w) * best_h;
+    if (need == best_need && px < best_px) continue;
+    best_need = need;
+    best_w = m.width;
+    best_h = m.height;
+  }
+  if (best_w <= 0 || best_h <= 0) return false;
+  if (out_w) *out_w = best_w;
+  if (out_h) *out_h = best_h;
+  return true;
+}
+
+inline bool hdmi_pick_reopen_size(size_t last_bytes, int user_w, int user_h, const std::vector<CaptureMode>& modes,
+                                  int* out_w, int* out_h) {
+  int gw = 0;
+  int gh = 0;
+  if (last_bytes > 0 && guess_nv12_wh_from_bytes(last_bytes, modes, &gw, &gh)) {
+    if (out_w) *out_w = gw;
+    if (out_h) *out_h = gh;
+    return true;
+  }
+  if (user_w > 0 && user_h > 0) {
+    if (out_w) *out_w = user_w;
+    if (out_h) *out_h = user_h;
+    return true;
+  }
+  return false;
+}
+
+// Silent hold of last_good (game switch hitch). Pin stays open — no Stop/Run.
+inline int hdmi_signal_lost_ms() { return 40; }
+// Gold card only if the console really dropped HDMI this long (unplug / no-signal).
+inline int hdmi_notice_lost_ms() { return 2500; }
+inline int hdmi_handshake_discard_frames() { return 2; }
+// Wrong-size only (real mode change). Pink handshake never reopens.
+inline int hdmi_reopen_after_return_ms() { return 5000; }
+inline int hdmi_reopen_cooldown_ms() { return 2500; }
+inline int hdmi_hold_present_gap_ms() { return 14; }
+inline int hdmi_notice_dwell_ms() { return 3000; }
+inline int hdmi_settle_good_frames() { return 1; }
+
+// Limited-range black (Y=16, UV=128) — better than HDMI "no signal" magenta.
+inline void nv12_fill_limited_black(std::vector<uint8_t>& out, int width, int height) {
+  const size_t need = nv12_packed_bytes(width, height);
+  out.assign(need, 128);
+  if (width > 0 && height > 0 && need > 0) {
+    std::fill(out.begin(), out.begin() + static_cast<size_t>(width) * static_cast<size_t>(height),
+              static_cast<uint8_t>(16));
+  }
+}
+
+// HDMI no-signal is often magenta/pink (even with "NO SIGNAL" text / a bit of noise).
+inline bool nv12_looks_like_hdmi_junk(const uint8_t* nv12, int width, int height) {
+  if (!nv12 || width < 16 || height < 16) return false;
+  const int w = width;
+  const int h = height;
+  const size_t ysz = static_cast<size_t>(w) * static_cast<size_t>(h);
+  const uint8_t* y = nv12;
+  const uint8_t* uv = nv12 + ysz;
+  int ymin = 255, ymax = 0, y_n = 0;
+  const int ystep = (std::max)(8, h / 20);
+  const int xstep = (std::max)(8, w / 20);
+  for (int row = 0; row < h; row += ystep) {
+    const uint8_t* line = y + static_cast<size_t>(row) * static_cast<size_t>(w);
+    for (int col = 0; col < w; col += xstep) {
+      const int v = line[col];
+      if (v < ymin) ymin = v;
+      if (v > ymax) ymax = v;
+      ++y_n;
+    }
+  }
+  if (y_n <= 0) return false;
+  int uv_n = 0, magenta = 0, u_sum = 0, v_sum = 0;
+  const int uv_h = h / 2;
+  const int uv_ystep = (std::max)(4, uv_h / 16);
+  const int uv_xstep = (std::max)(8, w / 16);
+  for (int row = 0; row < uv_h; row += uv_ystep) {
+    const uint8_t* line = uv + static_cast<size_t>(row) * static_cast<size_t>(w);
+    for (int col = 0; col + 1 < w; col += uv_xstep) {
+      const int u = line[col];
+      const int vv = line[col + 1];
+      ++uv_n;
+      u_sum += u;
+      v_sum += vv;
+      if (u >= 138 && vv >= 138) ++magenta;
+    }
+  }
+  if (uv_n <= 0) return false;
+  const int mean_u = u_sum / uv_n;
+  const int mean_v = v_sum / uv_n;
+  const bool mostly_magenta = magenta * 10 >= uv_n * 3;  // >= 30%
+  const bool mean_pink = mean_u >= 138 && mean_v >= 138;
+  const bool flat_y = (ymax - ymin) < 90;
+  return mean_pink || (flat_y && mostly_magenta);
+}
+
+struct Nv12ChromaMean {
+  int u = 128;
+  int v = 128;
+  int y_range = 0;
+  bool ok = false;
+};
+
+inline Nv12ChromaMean nv12_chroma_mean(const uint8_t* nv12, int width, int height) {
+  Nv12ChromaMean m;
+  if (!nv12 || width < 16 || height < 16) return m;
+  const int w = width;
+  const int h = height;
+  const size_t ysz = static_cast<size_t>(w) * static_cast<size_t>(h);
+  const uint8_t* y = nv12;
+  const uint8_t* uv = nv12 + ysz;
+  int ymin = 255, ymax = 0, y_n = 0;
+  const int ystep = (std::max)(8, h / 20);
+  const int xstep = (std::max)(8, w / 20);
+  for (int row = 0; row < h; row += ystep) {
+    const uint8_t* line = y + static_cast<size_t>(row) * static_cast<size_t>(w);
+    for (int col = 0; col < w; col += xstep) {
+      const int v = line[col];
+      if (v < ymin) ymin = v;
+      if (v > ymax) ymax = v;
+      ++y_n;
+    }
+  }
+  int uv_n = 0, u_sum = 0, v_sum = 0;
+  const int uv_h = h / 2;
+  const int uv_ystep = (std::max)(4, uv_h / 16);
+  const int uv_xstep = (std::max)(8, w / 16);
+  for (int row = 0; row < uv_h; row += uv_ystep) {
+    const uint8_t* line = uv + static_cast<size_t>(row) * static_cast<size_t>(w);
+    for (int col = 0; col + 1 < w; col += uv_xstep) {
+      u_sum += line[col];
+      v_sum += line[col + 1];
+      ++uv_n;
+    }
+  }
+  if (uv_n <= 0 || y_n <= 0) return m;
+  m.u = u_sum / uv_n;
+  m.v = v_sum / uv_n;
+  m.y_range = ymax - ymin;
+  m.ok = true;
+  return m;
+}
+
+inline Nv12ChromaMean nv12_chroma_mean(const std::vector<uint8_t>& nv12, int width, int height) {
+  const size_t need = nv12_packed_bytes(width, height);
+  if (need == 0 || nv12.size() < need) return {};
+  return nv12_chroma_mean(nv12.data(), width, height);
+}
+
+// Whole-frame jump toward magenta vs last good — catches 1–3 handshake flashes junk misses.
+inline bool nv12_chroma_jumped_to_pink(const Nv12ChromaMean& prev, const Nv12ChromaMean& now) {
+  if (!prev.ok || !now.ok) return false;
+  if (now.u < 140 || now.v < 140) return false;
+  if ((now.u - prev.u) + (now.v - prev.v) < 40) return false;
+  return now.y_range < 110;
+}
+
+inline bool nv12_looks_like_hdmi_junk(const std::vector<uint8_t>& nv12, int width, int height) {
+  const size_t need = nv12_packed_bytes(width, height);
+  if (need == 0 || nv12.size() < need) return true;
+  return nv12_looks_like_hdmi_junk(nv12.data(), width, height);
+}
+
+enum class HdmiRecoverAction {
+  None,
+  Present,
+  Hold,
+  Discard,
+  Reopen,
+};
+
+struct HdmiRecover {
+  double last_good_ms = 0;
+  double lost_at_ms = 0;
+  double returned_at_ms = 0;
+  double last_reopen_ms = 0;
+  int discard_left = 0;
+  int good_streak = 0;
+  bool lost = false;
+  bool reopen_armed = false;
+};
+
+inline bool hdmi_can_reopen(const HdmiRecover& s, double now_ms) {
+  if (s.last_reopen_ms > 0 && (now_ms - s.last_reopen_ms) < static_cast<double>(hdmi_reopen_cooldown_ms())) {
+    return false;
+  }
+  if (s.returned_at_ms <= 0) return false;
+  return (now_ms - s.returned_at_ms) >= static_cast<double>(hdmi_reopen_after_return_ms());
+}
+
+inline bool hdmi_late_vs_last_good(const HdmiRecover& s, double now_ms) {
+  return s.last_good_ms > 0 && (now_ms - s.last_good_ms) >= static_cast<double>(hdmi_signal_lost_ms());
+}
+
+inline HdmiRecoverAction hdmi_on_idle(HdmiRecover& s, double now_ms) {
+  if (s.last_good_ms <= 0) return HdmiRecoverAction::None;
+  if (!s.lost && hdmi_late_vs_last_good(s, now_ms)) {
+    s.lost = true;
+    s.lost_at_ms = now_ms;
+    s.reopen_armed = false;
+    s.returned_at_ms = 0;
+    s.discard_left = 0;
+    s.good_streak = 0;
+  }
+  return s.lost ? HdmiRecoverAction::Hold : HdmiRecoverAction::None;
+}
+
+// size_ok = buffer matches opened WxH. content_ok = not pink/no-signal junk.
+// Stay on the pin: pink/handshake holds last_good and Present resumes on the first good frame.
+// Reopen only if the pin stays the wrong size (real mode change), never for magenta junk.
+inline HdmiRecoverAction hdmi_on_sample(HdmiRecover& s, double now_ms, bool size_ok, bool content_ok) {
+  if (!size_ok || !content_ok) {
+    if (!s.lost) {
+      if (s.last_good_ms > 0) s.lost = true;
+      s.lost_at_ms = now_ms;
+    }
+    s.good_streak = 0;
+    s.discard_left = 0;
+    if (size_ok && !content_ok) {
+      s.reopen_armed = false;
+      return s.last_good_ms > 0 ? HdmiRecoverAction::Hold : HdmiRecoverAction::Discard;
+    }
+    if (s.returned_at_ms <= 0) s.returned_at_ms = now_ms;
+    s.reopen_armed = true;
+    if (hdmi_can_reopen(s, now_ms)) return HdmiRecoverAction::Reopen;
+    return s.last_good_ms > 0 ? HdmiRecoverAction::Hold : HdmiRecoverAction::Discard;
+  }
+  s.lost = false;
+  s.reopen_armed = false;
+  s.returned_at_ms = 0;
+  s.lost_at_ms = 0;
+  s.discard_left = 0;
+  s.good_streak = 0;
+  s.last_good_ms = now_ms;
+  return HdmiRecoverAction::Present;
+}
+
+inline HdmiRecoverAction hdmi_on_sample(HdmiRecover& s, double now_ms, bool size_ok) {
+  return hdmi_on_sample(s, now_ms, size_ok, size_ok);
+}
+
+// A late Present of a good live frame is NR/vsync hitch, not the console dropping HDMI.
+// Pink/wrong-size after a gap still counts as handshake.
+inline HdmiRecoverAction hdmi_on_arrived(HdmiRecover& s, double now_ms, bool size_ok, bool content_ok) {
+  if (size_ok && content_ok) {
+    return hdmi_on_sample(s, now_ms, true, true);
+  }
+  if (hdmi_late_vs_last_good(s, now_ms)) {
+    (void)hdmi_on_idle(s, now_ms);
+  }
+  return hdmi_on_sample(s, now_ms, size_ok, content_ok);
+}
+
+inline void hdmi_note_reopened(HdmiRecover& s, double now_ms) {
+  s.last_reopen_ms = now_ms;
+  s.last_good_ms = now_ms;
+  s.lost = false;
+  s.reopen_armed = false;
+  s.returned_at_ms = 0;
+  s.lost_at_ms = 0;
+  s.discard_left = 0;
+  s.good_streak = 0;
+}
+
+inline bool hdmi_lost_long_enough(const HdmiRecover& s, double now_ms) {
+  if (!s.lost) return false;
+  const double t0 = s.lost_at_ms > 0 ? s.lost_at_ms : s.last_good_ms;
+  if (t0 <= 0) return false;
+  return (now_ms - t0) >= static_cast<double>(hdmi_notice_lost_ms());
+}
+
+inline bool hdmi_keep_last_good(HdmiRecoverAction act) {
+  return act == HdmiRecoverAction::Hold || act == HdmiRecoverAction::Discard;
+}
+
+// Delete / NR / motor / Pass Count / preset / escala / --autostart: hitch nosso, nao do console.
+inline bool hdmi_blocked_by_nexuscap_restart(bool restart_pending, bool restart_notice_visible,
+                                             bool autostart_warmup) {
+  return restart_pending || restart_notice_visible || autostart_warmup;
+}
+
+// Card only after a real dropout (hdmi_notice_lost_ms) or while that card is still dwelling.
+inline bool hdmi_notice_visible(bool holding, double now_ms, double notice_until_ms) {
+  (void)holding;
+  return notice_until_ms > 0.0 && now_ms < notice_until_ms;
+}
 
 }  // namespace nexuscap

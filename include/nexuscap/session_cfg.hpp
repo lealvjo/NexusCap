@@ -25,6 +25,7 @@ struct SessionCfgState {
   int fg_multiplier = 2;
   bool fg_busy = false;
   bool hud_visible = true;
+  bool overlay_no_bg = false;
   bool overlay_console = false;
   int live_console = 0;
   int signal_w = 2560;
@@ -43,6 +44,7 @@ struct SessionCfgActions {
   bool toggle_fg = false;
   bool fg_multiplier_changed = false;
   bool hud_changed = false;
+  bool overlay_no_bg_changed = false;
   bool console_changed = false;
   bool scale_apply = false;
   int scale_before = 100;

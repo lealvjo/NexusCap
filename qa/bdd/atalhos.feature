@@ -14,7 +14,7 @@ Funcionalidade: Atalhos
     Exemplos:
       | tecla        | efeito                                      |
       | Esc          | volta ao lobby (CFG fechado)                |
-      | Ctrl+Espaco  | mostra ou esconde o overlay HUD             |
+      | Ctrl+Espaco  | cicla overlays e no fim desliga             |
       | Delete       | liga ou desliga NR e reinicia a sessao      |
       | Page Down    | liga ou desliga Frame Gen                   |
       | Page Up      | cicla Frame Gen x2 / x3 / x4                |
@@ -56,4 +56,35 @@ Funcionalidade: Atalhos
     Dado que no CFG do lobby eu mudei Overlay HUD e Menu na captura
     Quando eu salvo, fecho o app e abro de novo
     Entao as teclas novas e os checks Ctrl continuam
-    E na sessao so esses atalhos abrem HUD e CFG
+    E na sessao so esses atalhos ciclam o HUD e abrem o CFG
+
+  @critico @atalho @hdmi
+  Cenario: Ctrl+Espaco cicla overlays e no fim desliga
+    Dado que estou na sessao de captura com o CFG Ctrl+M fechado
+    E o overlay comeca Compact
+    Quando eu aperto Ctrl+Espaco
+    Entao o overlay passa Mini, depois Advanced, depois Live
+    E no quinto toque o overlay desliga
+    Quando eu aperto Ctrl+Espaco de novo
+    Entao o overlay volta ao Compact
+    E os checks do lobby nao mudam
+
+  @critico @atalho @hdmi
+  Cenario: Ctrl+Espaco com CFG aberto nao cicla
+    Dado que o CFG da sessao (Ctrl+M) esta aberto
+    Quando eu aperto Ctrl+Espaco
+    Entao o overlay fica como estava
+
+  @critico @hdmi
+  Cenario: Restart do motor volta o mesmo overlay
+    Dado que o overlay da sessao e Live (ou Mini ou ADV)
+    Quando o motor ou o Pass Count reinicia a sessao
+    Entao o overlay volta no mesmo modo
+    E os checks do lobby continuam como estavam
+
+  @importante @hdmi
+  Cenario: Frame Gen desenha uma linha por multiplicador no frametime
+    Dado que o Frame Gen esta em x2, x3 ou x4
+    Quando eu olho o grafico de frametime (mini, ADV ou live)
+    Entao aparece a linha da captura mais uma linha por xN, cada uma com cor propria
+    E se o console estiver abaixo de 60 fps as linhas extras continuam acima da base

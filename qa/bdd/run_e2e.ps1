@@ -137,7 +137,6 @@ try {
   # Janela para SendInput acertar o HWND (o utilizador autorizou; no fim restauro fullscreen=1).
   Copy-Item (Join-Path $backupDir "settings.ini") $SettingsPath -Force
   Set-IniKey "session" "fullscreen" "0"
-  Set-IniKey "session" "hide_panel_on_capture" "0"
   Set-IniKey "hotkeys" "gear" "123"
 
   Stop-Nc

@@ -5,6 +5,7 @@
 #include "nexuscap/display_geom.hpp"
 #include "nexuscap/dlss_options.hpp"
 #include "nexuscap/live_mode.hpp"
+#include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/system_metrics.hpp"
 
@@ -34,6 +35,36 @@ using Microsoft::WRL::ComPtr;
 
 namespace nexuscap {
 namespace {
+
+void paint_frametime_traces(HDC hdc, int gx, int gy, int gw, int gh, const OverlayState& o, int pen_w) {
+  if (!hdc || o.ft_hist.size() < 2 || gw < 8) return;
+  const double target_ms = o.target_fps > 0 ? 1000.0 / o.target_fps : (1000.0 / 60.0);
+  double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
+  for (double v : o.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
+  ceil_ms = (std::min)(ceil_ms, 80.0);
+  auto y_for = [&](double ms) -> int {
+    const double t = (std::max)(0.0, (std::min)(1.0, ms / ceil_ms));
+    return gy + gh - 2 - static_cast<int>(t * (gh - 4));
+  };
+  const size_t hn = o.ft_hist.size();
+  const int traces = fg_frametime_trace_count(o.fg_on, o.fg_multiplier);
+  const int w = (std::max)(1, pen_w);
+  for (int k = 1; k <= traces; ++k) {
+    const FgFtRgb rgb = fg_frametime_trace_rgb(k, o.ft_stable);
+    HPEN pen = CreatePen(PS_SOLID, w, RGB(rgb.r, rgb.g, rgb.b));
+    HGDIOBJ old = SelectObject(hdc, pen);
+    for (size_t i = 0; i < hn; ++i) {
+      const int x = gx + 2 + static_cast<int>((gw - 4) * static_cast<int>(i) / static_cast<int>(hn - 1));
+      const int y = y_for(fg_frametime_trace_ms(o.ft_hist[i], k));
+      if (i == 0)
+        MoveToEx(hdc, x, y, nullptr);
+      else
+        LineTo(hdc, x, y);
+    }
+    SelectObject(hdc, old);
+    DeleteObject(pen);
+  }
+}
 
 static const char* kShaderSrc = R"(
 Texture2D texY : register(t0);
@@ -117,6 +148,11 @@ struct RendererD3D11::Impl {
   int hud_w = 0;
   int hud_h = 0;
   DWORD hud_last_tick = 0;
+  ComPtr<ID3D11Texture2D> noticeTex;
+  ComPtr<ID3D11ShaderResourceView> noticeSrv;
+  int notice_w = 0;
+  int notice_h = 0;
+  DWORD notice_last_tick = 0;
   int color_space = static_cast<int>(kDefaultColorSpace);
   int color_range = static_cast<int>(kDefaultColorRange);
   bool yuv_dirty = true;
@@ -537,6 +573,9 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   if (overlay.mini_overlay && overlay.visible && !overlay.live_overlay) {
     burn_mini_overlay(overlay);
   }
+  if (overlay.hdmi_hold_notice) {
+    burn_hdmi_hold_notice(overlay);
+  }
 
   // CFG da sessão por cima de tudo (mesmo backbuffer, mesmo Present).
   if (ui_draw_) {
@@ -553,7 +592,7 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   if (!vsync_ && (swap_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)) {
     present_flags = DXGI_PRESENT_ALLOW_TEARING;
   }
-  impl_->swap->Present(present_sync_interval(vsync_), present_flags);
+  impl_->swap->Present(vsync_ ? present_interval_ : 0u, present_flags);
   present_ms = clk.now_ms() - t0;
   (void)err;
   return true;
@@ -570,6 +609,15 @@ void RendererD3D11::present_black() {
 namespace {
 
 constexpr wchar_t kHudClass[] = L"NexusCapHud";
+
+void apply_overlay_layered_attrs(HWND hwnd, bool overlay_no_bg) {
+  if (!hwnd) return;
+  if (overlay_draws_plate(overlay_no_bg)) {
+    SetLayeredWindowAttributes(hwnd, 0, 220, LWA_ALPHA);
+  } else {
+    SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 255, LWA_COLORKEY);
+  }
+}
 
 std::wstring utf8_to_wide_hud(const std::string& s) {
   if (s.empty()) return L"";
@@ -713,6 +761,23 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   paint_row(wrap_st, wrap_l600, y0 + font_px + line_gap);
   paint_row(wrap_l600, nseg, y0 + (font_px + line_gap) * 2);
 
+  if (o.perf_remain_sec >= -1) {
+    wchar_t tb[24]{};
+    if (o.perf_remain_sec < 0) {
+      swprintf(tb, 24, L"A carregar");
+    } else {
+      int s = o.perf_remain_sec;
+      if (s > 40) s = 40;
+      if (s < 0) s = 0;
+      swprintf(tb, 24, L"0:%02d", s);
+    }
+    SIZE tsz{};
+    GetTextExtentPoint32W(hdc, tb, static_cast<int>(wcslen(tb)), &tsz);
+    const int tx = (std::max)(pad, text_max_x - static_cast<int>(tsz.cx));
+    SetTextColor(hdc, o.perf_remain_sec < 0 ? RGB(255, 196, 72) : RGB(255, 220, 120));
+    TextOutW(hdc, tx, y0, tb, static_cast<int>(wcslen(tb)));
+  }
+
   if (gw >= 64) {
     RECT graph_rc{gx, gy, gx + gw, gy + gh};
     if (overlay_draws_plate(o.overlay_no_bg)) {
@@ -741,18 +806,7 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     MoveToEx(hdc, gx + 1, y_tgt, nullptr);
     LineTo(hdc, gx + gw - 1, y_tgt);
     DeleteObject(target_pen);
-    if (o.ft_hist.size() >= 2) {
-      const size_t hn = o.ft_hist.size();
-      std::vector<POINT> pts(hn);
-      for (size_t i = 0; i < hn; ++i) {
-        pts[i].x = gx + 2 + static_cast<LONG>((gw - 4) * i / (hn - 1));
-        pts[i].y = y_for(o.ft_hist[i]);
-      }
-      HPEN line_pen = CreatePen(PS_SOLID, 2, o.ft_stable ? RGB(90, 220, 255) : RGB(255, 140, 90));
-      SelectObject(hdc, line_pen);
-      Polyline(hdc, pts.data(), static_cast<int>(pts.size()));
-      DeleteObject(line_pen);
-    }
+    paint_frametime_traces(hdc, gx, gy, gw, gh, o, 2);
     SelectObject(hdc, old_brush);
     SelectObject(hdc, old_pen);
     DeleteObject(border);
@@ -774,6 +828,44 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     SelectObject(hdc, oldn);
     DeleteObject(notice_font);
   }
+}
+
+void paint_hdmi_hold_card_hdc(HDC hdc, const RECT& rc, const OverlayState& overlay) {
+  HBRUSH bg = CreateSolidBrush(RGB(14, 18, 26));
+  FillRect(hdc, &rc, bg);
+  DeleteObject(bg);
+  HPEN edge = CreatePen(PS_SOLID, 2, RGB(240, 180, 65));
+  HGDIOBJ old_pen = SelectObject(hdc, edge);
+  HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+  Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+  SelectObject(hdc, old_pen);
+  SelectObject(hdc, old_brush);
+  DeleteObject(edge);
+
+  SetBkMode(hdc, TRANSPARENT);
+  const std::wstring title = utf8_to_wide_hud(
+      overlay.hdmi_notice_title.empty() ? session_hdmi_notice_title() : overlay.hdmi_notice_title);
+  const std::wstring detail = utf8_to_wide_hud(
+      overlay.hdmi_notice_detail.empty() ? session_hdmi_notice_detail() : overlay.hdmi_notice_detail);
+
+  HFONT big = CreateFontW(32, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HFONT old = static_cast<HFONT>(SelectObject(hdc, big));
+  SetTextColor(hdc, RGB(255, 210, 110));
+  RECT tr{rc.left + 24, rc.top + 18, rc.right - 24, rc.top + 62};
+  DrawTextW(hdc, title.c_str(), -1, &tr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+  SelectObject(hdc, old);
+  DeleteObject(big);
+
+  HFONT small_font = CreateFontW(20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                 DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  old = static_cast<HFONT>(SelectObject(hdc, small_font));
+  SetTextColor(hdc, RGB(205, 225, 250));
+  RECT dr{rc.left + 24, rc.top + 68, rc.right - 24, rc.bottom - 16};
+  DrawTextW(hdc, detail.c_str(), -1, &dr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+  SelectObject(hdc, old);
+  DeleteObject(small_font);
 }
 
 }  // namespace
@@ -813,10 +905,9 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
     impl_->hud_last_tick = 0;
   }
 
-  // Throttle GDI raster ~30 Hz — Present path stays light.
+  // Throttle GDI raster ~30 Hz. Notice no longer forces every Present (isso travava o HUD no 2x).
   const DWORD now = GetTickCount();
-  const bool refresh = (impl_->hud_last_tick == 0) || (now - impl_->hud_last_tick) >= 33 ||
-                       !overlay.session_notice.empty();
+  const bool refresh = (impl_->hud_last_tick == 0) || (now - impl_->hud_last_tick) >= 33;
   if (refresh) {
     impl_->hud_last_tick = now;
     BITMAPINFO bmi{};
@@ -910,6 +1001,114 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
   impl_->ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
 }
 
+void RendererD3D11::burn_hdmi_hold_notice(const OverlayState& overlay) {
+  if (!impl_ || !impl_->ctx || !impl_->rtv || back_w_ < 200 || back_h_ < 80) return;
+
+  const int nw = (std::min)(900, (std::max)(320, back_w_ - 48));
+  const int nh = (std::min)(168, (std::max)(120, back_h_ / 8));
+  if (nw < 200 || nh < 80) return;
+
+  if (!impl_->noticeTex || impl_->notice_w != nw || impl_->notice_h != nh) {
+    impl_->noticeSrv.Reset();
+    impl_->noticeTex.Reset();
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = static_cast<UINT>(nw);
+    td.Height = static_cast<UINT>(nh);
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DYNAMIC;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(impl_->device->CreateTexture2D(&td, nullptr, &impl_->noticeTex))) return;
+    impl_->device->CreateShaderResourceView(impl_->noticeTex.Get(), nullptr, &impl_->noticeSrv);
+    impl_->notice_w = nw;
+    impl_->notice_h = nh;
+    impl_->notice_last_tick = 0;
+  }
+
+  const DWORD now = GetTickCount();
+  const bool refresh = (impl_->notice_last_tick == 0) || (now - impl_->notice_last_tick) >= 80;
+  if (refresh) {
+    impl_->notice_last_tick = now;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = nw;
+    bmi.bmiHeader.biHeight = -nh;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    HBITMAP dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, screen);
+    if (!dib || !bits) {
+      if (mem) DeleteDC(mem);
+      return;
+    }
+    HGDIOBJ old_bmp = SelectObject(mem, dib);
+    RECT rc{0, 0, nw, nh};
+    paint_hdmi_hold_card_hdc(mem, rc, overlay);
+    auto* px = static_cast<uint32_t*>(bits);
+    const int n = nw * nh;
+    constexpr uint32_t kA = 230u << 24;
+    for (int i = 0; i < n; ++i) px[i] = (px[i] & 0x00FFFFFFu) | kA;
+
+    D3D11_MAPPED_SUBRESOURCE map{};
+    if (SUCCEEDED(impl_->ctx->Map(impl_->noticeTex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
+      const auto* src = static_cast<const uint8_t*>(bits);
+      auto* dst = static_cast<uint8_t*>(map.pData);
+      const size_t row_bytes = static_cast<size_t>(nw) * 4u;
+      for (int y = 0; y < nh; ++y) {
+        std::memcpy(dst + static_cast<size_t>(y) * map.RowPitch, src + static_cast<size_t>(y) * row_bytes,
+                    row_bytes);
+      }
+      impl_->ctx->Unmap(impl_->noticeTex.Get(), 0);
+    }
+    SelectObject(mem, old_bmp);
+    DeleteObject(dib);
+    DeleteDC(mem);
+  }
+
+  if (!impl_->noticeSrv) return;
+  if (!impl_->hudBlend) {
+    D3D11_BLEND_DESC bd{};
+    bd.RenderTarget[0].BlendEnable = TRUE;
+    bd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    impl_->device->CreateBlendState(&bd, &impl_->hudBlend);
+  }
+  D3D11_VIEWPORT vp{};
+  vp.MinDepth = 0.f;
+  vp.MaxDepth = 1.f;
+  vp.TopLeftX = static_cast<float>((std::max)(0, (back_w_ - nw) / 2));
+  vp.TopLeftY = static_cast<float>((std::max)(0, (back_h_ - nh) / 2));
+  vp.Width = static_cast<float>(nw);
+  vp.Height = static_cast<float>(nh);
+  impl_->ctx->OMSetRenderTargets(1, impl_->rtv.GetAddressOf(), nullptr);
+  impl_->ctx->RSSetViewports(1, &vp);
+  const float bf[4] = {0, 0, 0, 0};
+  if (impl_->hudBlend) impl_->ctx->OMSetBlendState(impl_->hudBlend.Get(), bf, 0xffffffff);
+  impl_->ctx->VSSetShader(impl_->blitVs.Get(), nullptr, 0);
+  impl_->ctx->PSSetShader(impl_->blitPs.Get(), nullptr, 0);
+  ID3D11ShaderResourceView* srv[] = {impl_->noticeSrv.Get()};
+  impl_->ctx->PSSetShaderResources(0, 1, srv);
+  ID3D11SamplerState* samp[] = {impl_->sampler.Get()};
+  impl_->ctx->PSSetSamplers(0, 1, samp);
+  impl_->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  impl_->ctx->Draw(3, 0);
+  ID3D11ShaderResourceView* null_srv[] = {nullptr};
+  impl_->ctx->PSSetShaderResources(0, 1, null_srv);
+  impl_->ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
+}
+
 bool MetricsHud::create(HWND owner, HINSTANCE hi) {
   destroy();
   owner_ = owner;
@@ -983,13 +1182,14 @@ void MetricsHud::update(const OverlayState& state) {
     set_visible(false);
     return;
   }
-  // Mini is burned into D3D Present (OBS Game Capture / fullscreen). Hide GDI twin.
+  // Mini overlay is burned into Present. Hide GDI twin.
   if (state.mini_overlay) {
     set_visible(false);
     return;
   }
   set_visible(state.visible);
   if (!state.visible) return;
+  apply_overlay_layered_attrs(hwnd_, state.overlay_no_bg);
   reposition();
   // Throttle GDI paint ~30 Hz — Invalidate+UpdateWindow every Present contended with D3D.
   const DWORD now = GetTickCount();
@@ -999,21 +1199,35 @@ void MetricsHud::update(const OverlayState& state) {
   UpdateWindow(hwnd_);
 }
 
+void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o);
+
 void MetricsHud::paint(HDC hdc) const {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
-  FillRect(hdc, &rc, bg);
-  DeleteObject(bg);
-
-  SetBkMode(hdc, TRANSPARENT);
-  const auto& o = state_;
-
-  // Mini overlay: one dense ADV+HW row left (colored segments), frametime sparkline right.
-  if (o.mini_overlay) {
-    paint_mini_overlay_hdc(hdc, rc, o);
+  if (state_.mini_overlay) {
+    if (overlay_draws_plate(state_.overlay_no_bg)) {
+      HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
+      FillRect(hdc, &rc, bg);
+      DeleteObject(bg);
+    } else {
+      FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+    }
+    SetBkMode(hdc, TRANSPARENT);
+    paint_mini_overlay_hdc(hdc, rc, state_);
     return;
   }
+  paint_panel_overlay_hdc(hdc, rc, state_);
+}
+
+void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
+  if (overlay_draws_plate(o.overlay_no_bg)) {
+    HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+  } else {
+    FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+  }
+  SetBkMode(hdc, TRANSPARENT);
 
   HFONT font = CreateFontW(26, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
@@ -1190,10 +1404,12 @@ void MetricsHud::paint(HDC hdc) const {
   const int gw = (std::max)(120, static_cast<int>(rc.right - rc.left) - 28);
   const int gh = 110;
   RECT graph_rc{gx, gy, gx + gw, gy + gh};
-  HBRUSH gbg = CreateSolidBrush(RGB(8, 10, 14));
-  FillRect(hdc, &graph_rc, gbg);
-  DeleteObject(gbg);
-  HPEN border = CreatePen(PS_SOLID, 1, RGB(50, 56, 68));
+  if (overlay_draws_plate(o.overlay_no_bg)) {
+    HBRUSH gbg = CreateSolidBrush(RGB(8, 10, 14));
+    FillRect(hdc, &graph_rc, gbg);
+    DeleteObject(gbg);
+  }
+  HPEN border = CreatePen(PS_SOLID, 1, o.overlay_no_bg ? RGB(90, 96, 110) : RGB(50, 56, 68));
   HGDIOBJ old_pen = SelectObject(hdc, border);
   HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
   Rectangle(hdc, gx, gy, gx + gw, gy + gh);
@@ -1216,18 +1432,7 @@ void MetricsHud::paint(HDC hdc) const {
   LineTo(hdc, gx + gw - 1, y_tgt);
   DeleteObject(target_pen);
 
-  if (o.ft_hist.size() >= 2) {
-    const size_t hn = o.ft_hist.size();
-    std::vector<POINT> pts(hn);
-    for (size_t i = 0; i < hn; ++i) {
-      pts[i].x = gx + 2 + static_cast<LONG>((gw - 4) * i / (hn - 1));
-      pts[i].y = y_for(o.ft_hist[i]);
-    }
-    HPEN line_pen = CreatePen(PS_SOLID, 2, o.ft_stable ? RGB(90, 220, 255) : RGB(255, 140, 90));
-    SelectObject(hdc, line_pen);
-    Polyline(hdc, pts.data(), static_cast<int>(hn));
-    DeleteObject(line_pen);
-  }
+  paint_frametime_traces(hdc, gx, gy, gw, gh, o, 2);
 
   SelectObject(hdc, old_pen);
   SelectObject(hdc, old_brush);
@@ -1263,107 +1468,13 @@ LRESULT CALLBACK MetricsHud::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
     return 0;
   }
   if (msg == WM_NCHITTEST) return HTTRANSPARENT;  // click-through
-  return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-namespace {
-constexpr wchar_t kSessionPanelClass[] = L"NexusCapSessionPanel";
-constexpr int kSessionPanelH = 36;
-}  // namespace
-
-bool SessionControlPanel::create(HWND owner, HINSTANCE hi) {
-  destroy();
-  owner_ = owner;
-  WNDCLASSW wc{};
-  wc.lpfnWndProc = SessionControlPanel::WndProc;
-  wc.hInstance = hi;
-  wc.lpszClassName = kSessionPanelClass;
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  RegisterClassW(&wc);
-
-  hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-                          kSessionPanelClass, L"NexusCap session panel", WS_POPUP, 0, 0, 640,
-                          kSessionPanelH, owner, nullptr, hi, this);
-  if (!hwnd_) return false;
-  SetLayeredWindowAttributes(hwnd_, 0, 210, LWA_ALPHA);
-  visible_ = false;
-  return true;
-}
-
-void SessionControlPanel::destroy() {
-  if (hwnd_) {
-    DestroyWindow(hwnd_);
-    hwnd_ = nullptr;
-  }
-  owner_ = nullptr;
-  visible_ = false;
-}
-
-void SessionControlPanel::set_visible(bool visible) {
-  visible_ = visible;
-  if (!hwnd_) return;
-  if (visible) reposition();
-  ShowWindow(hwnd_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
-}
-
-void SessionControlPanel::reposition() {
-  if (!hwnd_ || !owner_) return;
-  RECT r{};
-  GetWindowRect(owner_, &r);
-  const int ww = (std::max)(320, static_cast<int>(r.right - r.left));
-  SetWindowPos(hwnd_, HWND_TOPMOST, r.left, r.top, ww, kSessionPanelH,
-               SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
-  InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
-void SessionControlPanel::paint(HDC hdc) const {
-  RECT rc{};
-  GetClientRect(hwnd_, &rc);
-  HBRUSH bg = CreateSolidBrush(RGB(18, 22, 28));
-  FillRect(hdc, &rc, bg);
-  DeleteObject(bg);
-  HPEN edge = CreatePen(PS_SOLID, 1, RGB(70, 140, 200));
-  HGDIOBJ old_pen = SelectObject(hdc, edge);
-  MoveToEx(hdc, 0, rc.bottom - 1, nullptr);
-  LineTo(hdc, rc.right, rc.bottom - 1);
-  SelectObject(hdc, old_pen);
-  DeleteObject(edge);
-
-  SetBkMode(hdc, TRANSPARENT);
-  HFONT font = CreateFontW(18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
-                           DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-  HFONT old = static_cast<HFONT>(SelectObject(hdc, font));
-  SetTextColor(hdc, RGB(210, 230, 255));
-  const wchar_t* text =
-      L"NexusCap  |  painel de sessao ativo  |  desmarque \"Ocultar lobby na captura\" no lobby";
-  TextOutW(hdc, 14, 8, text, static_cast<int>(wcslen(text)));
-  SelectObject(hdc, old);
-  DeleteObject(font);
-}
-
-LRESULT CALLBACK SessionControlPanel::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-  if (msg == WM_NCCREATE) {
-    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-    return TRUE;
-  }
-  auto* self = reinterpret_cast<SessionControlPanel*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  if (msg == WM_PAINT && self) {
-    PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
-    self->paint(hdc);
-    EndPaint(hwnd, &ps);
-    return 0;
-  }
-  if (msg == WM_NCHITTEST) return HTTRANSPARENT;
+  if (msg == WM_ERASEBKGND) return 1;
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
 namespace {
 constexpr wchar_t kRestartNoticeClass[] = L"NexusCapRestartNotice";
-constexpr int kRestartNoticeW = 720;
+constexpr int kRestartNoticeW = 900;
 constexpr int kRestartNoticeH = 150;
 }  // namespace
 
@@ -1522,6 +1633,7 @@ void HwInfoPanel::update(const OverlayState& state) {
   if (!hwnd_) return;
   set_visible(state.hw_info);
   if (!state.hw_info) return;
+  apply_overlay_layered_attrs(hwnd_, state.overlay_no_bg);
   reposition();
   InvalidateRect(hwnd_, nullptr, FALSE);
   UpdateWindow(hwnd_);
@@ -1530,9 +1642,13 @@ void HwInfoPanel::update(const OverlayState& state) {
 void HwInfoPanel::paint(HDC hdc) const {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  HBRUSH bg = CreateSolidBrush(RGB(14, 18, 24));
-  FillRect(hdc, &rc, bg);
-  DeleteObject(bg);
+  if (overlay_draws_plate(state_.overlay_no_bg)) {
+    HBRUSH bg = CreateSolidBrush(RGB(14, 18, 24));
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+  } else {
+    FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+  }
   HPEN edge = CreatePen(PS_SOLID, 1, RGB(80, 180, 120));
   HGDIOBJ old_pen = SelectObject(hdc, edge);
   Rectangle(hdc, 0, 0, rc.right, rc.bottom);
@@ -1575,10 +1691,26 @@ LRESULT CALLBACK HwInfoPanel::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return 0;
   }
   if (msg == WM_NCHITTEST) return HTTRANSPARENT;
+  if (msg == WM_ERASEBKGND) return 1;
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_t* title) {
+namespace {
+DWORD session_window_style(bool fullscreen, bool locked) {
+  if (fullscreen) return WS_POPUP;
+  if (locked) return WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+  return WS_OVERLAPPEDWINDOW;
+}
+}  // namespace
+
+void show_session_window(HWND hwnd, bool maximize) {
+  if (!hwnd || !IsWindow(hwnd)) return;
+  ShowWindow(hwnd, maximize ? SW_SHOWMAXIMIZED : SW_SHOW);
+  SetForegroundWindow(hwnd);
+  BringWindowToTop(hwnd);
+}
+
+HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_t* title, bool start_hidden) {
   WNDCLASSW wc{};
   wc.lpfnWndProc = WndProc;
   wc.hInstance = hi;
@@ -1591,7 +1723,8 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
   const int sw = GetSystemMetrics(SM_CXSCREEN);
   const int sh = GetSystemMetrics(SM_CYSCREEN);
 
-  DWORD style = fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
+  DWORD style = session_window_style(fullscreen, false);
+  if (!fullscreen) style |= WS_MAXIMIZE;
   int x = CW_USEDEFAULT, y = CW_USEDEFAULT;
   int ww = w, hh = h;
   if (fullscreen) {
@@ -1611,8 +1744,8 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
     x = (std::max)(0, (sw - ww) / 2);
     y = (std::max)(0, (sh - hh) / 2);
   }
-  HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title, style | WS_VISIBLE, x, y, ww, hh, nullptr, nullptr, hi,
-                              nullptr);
+  HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title, style | (start_hidden ? 0 : WS_VISIBLE), x, y, ww, hh,
+                              nullptr, nullptr, hi, nullptr);
   if (hwnd) {
     HICON icon = LoadIconW(hi, MAKEINTRESOURCEW(kAppIconResourceId));
     if (icon) {
@@ -1620,7 +1753,7 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
       SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
     }
   }
-  if (hwnd && !fullscreen) {
+  if (hwnd && !fullscreen && !start_hidden) {
     ShowWindow(hwnd, SW_SHOWMAXIMIZED);  // janela cobrindo tudo (não exclusive fullscreen)
   }
   return hwnd;
@@ -1829,6 +1962,12 @@ void LiveOverlay::present() const {
   }
   HGDIOBJ old_bmp = SelectObject(mem, dib);
   std::memset(bits, 0, static_cast<size_t>(ww) * static_cast<size_t>(hh) * 4);
+  if (overlay_draws_plate(state_.overlay_no_bg)) {
+    RECT plate{0, 0, ww, hh};
+    HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
+    FillRect(mem, &plate, bg);
+    DeleteObject(bg);
+  }
 
   SetBkMode(mem, TRANSPARENT);
   HFONT old_font = static_cast<HFONT>(SelectObject(mem, font));
@@ -1852,36 +1991,7 @@ void LiveOverlay::present() const {
     const int gw = spark_w;
     const int gy = live_mul_dpi(4, d);
     const int gh = hh - gy * 2;
-    const double target_ms = state_.target_fps > 0 ? 1000.0 / state_.target_fps : (1000.0 / 60.0);
-    double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
-    if (!state_.ft_hist.empty()) {
-      for (double v : state_.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
-    }
-    ceil_ms = (std::min)(ceil_ms, 80.0);
-    auto y_for = [&](double ms) -> int {
-      const double t = (std::max)(0.0, (std::min)(1.0, ms / ceil_ms));
-      return gy + gh - 2 - static_cast<int>(t * (gh - 4));
-    };
-    if (state_.ft_hist.size() >= 2 && gw > 8) {
-      const size_t hn = state_.ft_hist.size();
-      std::vector<POINT> pts(hn);
-      for (size_t i = 0; i < hn; ++i) {
-        pts[i].x = gx + static_cast<LONG>((gw - 2) * i / (hn - 1));
-        pts[i].y = y_for(state_.ft_hist[i]);
-      }
-      const COLORREF base = state_.ft_stable ? RGB(90, 220, 255) : RGB(255, 70, 70);
-      const double spike = (std::max)(target_ms * 1.35, target_ms + 4.0);
-      const int pen_w = (std::max)(1, live_mul_dpi(1, d));
-      for (size_t i = 1; i < hn; ++i) {
-        const bool bad = state_.ft_hist[i] >= spike || !state_.ft_stable;
-        HPEN pen = CreatePen(PS_SOLID, pen_w, bad ? RGB(255, 70, 70) : base);
-        HGDIOBJ oldp = SelectObject(mem, pen);
-        MoveToEx(mem, pts[i - 1].x, pts[i - 1].y, nullptr);
-        LineTo(mem, pts[i].x, pts[i].y);
-        SelectObject(mem, oldp);
-        DeleteObject(pen);
-      }
-    }
+    paint_frametime_traces(mem, gx, gy, gw, gh, state_, (std::max)(1, live_mul_dpi(1, d)));
   }
 
   SelectObject(mem, old_font);
@@ -1939,6 +2049,8 @@ bool apply_display_mode(HWND hwnd, RendererD3D11& renderer, bool fullscreen, int
   if (!hwnd) return false;
   const int sw = GetSystemMetrics(SM_CXSCREEN);
   const int sh = GetSystemMetrics(SM_CYSCREEN);
+  (void)signal_w;
+  (void)signal_h;
 
   LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
   if (fullscreen) {

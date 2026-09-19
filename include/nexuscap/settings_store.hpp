@@ -9,7 +9,7 @@ namespace nexuscap {
 struct HotkeyConfig {
   int vk_quit = 0x1B;       // VK_ESCAPE
   int vk_hud = 0x20;        // VK_SPACE — with hud_ctrl → Ctrl+Espaço
-  bool hud_ctrl = true;     // require Ctrl for overlay HUD toggle
+  bool hud_ctrl = true;     // require Ctrl for overlay HUD cycle
   int vk_analyze = 0x73;    // VK_F4
   int vk_dlss = 0x74;       // VK_F5
   int vk_fg_toggle = 0x22;  // VK_NEXT (Page Down) — X2 framegen
@@ -27,12 +27,13 @@ struct SessionUiFlags {
   bool advanced_metrics = false;
   // Steam Deck-style: one horizontal top bar; turns off compact/advanced multi-line HUD.
   bool mini_overlay = false;
-  bool overlay_no_bg = false;  // mini overlay sem placa preta (só texto no HDMI)
+  bool overlay_no_bg = false;  // todos os overlays: sem placa preta (só texto)
   bool hw_info = false;  // painel CPU(+C) / GPU(+C) / RAM / VRAM / PWR (abaixo de métricas)
   bool fullscreen = true;
-  bool hide_panel_on_capture = true;
+  bool hide_panel_on_capture = true;  // leftover ini key; always forced on (captura limpa)
   bool sync_image = true;  // VSYNC default — TEAR+ALLOW_TEARING felt shakier in A/B vs 2.0.1
-  bool preview_mute = false;  // lobby preview audio mute (icon on preview)
+  bool preview_mute = false;  // lobby preview audio mute (botao Desativar som)
+  bool preview_enabled = true;  // lobby HDMI preview capture; off stops DShow + WASAPI
   bool bug_report = false;    // session → report/bug_TIMESTAMP.txt
   bool perf_report = false;   // session → performance/performance_TIMESTAMP.txt
   // Live overlay strip. Console branding is public (all overlays).
@@ -40,6 +41,18 @@ struct SessionUiFlags {
   bool overlay_console = false;  // optional: show console name on overlays
   std::string live_console = "ps5";
 };
+
+// Lobby: preview HDMI and WASAPI. Mute zeros samples; preview off stops capture+audio.
+inline bool lobby_preview_capture_wanted(bool preview_enabled) { return preview_enabled; }
+inline bool lobby_preview_audio_wanted(bool preview_enabled, bool preview_live) {
+  return preview_enabled && preview_live;
+}
+inline const char* lobby_preview_toggle_label(bool preview_enabled) {
+  return preview_enabled ? "Desativar preview" : "Ativar preview";
+}
+inline const char* lobby_audio_toggle_label(bool muted) {
+  return muted ? "Ativar som" : "Desativar som";
+}
 
 struct PersistedSettings {
   HotkeyConfig hotkeys{};
@@ -829,6 +842,13 @@ inline bool feed_pipeline_on_for_renodx(bool renodx_loaded) { return renodx_load
 // 1280 keeps the preview band sharp enough while the UI can hold ~60.
 inline constexpr int kLobbyPreviewMaxWidth = 1280;
 
+// HDMI lobby stays at 1280. Perf preview keeps the plan width so 1440/4K
+// do not collapse to a 1080-looking band (1920 from 4K step-2, or 1280 from 1440).
+inline int lobby_preview_max_width_for_mode(int plan_w, bool perf_preview) {
+  if (!perf_preview) return kLobbyPreviewMaxWidth;
+  return plan_w > 0 ? plan_w : kLobbyPreviewMaxWidth;
+}
+
 inline int lobby_preview_downsample_step(int frame_w, int max_w = kLobbyPreviewMaxWidth) {
   if (frame_w <= 0) return 1;
   if (frame_w <= max_w) return 1;
@@ -955,6 +975,13 @@ inline bool sync_persisted_session_files(const std::string& exe_dir, const Persi
   (void)sync_neural_rendering_enabled_files(exe_dir, want_nr, want_nr);
   (void)sync_feed_work_resolution_in_dir(exe_dir, feed_work_resolution_for_session(s.scale_percent));
   (void)sync_mgf_techniques_for_phase(exe_dir, s.enhance_renodx);
+  return true;
+}
+
+// Depois do teste: devolve Pass/tom/NR/Feed ao CFG HDMI. O plano fica so em perf_test_plan.txt.
+inline bool restore_hdmi_pipeline_after_perf_test(const std::string& exe_dir, const PersistedSettings& s) {
+  (void)sync_persisted_session_files(exe_dir, s);
+  (void)sync_feed_work_resolution_in_dir(exe_dir, kLobbyFeedWorkResolution);
   return true;
 }
 

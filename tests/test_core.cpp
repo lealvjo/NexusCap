@@ -14,6 +14,7 @@
 #include "nexuscap/hitch.hpp"
 #include "nexuscap/live_mode.hpp"
 #include "nexuscap/lossless_fg.hpp"
+#include "nexuscap/perf_test.hpp"
 #include "nexuscap/session_report.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/stats_window.hpp"
@@ -29,6 +30,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace nexuscap;
@@ -55,6 +57,210 @@ TEST_CASE("capture reopen settle helpers") {
   CHECK(capture_first_frame_wait_ms(3840, 2160) > capture_first_frame_wait_ms(1920, 1080));
   CHECK(capture_mode_prefers_nv12(3840, 2160));
   CHECK_FALSE(capture_mode_prefers_nv12(1920, 1080));
+}
+
+TEST_CASE("nv12 buffer match is the opened mode not a hardcoded 1440p") {
+  const size_t n1080 = nv12_packed_bytes(1920, 1080);
+  const size_t n1440 = nv12_packed_bytes(2560, 1440);
+  const size_t n4k = nv12_packed_bytes(3840, 2160);
+  CHECK(n1080 > 0);
+  CHECK(n1440 > n1080);
+  CHECK(n4k > n1440);
+  CHECK(nv12_buffer_matches_mode(n1080, 1920, 1080));
+  CHECK(nv12_buffer_matches_mode(n1440, 2560, 1440));
+  CHECK(nv12_buffer_matches_mode(n1440 + 2560, 2560, 1440));  // small stride pad
+  CHECK_FALSE(nv12_buffer_matches_mode(n1080, 2560, 1440));
+  CHECK_FALSE(nv12_buffer_matches_mode(n4k, 2560, 1440));
+  CHECK_FALSE(nv12_buffer_matches_mode(n1440, 1920, 1080));
+  CHECK_FALSE(nv12_buffer_matches_mode(n1440 - 1, 2560, 1440));
+}
+
+TEST_CASE("hdmi reopen size follows advertised mode of the returning buffer") {
+  std::vector<CaptureMode> modes;
+  modes.push_back(CaptureMode{3840, 2160, 60.0, "4k"});
+  modes.push_back(CaptureMode{2560, 1440, 60.0, "1440"});
+  modes.push_back(CaptureMode{1920, 1080, 60.0, "1080"});
+  int w = 0, h = 0;
+  CHECK(guess_nv12_wh_from_bytes(nv12_packed_bytes(1920, 1080), modes, &w, &h));
+  CHECK(w == 1920);
+  CHECK(h == 1080);
+  CHECK(guess_nv12_wh_from_bytes(nv12_packed_bytes(2560, 1440), modes, &w, &h));
+  CHECK(w == 2560);
+  CHECK(h == 1440);
+  CHECK(hdmi_pick_reopen_size(nv12_packed_bytes(1920, 1080), 2560, 1440, modes, &w, &h));
+  CHECK(w == 1920);
+  CHECK(h == 1080);
+  CHECK(hdmi_pick_reopen_size(0, 2560, 1440, modes, &w, &h));
+  CHECK(w == 2560);
+  CHECK(h == 1440);
+  CHECK(hdmi_pick_reopen_size(0, 1280, 720, modes, &w, &h));
+  CHECK(w == 1280);
+  CHECK(h == 720);
+}
+
+TEST_CASE("hdmi recover holds last good and resumes on first good frame") {
+  CHECK(hdmi_reopen_after_return_ms() >= 4000);
+  CHECK(hdmi_notice_lost_ms() >= 2000);
+  CHECK(hdmi_signal_lost_ms() <= 50);
+  CHECK(hdmi_signal_lost_ms() >= 32);
+  HdmiRecover s;
+  CHECK(hdmi_on_sample(s, 1000.0, true) == HdmiRecoverAction::Present);
+  CHECK(hdmi_on_idle(s, 1020.0) == HdmiRecoverAction::None);
+  CHECK(hdmi_on_idle(s, 1000.0 + hdmi_signal_lost_ms()) == HdmiRecoverAction::Hold);
+  CHECK(s.lost);
+  CHECK_FALSE(hdmi_lost_long_enough(s, 1000.0 + hdmi_signal_lost_ms()));
+  // Pin stays open: first good picture goes to Present (no settle / no Stop/Run).
+  CHECK(hdmi_on_sample(s, 1400.0, true, true) == HdmiRecoverAction::Present);
+  CHECK_FALSE(s.lost);
+}
+
+TEST_CASE("hdmi recover rejects wrong-size samples and follows later") {
+  HdmiRecover s;
+  CHECK(hdmi_on_sample(s, 1000.0, true) == HdmiRecoverAction::Present);
+  CHECK(hdmi_on_sample(s, 1016.0, false) == HdmiRecoverAction::Hold);
+  CHECK(hdmi_on_sample(s, 1016.0 + 700.0, false) == HdmiRecoverAction::Hold);
+  CHECK(hdmi_on_sample(s, 1016.0 + hdmi_reopen_after_return_ms(), false) == HdmiRecoverAction::Reopen);
+}
+
+TEST_CASE("hdmi recover pink junk never becomes last good and never reopens") {
+  HdmiRecover s;
+  CHECK(hdmi_on_sample(s, 1000.0, true, true) == HdmiRecoverAction::Present);
+  CHECK(hdmi_on_sample(s, 1016.0, true, false) == HdmiRecoverAction::Hold);
+  CHECK(hdmi_on_sample(s, 1016.0 + hdmi_reopen_after_return_ms(), true, false) == HdmiRecoverAction::Hold);
+  CHECK(hdmi_on_sample(s, 1016.0 + hdmi_reopen_after_return_ms() + 16.0, true, true) ==
+        HdmiRecoverAction::Present);
+}
+
+TEST_CASE("hdmi recover cooldown blocks a second Stop/Run") {
+  HdmiRecover s;
+  CHECK(hdmi_on_sample(s, 1000.0, true) == HdmiRecoverAction::Present);
+  CHECK(hdmi_on_sample(s, 1016.0, false) == HdmiRecoverAction::Hold);
+  const double t_reopen = 1016.0 + hdmi_reopen_after_return_ms();
+  CHECK(hdmi_on_sample(s, t_reopen, false) == HdmiRecoverAction::Reopen);
+  hdmi_note_reopened(s, t_reopen);
+  CHECK(hdmi_on_sample(s, t_reopen + 50.0, false) == HdmiRecoverAction::Hold);
+  CHECK_FALSE(hdmi_can_reopen(s, t_reopen + 50.0));
+  CHECK(hdmi_on_sample(s, t_reopen + hdmi_reopen_cooldown_ms(), false) == HdmiRecoverAction::Hold);
+  CHECK(hdmi_on_sample(s, t_reopen + 50.0 + hdmi_reopen_after_return_ms(), false) ==
+        HdmiRecoverAction::Reopen);
+}
+
+TEST_CASE("hdmi recover 720p user mode is not locked to 1440p") {
+  const size_t n720 = nv12_packed_bytes(1280, 720);
+  CHECK(nv12_buffer_matches_mode(n720, 1280, 720));
+  CHECK_FALSE(nv12_buffer_matches_mode(nv12_packed_bytes(2560, 1440), 1280, 720));
+  CHECK_FALSE(nv12_buffer_matches_mode(n720, 2560, 1440));
+  std::vector<CaptureMode> modes = {
+      CaptureMode{2560, 1440, 60.0, "1440"},
+      CaptureMode{1920, 1080, 60.0, "1080"},
+      CaptureMode{1280, 720, 60.0, "720"},
+  };
+  int w = 0, h = 0;
+  CHECK(hdmi_pick_reopen_size(n720, 2560, 1440, modes, &w, &h));
+  CHECK(w == 1280);
+  CHECK(h == 720);
+}
+
+TEST_CASE("nv12 magenta no-signal is junk, normal picture is not") {
+  const int w = 64, h = 64;
+  std::vector<uint8_t> mag(nv12_packed_bytes(w, h), 0);
+  std::fill(mag.begin(), mag.begin() + static_cast<size_t>(w) * h, static_cast<uint8_t>(140));
+  std::fill(mag.begin() + static_cast<size_t>(w) * h, mag.end(), static_cast<uint8_t>(200));
+  CHECK(nv12_looks_like_hdmi_junk(mag, w, h));
+  std::vector<uint8_t> noisy = mag;
+  for (int y = 0; y < h; ++y) {
+    noisy[static_cast<size_t>(y) * w + 3] = static_cast<uint8_t>(80 + (y % 40));
+  }
+  CHECK(nv12_looks_like_hdmi_junk(noisy, w, h));
+  std::vector<uint8_t> blk;
+  nv12_fill_limited_black(blk, w, h);
+  CHECK(blk.size() == nv12_packed_bytes(w, h));
+  CHECK(blk[0] == 16);
+  CHECK(blk[static_cast<size_t>(w) * h] == 128);
+  CHECK_FALSE(nv12_looks_like_hdmi_junk(blk, w, h));
+  std::vector<uint8_t> pic(nv12_packed_bytes(w, h), 128);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      pic[static_cast<size_t>(y) * w + x] = static_cast<uint8_t>((x + y) & 255);
+    }
+  }
+  CHECK_FALSE(nv12_looks_like_hdmi_junk(pic, w, h));
+}
+
+TEST_CASE("hdmi late good sample is present hitch not dropout") {
+  HdmiRecover s;
+  CHECK(hdmi_on_arrived(s, 1000.0, true, true) == HdmiRecoverAction::Present);
+  CHECK(hdmi_on_arrived(s, 1016.0, true, true) == HdmiRecoverAction::Present);
+  CHECK(hdmi_on_arrived(s, 1016.0 + 51.0, true, true) == HdmiRecoverAction::Present);
+  CHECK_FALSE(s.lost);
+  CHECK(hdmi_on_arrived(s, 1016.0 + 51.0, true, false) == HdmiRecoverAction::Hold);
+  CHECK(s.lost);
+  CHECK(hdmi_on_idle(s, 2000.0) == HdmiRecoverAction::Hold);
+}
+
+TEST_CASE("hdmi notice only after a real long dropout") {
+  CHECK(hdmi_notice_dwell_ms() >= 2500);
+  CHECK(hdmi_notice_dwell_ms() <= 4000);
+  CHECK(hdmi_notice_lost_ms() >= 2000);
+  CHECK_FALSE(hdmi_notice_visible(true, 1000.0, 0.0));
+  CHECK(hdmi_notice_visible(false, 1100.0, 4000.0));
+  CHECK_FALSE(hdmi_notice_visible(false, 4100.0, 4000.0));
+  HdmiRecover s;
+  CHECK(hdmi_on_sample(s, 1000.0, true, true) == HdmiRecoverAction::Present);
+  CHECK(hdmi_on_idle(s, 1000.0 + hdmi_signal_lost_ms()) == HdmiRecoverAction::Hold);
+  CHECK_FALSE(hdmi_lost_long_enough(s, 1000.0 + hdmi_signal_lost_ms()));
+  CHECK_FALSE(hdmi_lost_long_enough(s, 1000.0 + 400.0));
+  CHECK(hdmi_lost_long_enough(s, s.lost_at_ms + hdmi_notice_lost_ms()));
+}
+
+TEST_CASE("nv12 chroma jump toward magenta is pink handshake") {
+  const int w = 64, h = 64;
+  std::vector<uint8_t> pic(nv12_packed_bytes(w, h), 128);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      pic[static_cast<size_t>(y) * w + x] = static_cast<uint8_t>(40 + ((x + y) % 80));
+    }
+  }
+  std::vector<uint8_t> pink(nv12_packed_bytes(w, h), 200);
+  std::fill(pink.begin(), pink.begin() + static_cast<size_t>(w) * h, static_cast<uint8_t>(120));
+  const auto prev = nv12_chroma_mean(pic, w, h);
+  const auto now = nv12_chroma_mean(pink, w, h);
+  CHECK(prev.ok);
+  CHECK(now.ok);
+  CHECK(nv12_chroma_jumped_to_pink(prev, now));
+  CHECK_FALSE(nv12_chroma_jumped_to_pink(prev, prev));
+}
+
+TEST_CASE("hdmi session loop: freeze then recover without Stop/Run") {
+  HdmiRecover s;
+  int present = 0, hold = 0, discard = 0, reopen = 0;
+  auto tick = [&](double now, bool have_new, bool size_ok, bool mismatch_bytes) {
+    HdmiRecoverAction act = HdmiRecoverAction::None;
+    if (have_new) {
+      act = hdmi_on_sample(s, now, size_ok, size_ok);
+    } else {
+      act = hdmi_on_idle(s, now);
+      if (s.lost && mismatch_bytes) {
+        const HdmiRecoverAction pulse = hdmi_on_sample(s, now, false, false);
+        if (pulse == HdmiRecoverAction::Reopen) act = pulse;
+      }
+    }
+    if (act == HdmiRecoverAction::Present) ++present;
+    else if (act == HdmiRecoverAction::Hold) ++hold;
+    else if (act == HdmiRecoverAction::Discard) ++discard;
+    else if (act == HdmiRecoverAction::Reopen) ++reopen;
+    return act;
+  };
+
+  CHECK(tick(1000.0, true, true, false) == HdmiRecoverAction::Present);
+  CHECK(tick(1016.0, true, true, false) == HdmiRecoverAction::Present);
+  CHECK(tick(1040.0, false, false, false) == HdmiRecoverAction::None);
+  CHECK(tick(1000.0 + hdmi_signal_lost_ms() + 16.0, false, false, false) == HdmiRecoverAction::Hold);
+  CHECK(hold >= 1);
+  CHECK(reopen == 0);
+  CHECK(tick(1400.0, true, true, false) == HdmiRecoverAction::Present);
+  CHECK(present == 3);
+  CHECK(reopen == 0);
 }
 
 TEST_CASE("FrameSlot latest-wins and drop count") {
@@ -438,6 +644,77 @@ TEST_CASE("windowed mode fits inside smaller monitor (no off-screen 1440p window
   CHECK(native.h == 720);
 }
 
+TEST_CASE("perf test uses maximized windowed not a half window") {
+  CHECK_FALSE(perf_test_present_is_half_window(1920, 1080, 1920, 1080));
+  CHECK_FALSE(perf_test_present_is_half_window(1920, 1040, 1920, 1080));
+  CHECK_FALSE(perf_test_present_is_half_window(2560, 1400, 2560, 1440));
+  CHECK(perf_test_present_is_half_window(1056, 594, 1920, 1080));
+  CHECK(perf_test_present_is_half_window(960, 540, 1920, 1080));
+  CHECK(perf_test_present_is_half_window(1408, 792, 2560, 1440));
+  const auto view55 = half_centered_window_geom(1920, 1080, 1920, 1080);
+  CHECK(perf_test_present_is_half_window(view55.w, view55.h, 1920, 1080));
+  AppConfig cfg;
+  PerfTestPlan p;
+  apply_perf_test_plan_to_config(p, cfg);
+  CHECK(cfg.perf_test);
+  CHECK_FALSE(cfg.exclusive_fullscreen);
+  CHECK(cfg.sync_image);
+}
+
+TEST_CASE("perf test pass 2x is not fg x2 and 40 fps window is not the present") {
+  CHECK(perf_test_present_is_half_window(1056, 594, 1920, 1080));
+  PerfTestSample pass2;
+  pass2.fps = 60.0;
+  pass2.target_fps = 60.0;
+  pass2.fg_multiplier = 1;
+  CHECK(grade_perf_test(pass2) == PerfTestGrade::Good);
+  PerfTestSample win40;
+  win40.fps = 40.0;
+  win40.target_fps = 60.0;
+  win40.fg_multiplier = 1;
+  CHECK(grade_perf_test(win40) == PerfTestGrade::Fail);
+  CHECK(perf_test_cadence_locked(40.0));
+  PerfTestSample fg2;
+  fg2.fps = 40.0;
+  fg2.target_fps = 60.0;
+  fg2.fg_multiplier = 2;
+  CHECK(grade_perf_test(fg2) == PerfTestGrade::PlayableFg);
+  CHECK(perf_test_fg_est_fps(40.0, 2) == doctest::Approx(80.0));
+  CHECK(std::string(perf_test_fg_label(1)) == "FG off");
+  CHECK(std::string(nr_pass_count_short(2)).find("2") != std::string::npos);
+}
+
+TEST_CASE("perf test window is 55 percent monitor and centered") {
+  CHECK(kPerfTestWindowPercent == 55);
+  const auto g1080 = half_centered_window_geom(1920, 1080, 1920, 1080);
+  CHECK(g1080.w == 1056);
+  CHECK(g1080.h == 594);
+  CHECK(g1080.x == 432);
+  CHECK(g1080.y == 243);
+  CHECK(windowed_fits_monitor(g1080.w, g1080.h, 1920, 1080));
+  CHECK(doctest::Approx(static_cast<double>(g1080.w) / g1080.h).epsilon(0.02) == 16.0 / 9.0);
+  CHECK(g1080.w * 100 / 1920 == 55);
+  CHECK(g1080.h * 100 / 1080 == 55);
+
+  const auto g1440 = half_centered_window_geom(2560, 1440, 2560, 1440);
+  CHECK(g1440.w == 1408);
+  CHECK(g1440.h == 792);
+  CHECK(g1440.x == 576);
+  CHECK(g1440.y == 324);
+
+  const auto g4k_on_1080 = half_centered_window_geom(3840, 2160, 1920, 1080);
+  CHECK(g4k_on_1080.w == 1056);
+  CHECK(g4k_on_1080.h == 594);
+  CHECK(g4k_on_1080.x == 432);
+  CHECK(g4k_on_1080.y == 243);
+  CHECK(g4k_on_1080.w < 1920);
+  CHECK(g4k_on_1080.h < 1080);
+
+  const auto old50 = half_centered_window_geom(1920, 1080, 1920, 1080, 50);
+  CHECK(old50.w == 960);
+  CHECK(old50.h == 540);
+}
+
 TEST_CASE("letterbox fits 1440p signal into 1080p output without crop") {
   const auto v = fit_letterbox(2560, 1440, 1920, 1080);
   CHECK(v.w <= 1920.f + 0.01f);
@@ -504,6 +781,14 @@ TEST_CASE("lobby HUD sits on left black bar with readable colors") {
   CHECK_FALSE(viewport_has_side_bars(tight, 1920));
   const auto lay2 = lobby_hud_left_bar_layout(tight, 1920.f, 1080.f, 280.f);
   CHECK_FALSE(lay2.on_black_bar);
+
+  // Preview fill (sem pillar): HUD no canto da imagem, inset da sessao.
+  const auto fill = fit_fill(1920, 1080, 800, 450);
+  CHECK_FALSE(viewport_has_side_bars(fill, 800));
+  const auto lay_fill = lobby_preview_hud_layout(fill, 800.f, 450.f, 280.f);
+  CHECK_FALSE(lay_fill.on_black_bar);
+  CHECK(lay_fill.x == doctest::Approx(fill.x + kLobbyPreviewHudInset));
+  CHECK(lay_fill.y == doctest::Approx(fill.y + kLobbyPreviewHudInset));
 
   // High-contrast palette used on black pillar (must pass luminance gate).
   CHECK(hud_color_readable_on_black(255, 230, 90));
@@ -603,6 +888,33 @@ TEST_CASE("next_fg_multiplier cycles 2-3-4") {
   CHECK(next_fg_multiplier(4) == 2);
   CHECK(fg_wants_process(1) == false);
   CHECK(fg_wants_process(2) == true);
+}
+
+TEST_CASE("FG frametime traces stack one line per multiplier even below 60 fps") {
+  CHECK(fg_frametime_trace_count(false, 4) == 1);
+  CHECK(fg_frametime_trace_count(true, 2) == 2);
+  CHECK(fg_frametime_trace_count(true, 3) == 3);
+  CHECK(fg_frametime_trace_count(true, 4) == 4);
+  CHECK(fg_frametime_trace_count(true, 1) == 1);
+
+  // 30 fps capture: base 33.333 ms, x2 sits at 16.667, x3 at 11.111, x4 at 8.333.
+  const double cap30 = 1000.0 / 30.0;
+  CHECK(fg_frametime_trace_ms(cap30, 1) == doctest::Approx(cap30));
+  CHECK(fg_frametime_trace_ms(cap30, 2) == doctest::Approx(cap30 / 2.0));
+  CHECK(fg_frametime_trace_ms(cap30, 3) == doctest::Approx(cap30 / 3.0));
+  CHECK(fg_frametime_trace_ms(cap30, 4) == doctest::Approx(cap30 / 4.0));
+  CHECK(fg_frametime_trace_ms(cap30, 2) < fg_frametime_trace_ms(cap30, 1));
+
+  const double cap60 = 1000.0 / 60.0;
+  CHECK(fg_frametime_trace_ms(cap60, 2) == doctest::Approx(cap60 / 2.0));
+
+  const FgFtRgb base = fg_frametime_trace_rgb(1, true);
+  const FgFtRgb x2 = fg_frametime_trace_rgb(2, true);
+  const FgFtRgb x3 = fg_frametime_trace_rgb(3, true);
+  const FgFtRgb x4 = fg_frametime_trace_rgb(4, true);
+  CHECK((base.r != x2.r || base.g != x2.g || base.b != x2.b));
+  CHECK((x2.r != x3.r || x2.g != x3.g || x2.b != x3.b));
+  CHECK((x3.r != x4.r || x3.g != x4.g || x3.b != x4.b));
 }
 
 TEST_CASE("lobby HUD FPS never shows fake dual when FG only armed") {
@@ -776,6 +1088,49 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK_FALSE(hud_uses_advanced_metrics(true, true, true));
   CHECK(overlay_draws_plate(false));
   CHECK_FALSE(overlay_draws_plate(true));
+  CHECK_FALSE(overlay_no_bg_locked_to_mini());
+  CHECK(overlay_no_bg_ui_enabled(false, false, false));
+  CHECK(overlay_no_bg_ui_enabled(true, false, false));
+  CHECK(overlay_no_bg_ui_enabled(false, false, true));
+  CHECK(overlay_no_bg_ui_enabled(false, true, false));
+}
+
+TEST_CASE("overlay sem fundo is a free toggle for every HUD style") {
+  CHECK_FALSE(overlay_no_bg_locked_to_mini());
+  CHECK(overlay_no_bg_ui_enabled());
+  CHECK(overlay_no_bg_ui_enabled(true, false, false));
+  CHECK(overlay_no_bg_ui_enabled(false, true, false));
+  CHECK(overlay_no_bg_ui_enabled(false, false, true));
+  CHECK(overlay_draws_plate(false));
+  CHECK_FALSE(overlay_draws_plate(true));
+
+  PersistedSettings compact = default_settings();
+  compact.ui.mini_overlay = false;
+  compact.ui.advanced_metrics = false;
+  compact.ui.live_overlay = false;
+  compact.ui.overlay_no_bg = true;
+  AppConfig cfg;
+  apply_persisted_to_config(compact, cfg);
+  CHECK(cfg.overlay_no_bg);
+  CHECK_FALSE(cfg.mini_overlay);
+
+  PersistedSettings mini = compact;
+  mini.ui.mini_overlay = true;
+  apply_persisted_to_config(mini, cfg);
+  CHECK(cfg.overlay_no_bg);
+  CHECK(cfg.mini_overlay);
+
+  PersistedSettings live = compact;
+  live.ui.live_overlay = true;
+  apply_persisted_to_config(live, cfg);
+  CHECK(cfg.overlay_no_bg);
+  CHECK(cfg.live_overlay);
+
+  cfg.overlay_no_bg = true;
+  PersistedSettings back = default_settings();
+  CHECK_FALSE(back.ui.overlay_no_bg);
+  apply_session_cfg_to_persisted(cfg, back);
+  CHECK(back.ui.overlay_no_bg);
 }
 
 TEST_CASE("default FG off but multiplier stays armed for PageDn") {
@@ -798,11 +1153,48 @@ TEST_CASE("default FG off but multiplier stays armed for PageDn") {
   CHECK(cfg.fg_multiplier == 3);
 }
 
-TEST_CASE("session_notice_fg_missing warns without Lossless") {
-  const std::string msg = session_notice_fg_missing();
-  CHECK(msg.find("Lossless Scaling") != std::string::npos);
-  CHECK(msg.find("Pasta") != std::string::npos);
-  CHECK(resolve_lossless_exe("C:\\definitely\\missing\\LosslessScaling.exe").empty());
+TEST_CASE("fresh install without Lossless cannot enable FG until Pasta or Auto finds exe") {
+  CHECK_FALSE(lobby_fg_can_enable("C:\\definitely\\missing\\LosslessScaling.exe"));
+  CHECK(session_notice_fg_missing().find("Pasta") != std::string::npos);
+  const std::string auto_path = resolve_lossless_exe({});
+  if (auto_path.empty()) {
+    CHECK_FALSE(lobby_fg_can_enable({}));
+  } else {
+    CHECK(lobby_fg_can_enable({}));
+    CHECK(lossless_exe_exists(auto_path));
+  }
+}
+
+TEST_CASE("manual Pasta path is used when the exe exists") {
+  const std::string missing = "Z:\\no\\LosslessScaling.exe";
+  CHECK(resolve_lossless_exe(missing).empty());
+  const std::string auto_path = resolve_lossless_exe({});
+  if (!auto_path.empty()) {
+    CHECK(resolve_lossless_exe(auto_path) == auto_path);
+    CHECK(lobby_fg_can_enable(auto_path));
+  }
+}
+
+TEST_CASE("mira-lock anti-ghost always Flow 100 WGC auto or manual") {
+  CHECK(mira_lock_xml_ok(build_mira_settings_xml(2)));
+  CHECK(mira_lock_xml_ok(build_mira_settings_xml(3)));
+  CHECK(mira_lock_xml_ok(build_mira_settings_xml(4)));
+  CHECK(mira_lock_xml_ok(patch_mira_settings_xml("", 2)));  // fresh LOCALAPPDATA
+  const std::string dirty =
+      "<Settings><LSFGFlowScale>70</LSFGFlowScale><LSFG3Multiplier>2</LSFG3Multiplier>"
+      "<CaptureApi>DXGI</CaptureApi></Settings>";
+  const std::string patched = patch_mira_settings_xml(dirty, 3);
+  CHECK(mira_lock_xml_ok(patched));
+  CHECK(patched.find("LSFG3Multiplier>3") != std::string::npos);
+  CHECK(mira_lock_ini_ok(patch_lsfg_ini("")));
+  CHECK(mira_lock_ini_ok(patch_lsfg_ini("flow_scale = 70\r\nui_detection_rate = 1\r\n")));
+  // Caminho do exe nao muda o XML — Auto e Pasta usam o mesmo perfil.
+  CHECK(patch_mira_settings_xml("", 2) == build_mira_settings_xml(2));
+  // Pessoa mexeu no LS (Flow 70 / DXGI): o próximo arranque regrava a nossa mira.
+  const std::string user_tweak =
+      "<Settings><LSFGFlowScale>70</LSFGFlowScale><CaptureApi>DXGI</CaptureApi>"
+      "<LSFGSize>QUALITY</LSFGSize></Settings>";
+  CHECK(mira_lock_xml_ok(patch_mira_settings_xml(user_tweak, 2)));
 }
 
 TEST_CASE("mira settings xml never writes Flow 70") {
@@ -813,6 +1205,8 @@ TEST_CASE("mira settings xml never writes Flow 70") {
   CHECK(built.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos);
   CHECK(built.find("<LSFGSize>BALANCED</LSFGSize>") != std::string::npos);
   CHECK(built.find("<Hotkey>F24</Hotkey>") != std::string::npos);
+  CHECK(built.find("<DrawFps>false</DrawFps>") != std::string::npos);
+  CHECK(built.find("<DrawFps>true</DrawFps>") == std::string::npos);
 
   const std::string dirty =
       "<Settings><LSFGFlowScale>70</LSFGFlowScale><LSFG3Multiplier>2</LSFG3Multiplier>"
@@ -826,6 +1220,13 @@ TEST_CASE("mira settings xml never writes Flow 70") {
   CHECK(fg_multiplier_confirmed_on_disk(3, patched));
   CHECK_FALSE(fg_multiplier_confirmed_on_disk(4, patched));
   CHECK(parse_lsfg3_multiplier_from_xml("<nope>") == 0);
+}
+
+TEST_CASE("ls hide only settings ui not fg output overlay") {
+  CHECK(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", 0));
+  CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", WS_EX_TOPMOST));
+  CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED));
+  CHECK_FALSE(ls_should_hide_window(L"NexusCap", L"NexusCapWnd", 0));
 }
 
 TEST_CASE("patch_lsfg_ini mira lock") {
@@ -889,6 +1290,12 @@ TEST_CASE("session notices for FG enable/up and NR on/off") {
   CHECK(session_notice_nr_on().find("imagem mais bonita") != std::string::npos);
   CHECK(session_notice_nr_off().find("OFF") != std::string::npos);
   CHECK(session_notice_nr_applying().find("Aplicando") != std::string::npos);
+  CHECK(session_notice_hdmi_recover().find("HDMI") != std::string::npos);
+  CHECK(session_hdmi_notice_title().find("console") != std::string::npos);
+  CHECK(session_hdmi_notice_title().find("parou") != std::string::npos);
+  CHECK(session_hdmi_notice_title().find("HDMI") != std::string::npos);
+  CHECK(session_hdmi_notice_detail().find("pixels") != std::string::npos);
+  CHECK(session_notice_hdmi_recover().find("NexusCap") != std::string::npos);
   {
     std::string t, d;
     session_notice_split(session_notice_nr_on(), t, d);
@@ -1106,8 +1513,9 @@ TEST_CASE("settings ini round-trip") {
   s.ui.mini_overlay = true;
   s.ui.overlay_no_bg = true;
   s.ui.fullscreen = false;
-  s.ui.hide_panel_on_capture = false;
   s.ui.sync_image = true;
+  s.ui.preview_mute = true;
+  s.ui.preview_enabled = false;
   s.ui.live_overlay = true;
   s.ui.overlay_console = true;
   s.ui.live_console = "xbox_ss";
@@ -1127,8 +1535,10 @@ TEST_CASE("settings ini round-trip") {
   CHECK(out.ui.mini_overlay);
   CHECK(out.ui.overlay_no_bg);
   CHECK_FALSE(out.ui.fullscreen);
-  CHECK_FALSE(out.ui.hide_panel_on_capture);
+  CHECK(out.ui.hide_panel_on_capture);
   CHECK(out.ui.sync_image);
+  CHECK(out.ui.preview_mute);
+  CHECK_FALSE(out.ui.preview_enabled);
   CHECK(out.ui.live_overlay);
   CHECK(out.ui.overlay_console);
   CHECK(out.ui.live_console == "xbox_ss");
@@ -1137,6 +1547,36 @@ TEST_CASE("settings ini round-trip") {
   // Legacy auto_start key must not break parse / must be ignored.
   CHECK(parse_settings_ini(text + "auto_start=1\n", out));
   CHECK_FALSE(serialize_settings_ini(out).find("auto_start=") != std::string::npos);
+}
+
+TEST_CASE("lobby preview and audio toggles persist and stop capture") {
+  CHECK(default_settings().ui.preview_enabled);
+  CHECK_FALSE(default_settings().ui.preview_mute);
+  CHECK(lobby_preview_capture_wanted(true));
+  CHECK_FALSE(lobby_preview_capture_wanted(false));
+  CHECK(lobby_preview_audio_wanted(true, true));
+  CHECK_FALSE(lobby_preview_audio_wanted(false, true));
+  CHECK_FALSE(lobby_preview_audio_wanted(true, false));
+  CHECK_FALSE(lobby_preview_audio_wanted(false, false));
+  CHECK(std::string(lobby_preview_toggle_label(true)) == "Desativar preview");
+  CHECK(std::string(lobby_preview_toggle_label(false)) == "Ativar preview");
+  CHECK(std::string(lobby_audio_toggle_label(false)) == "Desativar som");
+  CHECK(std::string(lobby_audio_toggle_label(true)) == "Ativar som");
+
+  PersistedSettings s = default_settings();
+  s.ui.preview_enabled = false;
+  s.ui.preview_mute = true;
+  PersistedSettings out;
+  REQUIRE(parse_settings_ini(serialize_settings_ini(s), out));
+  CHECK_FALSE(out.ui.preview_enabled);
+  CHECK(out.ui.preview_mute);
+  CHECK(serialize_settings_ini(out).find("preview_enabled=0") != std::string::npos);
+  CHECK(serialize_settings_ini(out).find("preview_mute=1") != std::string::npos);
+
+  PersistedSettings missing;
+  REQUIRE(parse_settings_ini("show_fps=1\n", missing));
+  CHECK(missing.ui.preview_enabled);
+  CHECK_FALSE(missing.ui.preview_mute);
 }
 
 TEST_CASE("lobby preview caps decode width for UI fps (not soft 640)") {
@@ -1154,6 +1594,16 @@ TEST_CASE("lobby preview caps decode width for UI fps (not soft 640)") {
   CHECK(lobby_preview_out_width(3840, 1920) == 1920);
   CHECK(lobby_preview_out_width(2560, 640) == 640);  // old soft path
   CHECK(lobby_preview_out_width(2560) > lobby_preview_out_width(2560, 640));
+  CHECK(lobby_preview_max_width_for_mode(0, false) == 1280);
+  CHECK(lobby_preview_max_width_for_mode(1920, false) == 1280);
+  CHECK(lobby_preview_max_width_for_mode(1920, true) == 1920);
+  CHECK(lobby_preview_max_width_for_mode(2560, true) == 2560);
+  CHECK(lobby_preview_max_width_for_mode(3840, true) == 3840);
+  CHECK(lobby_preview_downsample_step(1920, lobby_preview_max_width_for_mode(1920, true)) == 1);
+  CHECK(lobby_preview_downsample_step(2560, lobby_preview_max_width_for_mode(2560, true)) == 1);
+  CHECK(lobby_preview_downsample_step(3840, lobby_preview_max_width_for_mode(3840, true)) == 1);
+  CHECK(lobby_preview_out_width(1920, lobby_preview_max_width_for_mode(1920, true)) == 1920);
+  CHECK(lobby_preview_out_width(2560, lobby_preview_max_width_for_mode(2560, true)) == 2560);
 }
 
 TEST_CASE("program opens lobby first; windowed capture covers monitor (no auto-start)") {
@@ -1274,6 +1724,25 @@ TEST_CASE("gear renodx preset change+save reflects in feed and ReShade") {
   apply_persisted_to_config(cinema, cfg);
   CHECK(cfg.renodx_preset == 2);
   CHECK(cfg.exclusive_fullscreen == cinema.ui.fullscreen);
+}
+
+TEST_CASE("pass count has no 0.5x; 1x Krish is the native floor") {
+  CHECK(clamp_nr_pass_count(-1) == 1);
+  CHECK(clamp_nr_pass_count(0) == 1);
+  CHECK(nr_reshade_pass_count(-1) == 1);
+  CHECK(nr_reshade_pass_count(0) == 1);
+  CHECK_FALSE(nr_pass_count_uses_multipass_addon(1));
+  CHECK(std::string(nr_dlss5_motor_name(1)) == "stable");
+  CHECK(std::string(nr_pass_count_short(1)) == "1x");
+  CHECK(std::string(nr_pass_count_label(1)).find("1x") != std::string::npos);
+  for (int v = -2; v <= kMaxNrPassCount + 2; ++v) {
+    const std::string lab = nr_pass_count_label(v);
+    const std::string sh = nr_pass_count_short(v);
+    CHECK(lab.find("0,5") == std::string::npos);
+    CHECK(lab.find("0.5") == std::string::npos);
+    CHECK(sh.find("0.5") == std::string::npos);
+    CHECK(nr_reshade_pass_count(v) >= 1);
+  }
 }
 
 TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
@@ -1482,30 +1951,93 @@ TEST_CASE("initial_hud_visible follows Exibir metricas only") {
   CHECK_FALSE(initial_hud_visible(ui));
 }
 
-TEST_CASE("session_shows_control_panel is inverse of hide_panel_on_capture") {
-  // hide_panel=true (default) → captura limpa, sem faixa de sessão
+TEST_CASE("session capture is always clean; no lobby strip") {
+  CHECK(session_capture_is_clean());
+  CHECK_FALSE(session_shows_control_panel());
   CHECK_FALSE(session_shows_control_panel(true));
-  // hide_panel=false → faixa SessionControlPanel na captura
-  CHECK(session_shows_control_panel(false));
+  CHECK_FALSE(session_shows_control_panel(false));
 
   SessionUiFlags ui;
   ui.hide_panel_on_capture = true;
   CHECK_FALSE(session_shows_control_panel(ui));
   ui.hide_panel_on_capture = false;
-  CHECK(session_shows_control_panel(ui));
+  CHECK_FALSE(session_shows_control_panel(ui));
 
-  // Persistência → AppConfig → decisão de painel
   PersistedSettings s = default_settings();
   s.ui.hide_panel_on_capture = false;
   AppConfig cfg;
   apply_persisted_to_config(s, cfg);
-  CHECK_FALSE(cfg.hide_panel_on_capture);
-  CHECK(session_shows_control_panel(cfg.hide_panel_on_capture));
+  CHECK(cfg.hide_panel_on_capture);
+  CHECK_FALSE(session_shows_control_panel(cfg.hide_panel_on_capture));
+  CHECK(session_capture_is_clean());
 
   s.ui.hide_panel_on_capture = true;
   apply_persisted_to_config(s, cfg);
   CHECK(cfg.hide_panel_on_capture);
   CHECK_FALSE(session_shows_control_panel(cfg.hide_panel_on_capture));
+
+  // Stale ini (old checkbox off) must not bring the strip back.
+  PersistedSettings stale;
+  REQUIRE(parse_settings_ini("hide_panel_on_capture=0\n", stale));
+  CHECK(stale.ui.hide_panel_on_capture);
+  apply_persisted_to_config(stale, cfg);
+  CHECK(cfg.hide_panel_on_capture);
+  CHECK_FALSE(session_shows_control_panel(cfg.hide_panel_on_capture));
+  const std::string saved = serialize_settings_ini(stale);
+  CHECK(saved.find("hide_panel_on_capture=1") != std::string::npos);
+  CHECK(saved.find("hide_panel_on_capture=0") == std::string::npos);
+
+  // HUD / VSYNC / fullscreen stay independent of the removed strip.
+  s = default_settings();
+  s.ui.show_fps = true;
+  s.ui.hide_panel_on_capture = false;
+  CHECK(initial_hud_visible(s.ui));
+  s.ui.show_fps = false;
+  CHECK_FALSE(initial_hud_visible(s.ui));
+}
+
+TEST_CASE("hide_panel leftover does not change sync_image") {
+  PersistedSettings s = default_settings();
+  s.ui.hide_panel_on_capture = true;
+  s.ui.sync_image = true;
+  AppConfig cfg;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.hide_panel_on_capture);
+  CHECK(cfg.sync_image);
+  CHECK_FALSE(session_shows_control_panel(cfg.hide_panel_on_capture));
+  CHECK(present_sync_interval(cfg.sync_image) == 1u);
+
+  s.ui.hide_panel_on_capture = false;
+  s.ui.sync_image = false;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.hide_panel_on_capture);
+  CHECK_FALSE(cfg.sync_image);
+  CHECK_FALSE(session_shows_control_panel(cfg.hide_panel_on_capture));
+  CHECK(present_sync_interval(cfg.sync_image) == 0u);
+
+  s.ui.show_fps = true;
+  s.ui.advanced_metrics = true;
+  s.ui.sync_image = true;
+  s.ui.hide_panel_on_capture = true;
+  auto hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "SYNC VSYNC"));
+  s.ui.sync_image = false;
+  hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "SYNC TEAR"));
+  CHECK_FALSE(lobby_hud_contains(hud, "SYNC VSYNC"));
+}
+
+TEST_CASE("present interval locks perf test to meta not monitor Hz") {
+  CHECK(present_interval_for_target(false, 60, 120) == 0u);
+  CHECK(present_interval_for_target(true, 60, 60) == 1u);
+  CHECK(present_interval_for_target(true, 30, 60) == 2u);
+  CHECK(present_interval_for_target(true, 60, 120) == 2u);
+  CHECK(present_interval_for_target(true, 30, 120) == 4u);
+  CHECK(present_interval_for_target(true, 60, 144) == 2u);
+  CHECK(present_interval_for_target(true, 30, 144) == 4u);
+  CHECK(present_interval_for_target(true, 60, 0) == 1u);
+  CHECK(clamp_display_refresh_hz(0) == 60);
+  CHECK(clamp_display_refresh_hz(120) == 120);
 }
 
 TEST_CASE("present_sync_interval maps sync_image to DXGI Present sync") {
@@ -1552,9 +2084,9 @@ TEST_CASE("hide_panel and sync_image are independent contracts") {
   s.ui.hide_panel_on_capture = false;
   s.ui.sync_image = false;
   apply_persisted_to_config(s, cfg);
-  CHECK_FALSE(cfg.hide_panel_on_capture);
+  CHECK(cfg.hide_panel_on_capture);
   CHECK_FALSE(cfg.sync_image);
-  CHECK(session_shows_control_panel(cfg.hide_panel_on_capture));
+  CHECK_FALSE(session_shows_control_panel(cfg.hide_panel_on_capture));
   CHECK(present_sync_interval(cfg.sync_image) == 0u);
 
   // HUD preview must advertise sync state regardless of hide_panel
@@ -1805,6 +2337,7 @@ TEST_CASE("full gear contract: CFG fields reach session + preview HUD + RenoDX f
   CHECK(loaded.renodx_preset == 2);
   CHECK_FALSE(loaded.ui.fullscreen);
   CHECK(loaded.ui.sync_image);
+  CHECK(loaded.ui.hide_panel_on_capture);
   CHECK(loaded.ui.advanced_metrics);
 
   AppConfig cfg;
@@ -1816,6 +2349,8 @@ TEST_CASE("full gear contract: CFG fields reach session + preview HUD + RenoDX f
   CHECK(cfg.renodx_preset == 2);
   CHECK_FALSE(cfg.exclusive_fullscreen);
   CHECK(cfg.sync_image);
+  CHECK(cfg.hide_panel_on_capture);
+  CHECK_FALSE(session_shows_control_panel(cfg.hide_panel_on_capture));
   CHECK(cfg.show_overlay);
   CHECK(cfg.advanced_metrics);
 
@@ -2066,17 +2601,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 5));
+  CHECK(app_version_is(3, 1, 9));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.5");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.5") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.5");
+  CHECK(std::string(kAppVersion) == "3.1.9");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.1.9") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.9");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.5") != std::string::npos);
+  CHECK(lobby_t.find("3.1.9") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.5") != std::string::npos);
+  CHECK(sess_t.find("3.1.9") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -2693,6 +3228,137 @@ TEST_CASE("hud hotkey default is Ctrl+Space") {
   CHECK(std::string(vk_display_name(0x20)) == "Espaco");
 }
 
+TEST_CASE("Ctrl+Space cycles overlay HUD Compact Mini Advanced Live Off then Compact") {
+  OverlayHudFlags f = overlay_hud_flags_for(OverlayHudStep::Compact);
+  CHECK(f.visible);
+  CHECK_FALSE(f.mini);
+  CHECK_FALSE(f.advanced);
+  CHECK_FALSE(f.live);
+  CHECK(overlay_hud_step_of(f.visible, f.mini, f.advanced, f.live) == OverlayHudStep::Compact);
+  CHECK_FALSE(hud_uses_mini_overlay(f.visible, f.mini));
+  CHECK_FALSE(hud_uses_advanced_metrics(f.visible, f.mini, f.advanced));
+
+  f = cycle_overlay_hud(f.visible, f.mini, f.advanced, f.live);
+  CHECK(overlay_hud_step_of(f.visible, f.mini, f.advanced, f.live) == OverlayHudStep::Mini);
+  CHECK(f.visible);
+  CHECK(f.mini);
+  CHECK_FALSE(f.advanced);
+  CHECK_FALSE(f.live);
+  CHECK(hud_uses_mini_overlay(f.visible, f.mini));
+  CHECK_FALSE(hud_uses_advanced_metrics(f.visible, f.mini, f.advanced));
+
+  f = cycle_overlay_hud(f.visible, f.mini, f.advanced, f.live);
+  CHECK(overlay_hud_step_of(f.visible, f.mini, f.advanced, f.live) == OverlayHudStep::Advanced);
+  CHECK(f.visible);
+  CHECK_FALSE(f.mini);
+  CHECK(f.advanced);
+  CHECK_FALSE(f.live);
+  CHECK(hud_uses_advanced_metrics(f.visible, f.mini, f.advanced));
+
+  f = cycle_overlay_hud(f.visible, f.mini, f.advanced, f.live);
+  CHECK(overlay_hud_step_of(f.visible, f.mini, f.advanced, f.live) == OverlayHudStep::Live);
+  CHECK(f.visible);
+  CHECK(f.live);
+  CHECK_FALSE(f.mini);
+  CHECK_FALSE(f.advanced);
+
+  f = cycle_overlay_hud(f.visible, f.mini, f.advanced, f.live);
+  CHECK(overlay_hud_step_of(f.visible, f.mini, f.advanced, f.live) == OverlayHudStep::Off);
+  CHECK_FALSE(f.visible);
+  CHECK_FALSE(f.mini);
+  CHECK_FALSE(f.advanced);
+  CHECK_FALSE(f.live);
+
+  f = cycle_overlay_hud(f.visible, f.mini, f.advanced, f.live);
+  CHECK(overlay_hud_step_of(f.visible, f.mini, f.advanced, f.live) == OverlayHudStep::Compact);
+  CHECK(f.visible);
+  CHECK_FALSE(f.mini);
+  CHECK_FALSE(f.advanced);
+  CHECK_FALSE(f.live);
+}
+
+TEST_CASE("overlay HUD cycle starts Compact when overlay is off") {
+  const OverlayHudFlags f = cycle_overlay_hud(/*visible=*/false, /*mini=*/true, /*advanced=*/true, /*live=*/true);
+  CHECK(overlay_hud_step_of(f.visible, f.mini, f.advanced, f.live) == OverlayHudStep::Compact);
+  CHECK(f.visible);
+  CHECK_FALSE(f.mini);
+  CHECK_FALSE(f.advanced);
+  CHECK_FALSE(f.live);
+}
+
+TEST_CASE("overlay HUD cycle detects live over mini and mini over advanced") {
+  CHECK(overlay_hud_step_of(true, true, true, true) == OverlayHudStep::Live);
+  CHECK(overlay_hud_step_of(true, true, true, false) == OverlayHudStep::Mini);
+  CHECK(overlay_hud_step_of(true, false, true, false) == OverlayHudStep::Advanced);
+  CHECK(next_overlay_hud_step(OverlayHudStep::Live) == OverlayHudStep::Off);
+  CHECK(next_overlay_hud_step(OverlayHudStep::Off) == OverlayHudStep::Compact);
+}
+
+TEST_CASE("lobby overlay checkboxes pick the Ctrl+Space start step") {
+  CHECK(overlay_hud_step_of(true, false, false, false) == OverlayHudStep::Compact);
+  CHECK(overlay_hud_step_of(true, true, false, false) == OverlayHudStep::Mini);
+  CHECK(overlay_hud_step_of(true, false, true, false) == OverlayHudStep::Advanced);
+  CHECK(overlay_hud_step_of(true, false, false, true) == OverlayHudStep::Live);
+  CHECK(overlay_hud_step_of(false, false, false, false) == OverlayHudStep::Off);
+  CHECK(cycle_overlay_hud(true, true, false, false).advanced);  // Mini → Advanced
+  CHECK(cycle_overlay_hud(true, false, false, true).visible == false);  // Live → Off
+}
+
+TEST_CASE("overlay HUD cycle is session-only and does not rewrite lobby settings") {
+  PersistedSettings lobby = default_settings();
+  lobby.ui.mini_overlay = false;
+  lobby.ui.advanced_metrics = false;
+  lobby.ui.live_overlay = false;
+  lobby.ui.show_fps = true;
+  OverlayHudFlags f = overlay_hud_flags_for(OverlayHudStep::Compact);
+  f = cycle_overlay_hud(f.visible, f.mini, f.advanced, f.live);
+  CHECK(f.mini);
+  CHECK_FALSE(lobby.ui.mini_overlay);
+  CHECK_FALSE(lobby.ui.advanced_metrics);
+  CHECK_FALSE(lobby.ui.live_overlay);
+  CHECK(lobby.ui.show_fps);
+}
+
+TEST_CASE("motor restart restores the session overlay without writing lobby checks") {
+  PersistedSettings lobby = default_settings();
+  lobby.ui.mini_overlay = false;
+  lobby.ui.advanced_metrics = false;
+  lobby.ui.live_overlay = false;
+  lobby.ui.show_fps = true;
+
+  OverlayHudFlags live = overlay_hud_flags_for(OverlayHudStep::Live);
+  const std::string args = session_cfg_relaunch_args_for_hud(live.visible, live.mini, live.advanced, live.live);
+  CHECK(args.find("--autostart") != std::string::npos);
+  CHECK(args.find("--hud=live") != std::string::npos);
+  CHECK(session_cfg_relaunch_args_for_hud(OverlayHudStep::Mini).find("--hud=mini") != std::string::npos);
+  CHECK(session_cfg_relaunch_args_for_hud(OverlayHudStep::Off).find("--hud=off") != std::string::npos);
+  CHECK(std::string(session_cfg_relaunch_args()) == "--autostart");
+
+  char a0[] = "NexusCap.exe";
+  char a1[] = "--autostart";
+  char a2[] = "--hud=live";
+  char* argv[] = {a0, a1, a2};
+  AppConfig cfg = parse_args(3, argv);
+  CHECK(cfg.autostart);
+  CHECK(cfg.overlay_hud_restore == static_cast<int>(OverlayHudStep::Live));
+  apply_persisted_to_config(lobby, cfg);
+  CHECK_FALSE(cfg.live_overlay);  // disco ainda e o lobby
+  CHECK(apply_autostart_overlay_hud(cfg));
+  CHECK(cfg.live_overlay);
+  CHECK(cfg.show_overlay);
+  CHECK_FALSE(cfg.mini_overlay);
+  CHECK_FALSE(cfg.advanced_metrics);
+  CHECK_FALSE(lobby.ui.live_overlay);
+  apply_session_cfg_to_persisted(cfg, lobby);
+  CHECK_FALSE(lobby.ui.live_overlay);
+  CHECK_FALSE(lobby.ui.mini_overlay);
+}
+
+TEST_CASE("Ctrl+Space overlay cycle stays blocked while session CFG is open") {
+  CHECK(session_hotkeys_blocked_while_cfg_open(true));
+  CHECK_FALSE(session_hotkeys_blocked_while_cfg_open(false));
+}
+
 TEST_CASE("session report paths are unique by timestamp and kind") {
   const std::string bug_a = make_session_report_path("C:\\NexusCap", SessionReportKind::Bug, 2026, 9, 16, 21, 5, 30);
   const std::string bug_b = make_session_report_path("C:\\NexusCap", SessionReportKind::Bug, 2026, 9, 16, 21, 5, 31);
@@ -3011,7 +3677,8 @@ TEST_CASE("live overlay active follows setting without live.on") {
 
 TEST_CASE("dlss5 motor swap notice names both engines") {
   const std::string msg = session_notice_dlss5_motor_swap(1, 2);
-  CHECK(msg.find("Trocando motor DLSS 5") != std::string::npos);
+  CHECK(msg.find("Otimizando o pipeline") != std::string::npos);
+  CHECK(msg.find("motor") != std::string::npos);
   CHECK(msg.find("1x") != std::string::npos);
   CHECK(msg.find("2x") != std::string::npos);
 }
@@ -3390,18 +4057,103 @@ TEST_CASE("CFG hotkey round trips through settings.ini and old files default to 
   CHECK(old.hotkeys.cfg_ctrl);
 }
 
+TEST_CASE("file capture scale helpers stay live") {
+  CHECK(file_cap_repeat_ok(2560, 1440, std::vector<uint8_t>(nv12_packed_bytes(2560, 1440))));
+  CHECK_FALSE(file_cap_repeat_ok(0, 0, {}));
+  CHECK(file_cap_is_integer_scale(1280, 720, 2560, 1440));
+  CHECK_FALSE(file_cap_is_integer_scale(1280, 720, 1920, 1080));
+  CHECK(file_cap_is_integer_scale(1920, 1080, 3840, 2160));
+  CHECK_FALSE(file_cap_is_integer_scale(1920, 1080, 2560, 1440));
+  CHECK(file_cap_src_fps_or(59.94) == doctest::Approx(59.94));
+  CHECK(file_cap_src_fps_or(0.0) == doctest::Approx(30.0));
+}
+
+TEST_CASE("perf test waits for DLSS 5 before the clock") {
+  CHECK(perf_test_pipeline_notice_title().find("pipeline") != std::string::npos);
+  CHECK(perf_test_pipeline_notice_title().find("Benchmark") != std::string::npos);
+  CHECK(perf_test_pipeline_notice_detail().find("relogio") != std::string::npos);
+  CHECK(session_notice_perf_test_hold().find("Repreparando") != std::string::npos);
+  CHECK_FALSE(perf_test_dlss5_ready(false, 200));
+  CHECK_FALSE(perf_test_dlss5_ready(true, 1));
+  CHECK_FALSE(perf_test_dlss5_ready(true, kStatsWarmupFrames));
+  CHECK(perf_test_dlss5_ready(true, kStatsWarmupFrames + 1));
+  CHECK_FALSE(perf_test_should_start_clock(false, 0, false, false, false));
+  CHECK(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, false, false, false));
+  CHECK_FALSE(perf_test_should_start_clock(false, 10, false, false, false));
+  CHECK_FALSE(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, true, false, false));
+  CHECK(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, true, true, false));
+  CHECK_FALSE(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, true, false, true));
+  CHECK_FALSE(perf_test_params_ready(true, 1, false, false, false));
+  CHECK(perf_test_params_ready(true, kStatsWarmupFrames + 1, false, false, false));
+  CHECK_FALSE(perf_test_params_ready(true, kStatsWarmupFrames + 1, true, false, true));
+  CHECK_FALSE(perf_test_fg_ready(true, false, false));
+  CHECK_FALSE(perf_test_fg_ready(true, false, true));
+  CHECK(perf_test_fg_ready(true, true, false));
+  CHECK(perf_test_fg_ready(false, false, false));
+  CHECK_FALSE(perf_test_should_reveal_window(false, kPerfTestRevealMaxMs - 1));
+  CHECK(perf_test_should_reveal_window(true, 0));
+  CHECK(perf_test_should_reveal_window(false, kPerfTestRevealMaxMs));
+  CHECK_FALSE(perf_test_should_stop(false));
+  CHECK(perf_test_should_stop(true));
+}
+
+TEST_CASE("perf test remain_sec and timer") {
+  CHECK(perf_test_remain_sec(0, 0) == kPerfTestMaxSec);
+  CHECK(perf_test_remain_sec(1000, 0) == kPerfTestMaxSec - 1);
+  CHECK(perf_test_remain_sec(20000, 0) == 20);
+  CHECK(perf_test_remain_sec(40000, 0) == 0);
+  CHECK(perf_test_remain_sec(41000, 0) == 0);
+  CHECK(perf_test_remain_sec(1000, 1000) == kPerfTestMaxSec);
+  char t[16]{};
+  format_perf_test_timer(t, sizeof(t), 40);
+  CHECK(std::string(t) == "0:40");
+  format_perf_test_timer(t, sizeof(t), 39);
+  CHECK(std::string(t) == "0:39");
+  format_perf_test_timer(t, sizeof(t), 0);
+  CHECK(std::string(t) == "0:00");
+  format_perf_test_timer(t, sizeof(t), -1);
+  CHECK(std::string(t) == "A carregar");
+}
+
+TEST_CASE("perf test playhead rebase advances at plan fps") {
+  const double t0 = 8000;
+  CHECK(virtual_pin_src_index(t0, t0, 30) == 0);
+  CHECK(virtual_pin_src_index(t0 + 1000, t0, 30) == 30);
+  CHECK(virtual_pin_src_index(t0 + 1000, t0, 60) == 60);
+  CHECK(virtual_pin_src_index(t0 + 2000, t0, 30) == 60);
+  CHECK(virtual_pin_src_index(t0 + 2000, t0, 60) == 120);
+}
+
+TEST_CASE("perf result popup only after this benchmark") {
+  CHECK(perf_test_should_popup_result(true, true));
+  CHECK_FALSE(perf_test_should_popup_result(false, true));
+  CHECK_FALSE(perf_test_should_popup_result(true, false));
+  CHECK_FALSE(perf_test_should_popup_result(false, false));
+}
+
+TEST_CASE("perf test lobby says Benchmark") {
+  CHECK(std::string(perf_test_lobby_title()) == "Benchmark");
+  CHECK(std::string(perf_test_lobby_button()) == "Benchmark");
+  CHECK(std::string(perf_test_lobby_start()) == "Iniciar benchmark");
+  CHECK(std::string(perf_test_lobby_blurb()).find("40") != std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find("CFG HDMI") != std::string::npos);
+  CHECK(std::string(perf_test_counting_notice()).find("Benchmark") != std::string::npos);
+}
+
 TEST_CASE("restart notice explains the reason and covers the new process boot") {
   const std::string title = session_restart_notice_title();
-  CHECK(title.find("Reiniciando") != std::string::npos);
+  CHECK(title.find("pipeline") != std::string::npos);
+  CHECK(title.find("Otimizando") != std::string::npos);
+  CHECK(lobby_pipeline_hold_title() == title);
   const std::string motor = session_restart_notice_detail(SessionCfgApply::RelaunchMotor);
   const std::string scale = session_restart_notice_detail(SessionCfgApply::RelaunchFeedScale);
   const std::string pass = session_restart_notice_detail(SessionCfgApply::RelaunchPassCount);
   const std::string preset = session_restart_notice_detail(SessionCfgApply::RelaunchPreset);
   const std::string nr = session_restart_notice_detail(SessionCfgApply::RelaunchNr);
-  CHECK(motor.find("motor") != std::string::npos);
-  CHECK(scale.find("escala") != std::string::npos);
+  CHECK(motor.find("Motor") != std::string::npos);
+  CHECK(scale.find("Escala") != std::string::npos);
   CHECK(pass.find("Pass Count") != std::string::npos);
-  CHECK(preset.find("preset") != std::string::npos);
+  CHECK(preset.find("Preset") != std::string::npos);
   CHECK(nr.find("Neural Rendering") != std::string::npos);
   CHECK(motor != scale);
   CHECK(pass != motor);
@@ -3420,18 +4172,46 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   const std::string toast = session_notice_nr_pass_count_apply(4, 2);
   CHECK(toast.find("1,5x") != std::string::npos);
   CHECK(toast.find("2x multipass") != std::string::npos);
-  CHECK(toast.find("reinicio") != std::string::npos);
+  CHECK(toast.find("Pass Count") != std::string::npos);
+  CHECK(toast.find("pipeline") != std::string::npos);
   // Os dois prometem a volta para a sessao, nunca para o lobby.
   CHECK(motor.find("sessao") != std::string::npos);
   CHECK(scale.find("sessao") != std::string::npos);
   CHECK(restart_notice_visible_at_boot(/*autostart=*/true));
   CHECK_FALSE(restart_notice_visible_at_boot(false));
+  CHECK(session_hdmi_notice_title().find("console") != std::string::npos);
+  CHECK(session_hdmi_notice_title().find("parou") != std::string::npos);
+  CHECK(session_hdmi_notice_title().find("HDMI") != std::string::npos);
+  CHECK(session_hdmi_notice_title().find("consola") == std::string::npos);
+  CHECK(session_hdmi_notice_detail().find("pixels") != std::string::npos);
+  CHECK(session_hdmi_notice_detail().find("NexusCap") != std::string::npos);
+  CHECK(session_hdmi_notice_detail().find("erro") != std::string::npos);
+  CHECK(session_hdmi_notice_detail().find("bugs") != std::string::npos);
   CHECK(kDlss5MotorSwapHoldSec <= 0.55);
   CHECK(kDlss5MotorSwapHoldSec >= 0.50);
   CHECK(std::string(nr_pass_count_15x_hint()).find("exclusivo") != std::string::npos);
   CHECK(std::string(nr_pass_count_15x_hint()).find("2x") != std::string::npos);
   CHECK(std::string(nr_pass_count_15x_hint()).find("desempenho") != std::string::npos);
   CHECK(std::string(nr_pass_count_23x_hint()).find("2x/3x") != std::string::npos);
+}
+
+TEST_CASE("hdmi console card is blocked on every NexusCap manual relaunch") {
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchMotor));
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchPassCount));
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchFeedScale));
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchPreset));
+  CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchNr));
+  CHECK_FALSE(session_cfg_apply_needs_relaunch(SessionCfgApply::Live));
+  CHECK(hdmi_blocked_by_nexuscap_restart(/*pending=*/true, false, false));
+  CHECK(hdmi_blocked_by_nexuscap_restart(false, /*notice=*/true, false));
+  CHECK(hdmi_blocked_by_nexuscap_restart(false, false, /*autostart warmup=*/true));
+  CHECK_FALSE(hdmi_blocked_by_nexuscap_restart(false, false, false));
+  HdmiRecover s;
+  CHECK(hdmi_on_arrived(s, 1000.0, true, true) == HdmiRecoverAction::Present);
+  CHECK(hdmi_on_arrived(s, 1051.0, true, false) == HdmiRecoverAction::Hold);
+  const bool burn = (hdmi_on_arrived(s, 1067.0, true, false) == HdmiRecoverAction::Hold) &&
+                    !hdmi_blocked_by_nexuscap_restart(true, false, false);
+  CHECK_FALSE(burn);
 }
 
 TEST_CASE("visual preset writes every ReShade section on 1x 1.5x 2x 3x") {
@@ -3833,6 +4613,805 @@ TEST_CASE("lobby gear and Ctrl+M session CFG share motor names, disk, and scale"
       }
     }
   }
+}
+
+TEST_CASE("perf test clamps signal fps scale and pass") {
+  CHECK(clamp_perf_test_fps(29) == 30.0);
+  CHECK(clamp_perf_test_fps(30) == 30.0);
+  CHECK(clamp_perf_test_fps(59) == 60.0);
+  CHECK(clamp_perf_test_fps(60) == 60.0);
+  int w = 2000, h = 1200;
+  clamp_perf_test_signal(w, h);
+  CHECK(w == 1920);
+  CHECK(h == 1080);
+  w = 2560;
+  h = 1440;
+  clamp_perf_test_signal(w, h);
+  CHECK(w == 2560);
+  CHECK(h == 1440);
+  w = 3840;
+  h = 2160;
+  clamp_perf_test_signal(w, h);
+  CHECK(w == 3840);
+  CHECK(h == 2160);
+  CHECK(std::string(perf_test_signal_label(1920, 1080)) == "1080p");
+  CHECK(std::string(perf_test_signal_label(2560, 1440)) == "1440p");
+  CHECK(std::string(perf_test_signal_label(3840, 2160)) == "4K");
+  PerfTestPlan p;
+  p.scale_percent = 10;
+  p.nr_pass_count = 99;
+  p.fg_multiplier = 9;
+  p = clamp_perf_test_plan(p);
+  CHECK(p.scale_percent == kMinFeedWorkResolution);
+  CHECK(p.nr_pass_count == kMaxNrPassCount);
+  CHECK(p.fg_multiplier == 4);
+}
+
+TEST_CASE("perf test verdict good tight fail") {
+  PerfTestSample ok;
+  ok.fps = 59.9;
+  ok.p95_present_ms = 2.3;
+  ok.stalls = 0;
+  ok.target_fps = 60;
+  CHECK(grade_perf_test(ok) == PerfTestGrade::Good);
+  CHECK(std::string(perf_test_grade_label(PerfTestGrade::Good)) == "Bom");
+
+  PerfTestSample tight = ok;
+  tight.p95_present_ms = 20.0;
+  CHECK(grade_perf_test(tight) == PerfTestGrade::Tight);
+
+  PerfTestSample one_hitch = ok;
+  one_hitch.p95_present_ms = 16.7;
+  one_hitch.stalls = 1;
+  CHECK(grade_perf_test(one_hitch) == PerfTestGrade::Good);
+
+  PerfTestSample stalls = ok;
+  stalls.stalls = 2;
+  CHECK(grade_perf_test(stalls) == PerfTestGrade::Tight);
+
+  PerfTestSample fail_fps = ok;
+  fail_fps.fps = 40.0;
+  CHECK(grade_perf_test(fail_fps) == PerfTestGrade::Fail);
+
+  PerfTestSample fail_stalls = ok;
+  fail_stalls.stalls = 3;
+  CHECK(grade_perf_test(fail_stalls) == PerfTestGrade::Fail);
+
+  CHECK(perf_test_present_budget_ms(60) > 17.6);
+  CHECK(perf_test_present_budget_ms(60) < 18.3);
+  CHECK(perf_test_present_budget_ms(30) > 34.7);
+  CHECK(perf_test_present_budget_ms(30) < 35.3);
+  PerfTestSample vsync_ok = ok;
+  vsync_ok.p95_present_ms = 16.7;
+  CHECK(grade_perf_test(vsync_ok) == PerfTestGrade::Good);
+
+  PerfTestSample fg_saves = ok;
+  fg_saves.fps = 40.0;
+  fg_saves.p95_present_ms = 25.0;
+  fg_saves.stalls = 295;
+  fg_saves.fg_multiplier = 2;
+  CHECK(grade_perf_test(fg_saves) == PerfTestGrade::PlayableFg);
+  CHECK(std::string(perf_test_grade_label(PerfTestGrade::PlayableFg)) == "Jogavel com FG");
+
+  PerfTestSample fg_short = fg_saves;
+  fg_short.fps = 20.0;
+  fg_short.fg_multiplier = 2;  // ~40 FG, below 60 meta
+  CHECK(grade_perf_test(fg_short) == PerfTestGrade::Fail);
+
+  PerfTestSample fg_holds = ok;
+  fg_holds.fg_multiplier = 2;
+  fg_holds.stalls = 0;
+  CHECK(grade_perf_test(fg_holds) == PerfTestGrade::Good);
+  fg_holds.stalls = 3;
+  CHECK(grade_perf_test(fg_holds) == PerfTestGrade::Tight);
+}
+
+TEST_CASE("perf test 2x 1440p good card matches native capture") {
+  PerfTestPlan p;
+  p.width = 2560;
+  p.height = 1440;
+  p.fps = 60;
+  p.scale_percent = 100;
+  p.nr_pass_count = 2;
+  p.fg_multiplier = 1;
+  PerfTestSample s;
+  s.fps = 60.0686;
+  s.p95_present_ms = 16.7;
+  s.stalls = 0;
+  s.target_fps = 60;
+  CHECK(grade_perf_test(s) == PerfTestGrade::Good);
+  s.fps = 59.9355;
+  s.p95_present_ms = 16.6571;
+  s.stalls = 1;
+  CHECK(grade_perf_test(s) == PerfTestGrade::Good);
+  const std::string card = format_perf_test_card(p, s, PerfTestGrade::Good);
+  CHECK(card.find("2x") != std::string::npos);
+  CHECK(card.find("1440p") != std::string::npos);
+  CHECK(card.find("Bom") != std::string::npos);
+  CHECK(card.find("Segura 60 nativo sem FG") != std::string::npos);
+  CHECK(card.find("Nao segura") == std::string::npos);
+}
+
+TEST_CASE("perf test card mentions combo and grade") {
+  PerfTestPlan p;
+  p.width = 2560;
+  p.height = 1440;
+  p.fps = 60;
+  p.scale_percent = 100;
+  p.nr_pass_count = 2;
+  p.fg_multiplier = 1;
+  PerfTestSample s;
+  s.fps = 40.2;
+  s.p95_present_ms = 25.0;
+  s.stalls = 4;
+  s.target_fps = 60;
+  const auto g = grade_perf_test(s);
+  CHECK(g == PerfTestGrade::Fail);
+  const std::string card = format_perf_test_card(p, s, g);
+  CHECK(card.find("2x") != std::string::npos);
+  CHECK(card.find("1440p") != std::string::npos);
+  CHECK(card.find("60 fps") != std::string::npos);
+  CHECK(card.find("FG off") != std::string::npos);
+  CHECK(card.find("Nao aguenta") != std::string::npos);
+
+  p.fg_multiplier = 2;
+  s.fg_multiplier = 2;
+  CHECK(grade_perf_test(s) == PerfTestGrade::PlayableFg);
+  const std::string fg_card = format_perf_test_card(p, s, PerfTestGrade::PlayableFg);
+  CHECK(perf_test_fg_est_fps(40.0, 2) == doctest::Approx(80.0));
+  CHECK(perf_test_fg_latency_ms(40.0, 2) > 30.0);
+  CHECK(perf_test_fg_latency_ms(40.0, 2) < 45.0);
+  CHECK(fg_card.find("Jogavel com FG") != std::string::npos);
+  CHECK(fg_card.find("gerado") != std::string::npos);
+  CHECK(fg_card.find("da para jogar") != std::string::npos);
+  CHECK(fg_card.find("escala para 75") != std::string::npos);
+  CHECK(perf_test_suggest_scale(100, s, PerfTestGrade::PlayableFg, 60) == 75);
+  CHECK(perf_test_advice(p, PerfTestGrade::Fail).find("Pass 1x") != std::string::npos);
+  p.nr_pass_count = 1;
+  p.scale_percent = 50;
+  CHECK(perf_test_advice(p, PerfTestGrade::Fail).find("1080p") != std::string::npos);
+  p.width = 3840;
+  p.height = 2160;
+  CHECK(perf_test_advice(p, PerfTestGrade::Fail).find("1440p") != std::string::npos);
+}
+
+TEST_CASE("perf test plan and result serialize") {
+  PerfTestPlan p;
+  p.width = 1920;
+  p.height = 1080;
+  p.fps = 30;
+  p.scale_percent = 80;
+  p.nr_pass_count = 4;
+  p.renodx_preset = 2;
+  p.fg_multiplier = 3;
+  p.video = "C:\\vids\\last.mp4";
+  PerfTestPlan back;
+  CHECK(parse_perf_test_plan(serialize_perf_test_plan(p), back));
+  CHECK(back.width == 1920);
+  CHECK(back.height == 1080);
+  CHECK(back.fps == 30.0);
+  CHECK(back.scale_percent == 80);
+  CHECK(back.nr_pass_count == 4);
+  CHECK(back.renodx_preset == 2);
+  CHECK(back.fg_multiplier == 3);
+  CHECK(back.video == "C:\\vids\\last.mp4");
+
+  PerfTestResult r;
+  r.valid = true;
+  r.plan = p;
+  r.sample.fps = 29.8;
+  r.sample.p95_present_ms = 8.1;
+  r.sample.stalls = 0;
+  r.sample.target_fps = 30;
+  r.grade = grade_perf_test(r.sample);
+  r.summary = format_perf_test_card(p, r.sample, r.grade);
+  PerfTestResult r2;
+  CHECK(parse_perf_test_result(serialize_perf_test_result(r), r2));
+  CHECK(r2.valid);
+  CHECK(r2.grade == PerfTestGrade::Good);
+  CHECK(r2.plan.width == 1920);
+  CHECK(r2.sample.stalls == 0);
+  CHECK(r2.summary.find("Bom") != std::string::npos);
+
+  const auto tmp = (std::filesystem::temp_directory_path() / "nexuscap_perf_roundtrip.txt").string();
+  CHECK(write_perf_test_result_file(tmp, r));
+  PerfTestResult r3;
+  CHECK(read_perf_test_result_file(tmp, r3));
+  CHECK(r3.valid);
+  CHECK(r3.grade == r.grade);
+  std::error_code ec;
+  std::filesystem::remove(tmp, ec);
+}
+
+TEST_CASE("perf test finds newest video in search dirs") {
+  const auto root = std::filesystem::temp_directory_path() / "nexuscap_perf_vids";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root / "assets", ec);
+  std::filesystem::create_directories(root / "samples", ec);
+  {
+    std::ofstream a((root / "old.mp4").string());
+    a << "old";
+  }
+  {
+    std::ofstream b((root / "assets" / "newer.mkv").string());
+    b << "new";
+  }
+  std::filesystem::last_write_time(root / "old.mp4", std::filesystem::file_time_type::clock::now(), ec);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  std::filesystem::last_write_time(root / "assets" / "newer.mkv",
+                                   std::filesystem::file_time_type::clock::now(), ec);
+  std::string found;
+  CHECK(find_newest_perf_test_video({root.string(), (root / "assets").string(), (root / "samples").string()},
+                                    found));
+  CHECK(found.find("newer.mkv") != std::string::npos);
+  CHECK(is_perf_test_video_ext("foo.MP4"));
+  CHECK(is_perf_test_video_ext("foo.mkv"));
+  CHECK_FALSE(is_perf_test_video_ext("foo.txt"));
+  {
+    std::ofstream bundled((root / "assets" / "perf_test.mp4").string());
+    bundled << "bundled";
+  }
+  std::string resolved;
+  CHECK(resolve_perf_test_video(root.string(), resolved));
+  CHECK(resolved.find("perf_test.mp4") != std::string::npos);
+  CHECK(perf_test_bundled_path("D:\\app").find("assets\\perf_test.mp4") != std::string::npos);
+  CHECK(std::string(perf_test_bundled_filename_for(1920, 1080)) == "perf_test_1080.mp4");
+  CHECK(std::string(perf_test_bundled_filename_for(2560, 1440)) == "perf_test_1440.mp4");
+  CHECK(std::string(perf_test_bundled_filename_for(3840, 2160)) == "perf_test_4k.mp4");
+  {
+    std::ofstream f1080((root / "assets" / "perf_test_1080.mp4").string());
+    f1080 << "1080";
+    std::ofstream f1440((root / "assets" / "perf_test_1440.mp4").string());
+    f1440 << "1440";
+    std::ofstream f4k((root / "assets" / "perf_test_4k.mp4").string());
+    f4k << "4k";
+  }
+  std::string r1080, r1440, r4k;
+  CHECK(resolve_perf_test_video(root.string(), 1920, 1080, r1080));
+  CHECK(r1080.find("perf_test_1080.mp4") != std::string::npos);
+  CHECK(resolve_perf_test_video(root.string(), 2560, 1440, r1440));
+  CHECK(r1440.find("perf_test_1440.mp4") != std::string::npos);
+  CHECK(resolve_perf_test_video(root.string(), 3840, 2160, r4k));
+  CHECK(r4k.find("perf_test_4k.mp4") != std::string::npos);
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_CASE("perf test scores from the whole session not vsync fps") {
+  CHECK_FALSE(perf_test_score_ready(0));
+  CHECK_FALSE(perf_test_score_ready(179));
+  CHECK(perf_test_score_ready(180));
+  PerfScoreAcc acc;
+  for (int i = 0; i < 180; ++i) acc.push(16.667, 4.0, false);
+  const auto s = perf_test_sample_from_acc(acc, 60.0, 1);
+  CHECK(s.fps == doctest::Approx(60.0).epsilon(0.02));
+  CHECK(s.p95_present_ms == doctest::Approx(4.0).epsilon(0.01));
+  CHECK(s.stalls == 0);
+  CHECK(s.fg_multiplier == 1);
+  CHECK(grade_perf_test(s) == PerfTestGrade::Good);
+  CHECK_FALSE(perf_test_score_ready(acc.frames() - 1));
+}
+
+TEST_CASE("parse_args --perf-test keeps windowed plan knobs") {
+  char exe[] = "NexusCap.exe";
+  char a0[] = "--perf-test";
+  char a1[] = "--width";
+  char a2[] = "1920";
+  char a3[] = "--height";
+  char a4[] = "1080";
+  char a5[] = "--fps";
+  char a6[] = "30";
+  char a7[] = "--scale";
+  char a8[] = "80";
+  char a9[] = "--pass";
+  char a10[] = "2";
+  char a11[] = "--preset";
+  char a12[] = "1";
+  char a13[] = "--fg-x";
+  char a14[] = "3";
+  char a15[] = "--video";
+  char a16[] = "C:\\clip.mp4";
+  char* argv[] = {exe, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16};
+  const AppConfig c = parse_args(18, argv);
+  CHECK(c.perf_test);
+  CHECK_FALSE(c.exclusive_fullscreen);
+  CHECK(c.mini_overlay);
+  CHECK(c.width == 1920);
+  CHECK(c.height == 1080);
+  CHECK(c.fps == 30.0);
+  CHECK(c.scale_percent == 80);
+  CHECK(c.nr_pass_count == 2);
+  CHECK(c.renodx_preset == 1);
+  CHECK(c.fg_multiplier == 3);
+  CHECK(c.fg_auto_start);
+  CHECK(c.video_path == "C:\\clip.mp4");
+  CHECK(c.enhance == EnhanceBackend::Renodx);
+  CHECK(c.perf_cli_override);
+  const std::string args = perf_test_cli_args(perf_test_plan_from_config(c));
+  CHECK(args.find("--perf-test") != std::string::npos);
+  CHECK(args.find("--width 1920") != std::string::npos);
+  CHECK(args.find("--fg-x 3") != std::string::npos);
+}
+
+TEST_CASE("perf test plan never writes into real HDMI presets") {
+  PersistedSettings s = default_settings();
+  s.nr_pass_count = 1;
+  s.renodx_preset = 0;
+  s.scale_percent = 100;
+  s.fg_enabled = false;
+  s.neural_rendering = false;
+  s.enhance_renodx = true;
+  const PersistedSettings before = s;
+
+  AppConfig cfg;
+  PerfTestPlan p;
+  p.width = 2560;
+  p.height = 1440;
+  p.fps = 60;
+  p.scale_percent = 50;
+  p.nr_pass_count = 3;
+  p.renodx_preset = 2;
+  p.fg_multiplier = 3;
+  apply_perf_test_plan_to_config(p, cfg);
+  CHECK(cfg.perf_test);
+  CHECK(cfg.nr_pass_count == 3);
+  CHECK(cfg.renodx_preset == 2);
+  CHECK(cfg.scale_percent == 50);
+
+  apply_session_cfg_to_persisted(cfg, s);
+  CHECK(s.nr_pass_count == before.nr_pass_count);
+  CHECK(s.renodx_preset == before.renodx_preset);
+  CHECK(s.scale_percent == before.scale_percent);
+  CHECK(s.fg_enabled == before.fg_enabled);
+  CHECK(s.neural_rendering == before.neural_rendering);
+  CHECK(serialize_settings_ini(s) == serialize_settings_ini(before));
+  CHECK_FALSE(session_writes_renodx_off_files(cfg));
+}
+
+TEST_CASE("apply_perf_test_plan_to_config does not keep exclusive fullscreen") {
+  AppConfig cfg;
+  cfg.exclusive_fullscreen = true;
+  cfg.scale_percent = 40;
+  PerfTestPlan p;
+  p.width = 3840;
+  p.height = 2160;
+  p.fps = 60;
+  p.scale_percent = 50;
+  p.nr_pass_count = 1;
+  p.fg_multiplier = 1;
+  p.video = "last.mp4";
+  apply_perf_test_plan_to_config(p, cfg);
+  CHECK(cfg.perf_test);
+  CHECK_FALSE(cfg.exclusive_fullscreen);
+  CHECK(cfg.width == 3840);
+  CHECK(cfg.height == 2160);
+  CHECK(cfg.scale_percent == 50);
+  CHECK_FALSE(cfg.fg_auto_start);
+  CHECK(cfg.video_path == "last.mp4");
+  CHECK(cfg.mini_overlay);
+}
+
+TEST_CASE("perf test combos pass x scale x scene color") {
+  const int passes[] = {1, 4, 2, 3};
+  const int scales[] = {50, 100};
+  PerfTestSample ok;
+  ok.fps = 59.9;
+  ok.p95_present_ms = 2.2;
+  ok.stalls = 0;
+  ok.target_fps = 60;
+  int n = 0;
+  for (int pass : passes) {
+    for (int scale : scales) {
+      for (int preset = 0; preset <= 2; ++preset) {
+        ++n;
+        PerfTestPlan p;
+        p.width = 1920;
+        p.height = 1080;
+        p.fps = 60;
+        p.nr_pass_count = pass;
+        p.scale_percent = scale;
+        p.renodx_preset = preset;
+        AppConfig cfg;
+        apply_perf_test_plan_to_config(p, cfg);
+        CHECK(cfg.nr_pass_count == pass);
+        CHECK(cfg.scale_percent == scale);
+        CHECK(cfg.renodx_preset == preset);
+        CHECK(cfg.mini_overlay);
+        CHECK_FALSE(cfg.exclusive_fullscreen);
+        const char* color = renodx_visual_preset_name(preset, pass);
+        CHECK(color != nullptr);
+        CHECK(std::strlen(color) > 0);
+        if (pass == 1) {
+          CHECK(std::string(color) == std::string(preset == 0 ? "Default" : (preset == 1 ? "Natural" : "Cinematic")));
+        } else {
+          CHECK(std::string(color) == std::string(preset == 0 ? "Model A" : (preset == 1 ? "Model B" : "Model C")));
+        }
+        const std::string card = format_perf_test_card(p, ok, grade_perf_test(ok));
+        CHECK(card.find(nr_pass_count_short(pass)) != std::string::npos);
+        CHECK(card.find(("escala " + std::to_string(scale)).c_str()) != std::string::npos);
+        CHECK(card.find("1080p") != std::string::npos);
+        const std::string cli = perf_test_cli_args(p);
+        CHECK(cli.find("--pass " + std::to_string(pass)) != std::string::npos);
+        CHECK(cli.find("--scale " + std::to_string(scale)) != std::string::npos);
+        CHECK(cli.find("--preset " + std::to_string(preset)) != std::string::npos);
+      }
+    }
+  }
+  CHECK(n == 24);
+}
+
+TEST_CASE("perf test table 30 and 60 with fg and advice") {
+  auto sample = [](double fps, int fg, double target, uint64_t stalls = 0, double present = 2.0) {
+    PerfTestSample s;
+    s.fps = fps;
+    s.fg_multiplier = fg;
+    s.target_fps = target;
+    s.stalls = stalls;
+    s.p95_present_ms = present;
+    return s;
+  };
+  CHECK(grade_perf_test(sample(30.0, 1, 30)) == PerfTestGrade::Good);
+  CHECK(grade_perf_test(sample(30.0, 1, 30, 0, 40.0)) == PerfTestGrade::Tight);
+  CHECK(grade_perf_test(sample(30.0, 1, 30, 3)) == PerfTestGrade::Fail);
+  CHECK(grade_perf_test(sample(30.0, 2, 30)) == PerfTestGrade::Good);
+  CHECK(grade_perf_test(sample(30.0, 3, 30)) == PerfTestGrade::Good);
+  CHECK(grade_perf_test(sample(30.0, 4, 30)) == PerfTestGrade::Good);
+  CHECK(grade_perf_test(sample(30.0, 2, 30, 4)) == PerfTestGrade::Tight);
+  CHECK(grade_perf_test(sample(22.0, 1, 30)) == PerfTestGrade::Fail);
+  CHECK(grade_perf_test(sample(22.0, 2, 30)) == PerfTestGrade::PlayableFg);
+  CHECK(grade_perf_test(sample(22.0, 3, 30)) == PerfTestGrade::PlayableFg);
+  CHECK(grade_perf_test(sample(18.0, 2, 30)) == PerfTestGrade::Fail);
+  CHECK(grade_perf_test(sample(15.0, 4, 30)) == PerfTestGrade::Fail);
+
+  CHECK(grade_perf_test(sample(60.0, 1, 60)) == PerfTestGrade::Good);
+  CHECK(grade_perf_test(sample(60.0, 2, 60)) == PerfTestGrade::Good);
+  CHECK(grade_perf_test(sample(60.0, 2, 60, 5)) == PerfTestGrade::Tight);
+  CHECK(grade_perf_test(sample(40.0, 1, 60)) == PerfTestGrade::Fail);
+  CHECK(grade_perf_test(sample(40.0, 2, 60)) == PerfTestGrade::PlayableFg);
+  CHECK(grade_perf_test(sample(30.0, 2, 60)) == PerfTestGrade::PlayableFg);
+  CHECK(grade_perf_test(sample(30.0, 1, 60)) == PerfTestGrade::Fail);
+  CHECK(grade_perf_test(sample(25.0, 2, 60)) == PerfTestGrade::Fail);
+  CHECK(grade_perf_test(sample(20.0, 3, 60)) == PerfTestGrade::PlayableFg);
+  CHECK(grade_perf_test(sample(20.0, 2, 60)) == PerfTestGrade::Fail);
+  CHECK(grade_perf_test(sample(18.0, 4, 60)) == PerfTestGrade::Fail);
+
+  PerfTestPlan p;
+  p.width = 2560;
+  p.height = 1440;
+  p.fps = 60;
+  p.scale_percent = 100;
+  p.fg_multiplier = 2;
+  const std::string good_fg = format_perf_test_card(p, sample(60.0, 2, 60), PerfTestGrade::Good);
+  CHECK(good_fg.find("Bom") != std::string::npos);
+  CHECK(good_fg.find("opcional") != std::string::npos);
+  CHECK(good_fg.find("extra") != std::string::npos);
+  const std::string tight_fg = format_perf_test_card(p, sample(60.0, 2, 60, 5, 18.0), PerfTestGrade::Tight);
+  CHECK(tight_fg.find("Apertado") != std::string::npos);
+  CHECK(tight_fg.find("custar") != std::string::npos);
+  CHECK(tight_fg.find("escala para") == std::string::npos);
+  CHECK(perf_test_suggest_scale(100, sample(40.0, 2, 60), PerfTestGrade::PlayableFg, 60) == 75);
+  CHECK(perf_test_suggest_scale(100, sample(25.0, 1, 60), PerfTestGrade::Fail, 60) == 55);
+  CHECK(perf_test_suggest_scale(100, sample(15.0, 1, 60), PerfTestGrade::Fail, 60) == 50);
+  CHECK(perf_test_suggest_scale(100, sample(22.0, 2, 30), PerfTestGrade::PlayableFg, 30) == 80);
+  CHECK(perf_test_suggest_scale(80, sample(40.0, 2, 60), PerfTestGrade::PlayableFg, 60) == 60);
+  p.fps = 30;
+  const std::string play30 = format_perf_test_card(p, sample(22.0, 2, 30), PerfTestGrade::PlayableFg);
+  CHECK(play30.find("Jogavel com FG") != std::string::npos);
+  CHECK(play30.find("da para jogar") != std::string::npos);
+}
+
+TEST_CASE("perf test advice validates real 3x cadence lock not area formula") {
+  auto sample = [](double fps, int fg, double target, uint64_t stalls, double present) {
+    PerfTestSample s;
+    s.fps = fps;
+    s.fg_multiplier = fg;
+    s.target_fps = target;
+    s.stalls = stalls;
+    s.p95_present_ms = present;
+    return s;
+  };
+  CHECK(perf_test_cadence_locked(30.00));
+  CHECK(perf_test_cadence_locked(39.9995));
+  CHECK(perf_test_cadence_locked(40.00));
+  CHECK_FALSE(perf_test_cadence_locked(59.94));
+  CHECK_FALSE(perf_test_cadence_locked(47.0));
+  CHECK(perf_test_suggest_scale(100, sample(30.0, 1, 60, 599, 33.3), PerfTestGrade::Fail, 60) == 60);
+
+  PerfTestPlan p3;
+  p3.width = 2560;
+  p3.height = 1440;
+  p3.fps = 60;
+  p3.scale_percent = 100;
+  p3.nr_pass_count = 3;
+  PerfTestSample lock30 = sample(30.0, 1, 60, 599, 33.30);
+  CHECK(grade_perf_test(lock30) == PerfTestGrade::Fail);
+  const std::string a30 = perf_test_advice(p3, lock30, PerfTestGrade::Fail);
+  CHECK(a30.find("escala para 60") != std::string::npos);
+  CHECK(a30.find("70") == std::string::npos);
+  CHECK(a30.find("Pass 1x") == std::string::npos);
+
+  p3.scale_percent = 70;
+  PerfTestSample lock40 = sample(39.9995, 1, 60, 300, 25.07);
+  CHECK(grade_perf_test(lock40) == PerfTestGrade::Fail);
+  const std::string a40 = perf_test_advice(p3, lock40, PerfTestGrade::Fail);
+  CHECK(a40.find("escala para 50") != std::string::npos);
+  CHECK(a40.find("55") == std::string::npos);
+
+  p3.nr_pass_count = 1;
+  p3.scale_percent = 100;
+  const std::string a1x = perf_test_advice(p3, sample(40.0, 1, 60, 295, 25.0), PerfTestGrade::Fail);
+  CHECK(a1x.find("escala para 75") != std::string::npos);
+}
+
+TEST_CASE("perf test p=1.5 combination grid matches fitted 1440 locks") {
+  auto pass_ui = [](double w) {
+    if (w == 1.5) return 4;
+    if (w == 2.0) return 2;
+    if (w == 3.0) return 3;
+    return 1;
+  };
+  auto pred_gpu = [](double pw, int scale) { return 11.11 * pw * std::pow(scale / 100.0, 1.5); };
+  auto pred_lock = [](double gpu) {
+    if (gpu <= 16.67) return 60;
+    if (gpu <= 25.0) return 40;
+    return 30;
+  };
+  int cells = 0;
+  for (double pw : {1.0, 1.5, 2.0, 3.0}) {
+    for (int scale : {50, 60, 70, 80, 90, 100}) {
+      ++cells;
+      const int lock = pred_lock(pred_gpu(pw, scale));
+      PerfTestPlan p;
+      p.width = 2560;
+      p.height = 1440;
+      p.fps = 60;
+      p.scale_percent = scale;
+      p.nr_pass_count = pass_ui(pw);
+      PerfTestSample s;
+      s.fps = static_cast<double>(lock);
+      s.target_fps = 60;
+      s.p95_present_ms = 1000.0 / lock;
+      s.stalls = lock < 60 ? 200ull : 0;
+      const auto g = grade_perf_test(s);
+      const std::string tip = perf_test_advice(p, s, g);
+      if (lock >= 60) {
+        CHECK(g == PerfTestGrade::Good);
+        CHECK(tip.find("escala para") == std::string::npos);
+      } else {
+        CHECK(g == PerfTestGrade::Fail);
+        const bool floor_ok = perf_test_scale_floor_hits_meta(scale, s.fps, 60);
+        if (!floor_ok && pw > 1.0) {
+          CHECK(tip.find("Pass 1x") != std::string::npos);
+        } else {
+          const int next = perf_test_suggest_scale(scale, s, g, 60);
+          CHECK(next >= 50);
+          CHECK(next < scale);
+          CHECK(pred_gpu(pw, next) <= 16.67 + 1.5);
+        }
+      }
+    }
+  }
+  CHECK(cells == 24);
+}
+
+TEST_CASE("perf test every lobby combo has a coherent next step") {
+  const int widths[] = {1920, 2560, 3840};
+  const int heights[] = {1080, 1440, 2160};
+  const double metas[] = {30.0, 60.0};
+  const int scales[] = {50, 70, 100};
+  const int passes[] = {1, 4, 2, 3};
+  const int fgs[] = {1, 2, 3, 4};
+  int n = 0;
+  for (int i = 0; i < 3; ++i) {
+    for (double meta : metas) {
+      for (int scale : scales) {
+        for (int pass : passes) {
+          for (int fg : fgs) {
+            ++n;
+            PerfTestPlan p;
+            p.width = widths[i];
+            p.height = heights[i];
+            p.fps = meta;
+            p.scale_percent = scale;
+            p.nr_pass_count = pass;
+            p.fg_multiplier = fg;
+            auto check_card = [&](const PerfTestSample& s) {
+              const auto g = grade_perf_test(s);
+              const std::string card = format_perf_test_card(p, s, g);
+              const std::string tip = perf_test_advice(p, s, g);
+              CHECK_FALSE(card.empty());
+              CHECK(card.find(perf_test_grade_label(g)) != std::string::npos);
+              if (g == PerfTestGrade::Good) {
+                CHECK(card.find("Nao segura") == std::string::npos);
+                if (fg < 2) CHECK(card.find("nativo sem FG") != std::string::npos);
+                return;
+              }
+              if (g == PerfTestGrade::Tight && fg >= 2) {
+                CHECK(card.find("custar") != std::string::npos);
+                return;
+              }
+              const bool at_floor = scale <= 50 && pass == 1 && p.width < 2200 && meta < 45.0;
+              if (g == PerfTestGrade::Fail && at_floor && fg < 2) {
+                if (perf_test_fg_mult_hits_meta(s.fps, meta, 2) >= 2) {
+                  CHECK(tip.find("FG x") != std::string::npos);
+                } else {
+                  CHECK(tip.find("minimo") != std::string::npos);
+                }
+                CHECK(tip.find("desliga o Frame Gen ou baixa o Pass") == std::string::npos);
+              } else if (g == PerfTestGrade::PlayableFg && at_floor) {
+                CHECK(tip.empty());
+              } else if (g == PerfTestGrade::Tight && at_floor) {
+                CHECK(tip.empty());
+              } else {
+                CHECK_FALSE(tip.empty());
+              }
+            };
+            PerfTestSample ok;
+            ok.fps = meta;
+            ok.target_fps = meta;
+            ok.fg_multiplier = fg;
+            ok.stalls = 0;
+            ok.p95_present_ms = 2.0;
+            check_card(ok);
+            PerfTestSample tight = ok;
+            tight.stalls = fg >= 2 ? 4 : 2;
+            tight.p95_present_ms = 20.0;
+            check_card(tight);
+            PerfTestSample mid;
+            mid.fps = meta < 45.0 ? 22.0 : 40.0;
+            mid.target_fps = meta;
+            mid.fg_multiplier = fg;
+            mid.stalls = 80;
+            mid.p95_present_ms = 25.0;
+            check_card(mid);
+            PerfTestSample dead;
+            dead.fps = 15.0;
+            dead.target_fps = meta;
+            dead.fg_multiplier = fg;
+            dead.stalls = 200;
+            dead.p95_present_ms = 40.0;
+            check_card(dead);
+          }
+        }
+      }
+    }
+  }
+  CHECK(n == 3 * 2 * 3 * 4 * 4);
+}
+
+TEST_CASE("perf test advice fills 30/60 and FG gaps without pointing a weak 30 at 60") {
+  auto sample = [](double fps, int fg, double target, uint64_t stalls = 0, double present = 2.0) {
+    PerfTestSample s;
+    s.fps = fps;
+    s.fg_multiplier = fg;
+    s.target_fps = target;
+    s.stalls = stalls;
+    s.p95_present_ms = present;
+    return s;
+  };
+  CHECK(perf_test_fg_mult_hits_meta(40.0, 60.0, 2) == 2);
+  CHECK(perf_test_fg_mult_hits_meta(25.0, 60.0, 2) == 3);
+  CHECK(perf_test_fg_mult_hits_meta(25.0, 60.0, 3) == 3);
+  CHECK(perf_test_fg_mult_hits_meta(15.0, 60.0, 2) == 0);
+  CHECK(perf_test_fg_mult_hits_meta(40.0, 30.0, 2) == 2);
+
+  PerfTestPlan p;
+  p.width = 2560;
+  p.height = 1440;
+  p.fps = 30;
+  p.scale_percent = 100;
+  p.nr_pass_count = 1;
+  p.fg_multiplier = 1;
+  const std::string good30_60 = perf_test_advice(p, sample(60.0, 1, 30), PerfTestGrade::Good);
+  CHECK(good30_60.find("meta 60") != std::string::npos);
+  const std::string good30_40 = perf_test_advice(p, sample(40.0, 1, 30), PerfTestGrade::Good);
+  CHECK(good30_40.find("60") == std::string::npos);
+  CHECK(good30_40.empty());
+
+  p.fps = 60;
+  const std::string fail40 = perf_test_advice(p, sample(40.0, 1, 60), PerfTestGrade::Fail);
+  CHECK(fail40.find("escala para 75") != std::string::npos);
+  CHECK(fail40.find("FG x2") != std::string::npos);
+  CHECK(fail40.find("latencia") != std::string::npos);
+  const std::string fail15 = perf_test_advice(p, sample(15.0, 1, 60), PerfTestGrade::Fail);
+  CHECK(fail15.find("FG x") == std::string::npos);
+
+  p.fg_multiplier = 2;
+  const std::string fail25x2 = perf_test_advice(p, sample(25.0, 2, 60), PerfTestGrade::Fail);
+  CHECK(fail25x2.find("escala para") != std::string::npos);
+  CHECK(fail25x2.find("FG x3") != std::string::npos);
+  CHECK(fail25x2.find("FG x2 chega") == std::string::npos);
+
+  const std::string play40 = format_perf_test_card(p, sample(40.0, 2, 60), PerfTestGrade::PlayableFg);
+  CHECK(play40.find("Jogavel com FG") != std::string::npos);
+  CHECK(play40.find("escala para 75") != std::string::npos);
+  CHECK(play40.find("latencia") != std::string::npos);
+
+  const std::string tight_ok = perf_test_advice(p, sample(60.0, 2, 60, 5, 18.0), PerfTestGrade::Tight);
+  CHECK(tight_ok.empty());
+  const std::string tight_hot = perf_test_advice(p, sample(60.0, 2, 60, 5, 22.0), PerfTestGrade::Tight);
+  CHECK(tight_hot.find("escala para") != std::string::npos);
+}
+
+TEST_CASE("virtual pin playhead follows plan fps 30 and 60 not present cadence") {
+  CHECK(virtual_pin_fps(30) == 30.0);
+  CHECK(virtual_pin_fps(29) == 30.0);
+  CHECK(virtual_pin_fps(60) == 60.0);
+  CHECK(virtual_pin_fps(59) == 60.0);
+  CHECK(virtual_pin_period_ms(60) == doctest::Approx(1000.0 / 60.0));
+  CHECK(virtual_pin_period_ms(30) == doctest::Approx(1000.0 / 30.0));
+
+  CHECK(virtual_pin_src_index(0, 0, 60) == 0);
+  CHECK(virtual_pin_src_index(1000, 0, 60) == 60);
+  CHECK(virtual_pin_src_index(1000, 0, 30) == 30);
+  CHECK(virtual_pin_src_index(2000, 1000, 60) == 60);
+  CHECK(virtual_pin_src_index(2500, 0, 60, 100) == 50);
+
+  // 40 presents/s over 1s: wall playhead is 60 src/s, not 40.
+  uint64_t last60 = 0;
+  for (int i = 0; i <= 40; ++i) last60 = virtual_pin_src_index(static_cast<double>(i) * 25.0, 0, 60);
+  CHECK(last60 == 60);
+  uint64_t last30 = 0;
+  for (int i = 0; i <= 40; ++i) last30 = virtual_pin_src_index(static_cast<double>(i) * 25.0, 0, 30);
+  CHECK(last30 == 30);
+
+  // Clip 60 fps, plan 30: content index is 60 at t=1s; pin index is 30.
+  CHECK(virtual_pin_clip_index(1000, 0, 60) == 60);
+  CHECK(virtual_pin_clip_index(1000, 0, 60, 2400) == 60);
+  CHECK(virtual_pin_src_index(1000, 0, 30) == 30);
+}
+
+TEST_CASE("virtual pin ring depth is time not a hardcoded frame count") {
+  CHECK(virtual_pin_ring_frames(60) == 90);
+  CHECK(virtual_pin_ring_frames(30) == 45);
+  CHECK(virtual_pin_prime_frames(60) == 60);
+  CHECK(virtual_pin_prime_frames(30) == 30);
+  CHECK(virtual_pin_ring_frames_for(60, 1920, 1080) == 90);
+  CHECK(virtual_pin_ring_frames_for(60, 2560, 1440) == 90);
+  CHECK(virtual_pin_ring_frames_for(30, 2560, 1440) == 45);
+  const int r4k = virtual_pin_ring_frames_for(60, 3840, 2160);
+  CHECK(r4k == 64);
+}
+
+TEST_CASE("virtual pin holds clip 0 until playhead starts") {
+  CHECK(virtual_pin_held_clip_index(false, 10000, 0, 60) == 0);
+  CHECK(virtual_pin_held_src_index(false, 10000, 0, 60) == 0);
+  CHECK(virtual_pin_held_src_index(false, 10000, 0, 30) == 0);
+  const double t0 = 8000;
+  CHECK(virtual_pin_held_src_index(true, t0, t0, 30) == 0);
+  CHECK(virtual_pin_held_src_index(true, t0 + 1000, t0, 30) == 30);
+  CHECK(virtual_pin_held_src_index(true, t0 + 1000, t0, 60) == 60);
+  CHECK(virtual_pin_held_clip_index(true, t0 + 1000, t0, 60) == 60);
+}
+
+TEST_CASE("virtual pin take latest after hitch never blocks") {
+  CHECK(virtual_pin_take_index(0, 0) == 0);
+  CHECK(virtual_pin_take_index(0, 300) == 0);
+  CHECK(virtual_pin_take_index(10, 20) == 10);
+  CHECK(virtual_pin_take_index(80, 10) == 9);
+  // 2s hitch at 60: want jumps 120, decoded still 10 → latest 9, not freeze/empty.
+  CHECK(virtual_pin_take_index(virtual_pin_src_index(2000, 0, 60), 10) == 9);
+  CHECK(virtual_pin_should_throttle_decode(90, 0, 0, 90));
+  CHECK_FALSE(virtual_pin_should_throttle_decode(40, 0, 0, 90));
+  CHECK(virtual_pin_ahead(50, 10, 0, 90) == 40);
+}
+
+TEST_CASE("perf test stall uses effective hitch of the meta not a flat 25ms") {
+  CHECK_FALSE(perf_test_is_stall(16.7, 60));
+  CHECK_FALSE(perf_test_is_stall(25.0, 60));
+  CHECK_FALSE(perf_test_is_stall(25.06, 60));
+  CHECK(perf_test_is_stall(33.0, 60));
+  CHECK_FALSE(perf_test_is_stall(33.3, 30));
+  CHECK_FALSE(perf_test_is_stall(50.0, 30));
+  CHECK(perf_test_is_stall(60.0, 30));
+  CHECK(effective_hitch_threshold_ms(25.0, 30.0) == doctest::Approx(50.0));
+  CHECK(effective_hitch_threshold_ms(25.0, 60.0) == doctest::Approx(25.0));
+  PerfScoreAcc acc;
+  for (int i = 0; i < 200; ++i) acc.push(25.06, 24.5, perf_test_is_stall(25.06, 60));
+  const auto s = perf_test_sample_from_acc(acc, 60.0, 1);
+  CHECK(s.fps == doctest::Approx(1000.0 / 25.06).epsilon(0.02));
+  CHECK(s.stalls == 0);
+  CHECK(grade_perf_test(s) == PerfTestGrade::Fail);
 }
 
 

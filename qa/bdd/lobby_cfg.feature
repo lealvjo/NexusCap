@@ -42,9 +42,17 @@ Funcionalidade: CFG do menu principal
   Cenario: Pasta e Auto do Frame Gen
     Quando eu clico Pasta e escolho LosslessScaling.exe
     Entao o caminho manual fica visivel e OK
+    E a config anti-ghost da mira (Flow 100 / WGC) continua
     Quando eu clico Auto
     Entao o caminho manual some
     E o texto mostra auto se o exe for achado
+    E a mira-lock continua igual
+
+  @importante @hdmi
+  Cenario: Mira-lock sempre no Frame Gen
+    Dado instalacao do zero, Auto Steam ou Pasta manual
+    Quando o NexusCap aplica o perfil LSFG
+    Entao LSFGFlowScale e 100, CaptureApi e WGC, sem Flow 70
 
   @importante @hdmi
   Cenario: Escala no lobby nao aplica no Feed deste processo

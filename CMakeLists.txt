@@ -37,6 +37,7 @@ add_library(nexuscap_core STATIC
   src/config.cpp
   src/analyze_io.cpp
   src/capture_fake.cpp
+  src/capture_file.cpp
   src/capture_dshow.cpp
   src/renderer_d3d11.cpp
   src/audio_wasapi.cpp
@@ -56,6 +57,7 @@ target_compile_definitions(nexuscap_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UN
 target_link_libraries(nexuscap_core PUBLIC
   nexuscap_imgui
   d3d11 dxgi d3dcompiler strmiids ole32 oleaut32 user32 gdi32 winmm uuid avrt advapi32 pdh comdlg32 windowscodecs
+  mfplat mfreadwrite mfuuid
 )
 
 if(NEXUSCAP_HAVE_STREAMLINE)
@@ -93,6 +95,10 @@ target_compile_definitions(nexuscap_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
 add_executable(nexuscap_probe tools/probe_capture.cpp)
 target_link_libraries(nexuscap_probe PRIVATE nexuscap_core)
 target_compile_definitions(nexuscap_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+
+add_executable(nexuscap_hdmi_recover_probe tools/probe_hdmi_recover.cpp)
+target_link_libraries(nexuscap_hdmi_recover_probe PRIVATE nexuscap_core)
+target_compile_definitions(nexuscap_hdmi_recover_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 
 enable_testing()
 add_test(NAME unit COMMAND nexuscap_tests)
@@ -138,5 +144,17 @@ add_custom_command(TARGET NexusCap POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_SOURCE_DIR}/assets/watermark.png"
     "$<TARGET_FILE_DIR:NexusCap>/assets/watermark.png"
-  COMMENT "Copy assets/logo.png and assets/watermark.png"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/assets/perf_test.mp4"
+    "$<TARGET_FILE_DIR:NexusCap>/assets/perf_test.mp4"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/assets/perf_test_1080.mp4"
+    "$<TARGET_FILE_DIR:NexusCap>/assets/perf_test_1080.mp4"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/assets/perf_test_1440.mp4"
+    "$<TARGET_FILE_DIR:NexusCap>/assets/perf_test_1440.mp4"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/assets/perf_test_4k.mp4"
+    "$<TARGET_FILE_DIR:NexusCap>/assets/perf_test_4k.mp4"
+  COMMENT "Copy assets/logo.png, watermark.png and perf_test clips"
 )

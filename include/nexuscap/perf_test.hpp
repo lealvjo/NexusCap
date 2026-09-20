@@ -22,33 +22,64 @@ namespace nexuscap {
 inline constexpr int kPerfTestMaxSec = 40;
 inline constexpr double kPerfTestFpsSlop = 0.5;
 inline constexpr double kPerfTestHoldMaxMs = 8000.0;
-// Se o NR nunca ligar, a janela aparece depois do timeout — o relógio só começa com params.
+// Se o pipeline nao ficar pronto, falha e volta ao lobby — o usuario nao espera para sempre.
 inline constexpr double kPerfTestRevealMaxMs = 20000.0;
+// Depois do NR pronto: nunca ficar em "A carregar" para sempre se o overlay mentir o FG.
+inline constexpr double kPerfTestFgWaitMaxMs = 8000.0;
+// Playhead preso no frame 0 so gera 1-3 evals. 1 EvaluateFeature ja prova que o NR ligou.
+inline constexpr int kPerfTestNrMinEvals = 1;
 
-inline bool perf_test_dlss5_ready(bool nr_runtime_on, uint64_t presented) {
-  return nr_runtime_on && stats_frame_counts_toward_window(presented);
+inline bool perf_test_nr_runtime_live(bool nr_flag, bool nr_live) { return nr_flag && nr_live; }
+
+inline bool perf_test_nr_evals_are_live(int evals, int min_evals = kPerfTestNrMinEvals) {
+  return evals >= min_evals;
 }
 
-inline bool perf_test_fg_ready(bool want_fg, bool fg_on, bool fg_unavailable) {
+inline bool perf_test_dlss5_ready(bool nr_runtime_on, uint64_t presented, bool nr_live = true) {
+  return perf_test_nr_runtime_live(nr_runtime_on, nr_live) && stats_frame_counts_toward_window(presented);
+}
+
+inline bool perf_test_fg_ready(bool want_fg, bool fg_on, bool fg_unavailable, double fg_wait_ms = 0) {
   if (!want_fg) return true;
-  (void)fg_unavailable;
-  return fg_on;
+  if (fg_on || fg_unavailable) return true;
+  return fg_wait_ms + 1e-9 >= kPerfTestFgWaitMaxMs;
 }
 
 inline bool perf_test_params_ready(bool nr_runtime_on, uint64_t presented, bool want_fg, bool fg_on,
-                                  bool fg_unavailable) {
-  return perf_test_dlss5_ready(nr_runtime_on, presented) &&
-         perf_test_fg_ready(want_fg, fg_on, fg_unavailable);
+                                  bool fg_unavailable, double fg_wait_ms = 0, bool nr_live = true) {
+  return perf_test_dlss5_ready(nr_runtime_on, presented, nr_live) &&
+         perf_test_fg_ready(want_fg, fg_on, fg_unavailable, fg_wait_ms);
 }
 
-// Relógio só com NR/FG já no ar. Timeout antigo (8s) começava no stall inicial.
+// Relógio com NR no ar + FG real. Se o FG nao confirmar, timeout — senão "A carregar" trava a tecla.
 inline bool perf_test_should_start_clock(bool nr_runtime_on, uint64_t presented, bool want_fg, bool fg_on,
-                                        bool fg_unavailable) {
-  return perf_test_params_ready(nr_runtime_on, presented, want_fg, fg_on, fg_unavailable);
+                                        bool fg_unavailable, double fg_wait_ms = 0, bool nr_live = true) {
+  return perf_test_params_ready(nr_runtime_on, presented, want_fg, fg_on, fg_unavailable, fg_wait_ms, nr_live);
 }
 
-inline bool perf_test_should_reveal_window(bool params_ready, double wait_ms) {
-  return params_ready || wait_ms >= kPerfTestRevealMaxMs;
+// "A carregar" so enquanto falta NR ou o FG ainda esta dentro da janela de espera.
+inline bool perf_test_carregar_can_block(bool nr_ready, bool want_fg, bool fg_on, bool fg_unavailable,
+                                        double fg_wait_ms) {
+  if (!nr_ready) return true;
+  return !perf_test_fg_ready(want_fg, fg_on, fg_unavailable, fg_wait_ms);
+}
+
+inline bool perf_test_should_reveal_window(bool clock_ready, double wait_ms) {
+  // Sem timeout de revelar HUD: se o relogio nao comeca, falha (nao abre "A carregar").
+  (void)wait_ms;
+  return clock_ready;
+}
+
+// Nao deixar o cartao/janela de espera para sempre — volta ao lobby.
+inline bool perf_test_should_fail_pipeline(bool clock_ready, double wait_ms) {
+  return !clock_ready && wait_ms >= kPerfTestRevealMaxMs;
+}
+
+// Ordem do teardown: preto → hide → analyze → FG → D3D → DestroyWindow.
+enum class SessionTeardownStep { PresentBlack = 0, HideWindow = 1, WriteAnalyze = 2, ShutdownFg = 3,
+                                 ReleaseD3d = 4, DestroyHwnd = 5 };
+inline bool session_teardown_step_before(SessionTeardownStep earlier, SessionTeardownStep later) {
+  return static_cast<int>(earlier) < static_cast<int>(later);
 }
 
 // Clipe de 40s. O relogio conta 40s; rewind no EOS nao encerra o teste.
@@ -78,13 +109,22 @@ inline const char* perf_test_lobby_title() { return "Benchmark"; }
 inline const char* perf_test_lobby_button() { return "Benchmark"; }
 inline const char* perf_test_lobby_start() { return "Iniciar benchmark"; }
 inline const char* perf_test_lobby_blurb() {
-  return "Clipe no sitio da captura. Os 40 s so contam quando NR e FG ja tiverem ligado. A nota e do teu PC — o CFG HDMI nao muda.";
+  return "Funcao beta. A nota vem de um modelo de Benchmark que criamos: uma equacao matematica (fps, present, stalls, escala e FG), nao um chute. O video e otimizado so para validar a carga: as imagens podem parecer um pouco menos nitidas, mas o resultado e real. O teste dura por volta de 40 segundos. O relogio so conta quando NR e FG ja tiverem ligado. A nota e do teu PC — o CFG HDMI nao muda.";
+}
+inline const char* perf_test_hz_title() { return "Simular captura em 30 ou 60 Hz"; }
+inline const char* perf_test_hz_blurb() {
+  return "O pino entrega o clipe como uma placa HDMI a 30 ou 60 Hz. A nota usa esta meta — nao e o Hz do monitor.";
+}
+inline const char* perf_test_audio_toggle() { return "Habilitar som no teste"; }
+inline const char* perf_test_audio_hint() {
+  return "Toca o audio original da captura de jogo na saida padrao. Desliga se nao quiseres barulho.";
 }
 inline const char* perf_test_counting_notice() { return "Benchmark a contar — parametros carregados"; }
 
 // Resultado no lobby: uma vez, so depois deste benchmark. Ficheiro last.txt nao reabre o cartao.
-inline bool perf_test_should_popup_result(bool just_finished_benchmark, bool result_valid) {
-  return just_finished_benchmark && result_valid;
+inline bool perf_test_should_popup_result(bool just_finished_benchmark, bool result_valid,
+                                         bool file_popup = false) {
+  return result_valid && (just_finished_benchmark || file_popup);
 }
 
 struct PerfTestPlan {
@@ -95,6 +135,7 @@ struct PerfTestPlan {
   int nr_pass_count = 1;
   int renodx_preset = 0;
   int fg_multiplier = 1;  // 1 = off
+  bool audio = true;      // som do clipe; so no plano do teste, nao no CFG HDMI
   std::string video;
 };
 
@@ -162,6 +203,7 @@ struct PerfTestResult {
   PerfTestGrade grade = PerfTestGrade::Fail;
   std::string summary;
   bool valid = false;
+  bool popup = false;  // 1 = mostrar no lobby; sobrevive ao relaunch da escala
 };
 
 inline double clamp_perf_test_fps(double fps) { return fps < 45.0 ? 30.0 : 60.0; }
@@ -236,6 +278,13 @@ inline bool find_newest_perf_test_video(const std::vector<std::string>& dirs, st
     }
   }
   return any;
+}
+
+inline const char* perf_test_audio_filename() { return "perf_test.m4a"; }
+
+inline std::string perf_test_audio_sidecar_path(const std::string& video_path) {
+  if (video_path.empty()) return {};
+  return (std::filesystem::path(video_path).parent_path() / perf_test_audio_filename()).string();
 }
 
 inline const char* perf_test_bundled_filename() { return "perf_test.mp4"; }
@@ -642,6 +691,7 @@ inline std::string serialize_perf_test_plan(const PerfTestPlan& raw) {
   o << "nr_pass_count=" << p.nr_pass_count << "\n";
   o << "renodx_preset=" << p.renodx_preset << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
+  o << "audio=" << (p.audio ? 1 : 0) << "\n";
   o << "video=" << p.video << "\n";
   return o.str();
 }
@@ -665,6 +715,7 @@ inline bool parse_perf_test_plan(const std::string& text, PerfTestPlan& out) {
     else if (k == "nr_pass_count") p.nr_pass_count = std::atoi(v.c_str());
     else if (k == "renodx_preset") p.renodx_preset = std::atoi(v.c_str());
     else if (k == "fg_multiplier") p.fg_multiplier = std::atoi(v.c_str());
+    else if (k == "audio") p.audio = (v == "1" || v == "true");
     else if (k == "video") p.video = v;
   }
   out = clamp_perf_test_plan(p);
@@ -699,8 +750,9 @@ inline std::string perf_test_cli_args(const PerfTestPlan& raw) {
   const PerfTestPlan p = clamp_perf_test_plan(raw);
   char buf[256];
   std::snprintf(buf, sizeof(buf),
-                "--perf-test --windowed --width %d --height %d --fps %.0f --scale %d --pass %d --preset %d --fg-x %d",
-                p.width, p.height, p.fps, p.scale_percent, p.nr_pass_count, p.renodx_preset, p.fg_multiplier);
+                "--perf-test --windowed --width %d --height %d --fps %.0f --scale %d --pass %d --preset %d --fg-x %d %s",
+                p.width, p.height, p.fps, p.scale_percent, p.nr_pass_count, p.renodx_preset, p.fg_multiplier,
+                p.audio ? "--perf-audio" : "--no-perf-audio");
   return buf;
 }
 
@@ -721,6 +773,7 @@ inline std::string serialize_perf_test_result(const PerfTestResult& r) {
   o << "renodx_preset=" << p.renodx_preset << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
   o << "video=" << p.video << "\n";
+  o << "popup=" << (r.popup ? 1 : 0) << "\n";
   o << "summary=" << r.summary << "\n";
   return o.str();
 }
@@ -749,6 +802,7 @@ inline bool parse_perf_test_result(const std::string& text, PerfTestResult& out)
     else if (k == "renodx_preset") out.plan.renodx_preset = std::atoi(v.c_str());
     else if (k == "fg_multiplier") out.plan.fg_multiplier = std::atoi(v.c_str());
     else if (k == "video") out.plan.video = v;
+    else if (k == "popup") out.popup = (v == "1" || v == "true");
     else if (k == "summary") out.summary = v;
   }
   out.plan = clamp_perf_test_plan(out.plan);
@@ -783,6 +837,9 @@ inline std::string default_perf_test_result_path(const std::string& data_dir) {
   return data_dir + "\\perf_test_last.txt";
 }
 
+// Processo novo depois do Benchmark (Esc / X / timer). O lobby nao herda Pass/tom/NR/Feed/LS.
+inline const char* perf_test_return_relaunch_args() { return "--show-perf-result"; }
+
 inline void apply_perf_test_plan_to_config(const PerfTestPlan& raw, AppConfig& cfg) {
   const PerfTestPlan p = clamp_perf_test_plan(raw);
   cfg.perf_test = true;
@@ -803,6 +860,9 @@ inline void apply_perf_test_plan_to_config(const PerfTestPlan& raw, AppConfig& c
   cfg.dlss = false;
   cfg.neural_rendering = true;
   cfg.nr_runtime_on = true;
+  cfg.perf_test_audio = p.audio;
+  // Feature nova: todo Benchmark gera report de bug (nao grava no CFG HDMI).
+  cfg.bug_report = true;
   if (p.fg_multiplier >= 2) {
     cfg.fg_multiplier = p.fg_multiplier;
     cfg.fg_auto_start = true;
@@ -821,6 +881,7 @@ inline PerfTestPlan perf_test_plan_from_config(const AppConfig& cfg) {
   p.nr_pass_count = cfg.nr_pass_count;
   p.renodx_preset = cfg.renodx_preset;
   p.fg_multiplier = cfg.fg_auto_start ? cfg.fg_multiplier : 1;
+  p.audio = cfg.perf_test_audio;
   p.video = cfg.video_path;
   return clamp_perf_test_plan(p);
 }

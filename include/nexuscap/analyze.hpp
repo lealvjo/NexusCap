@@ -139,6 +139,14 @@ public:
     push_line(o.str());
   }
 
+  void update_runtime_flags(bool dlss_on, bool fg_on, int fg_mult, const std::string& fg_status) {
+    std::lock_guard<std::mutex> lock(mu_);
+    info_.dlss_enabled = dlss_on;
+    info_.fg_enabled = fg_on;
+    if (fg_mult >= 1) info_.fg_multiplier = fg_mult;
+    if (!fg_status.empty()) info_.fg_status = fg_status;
+  }
+
   void session_end(double t_ms) {
     std::lock_guard<std::mutex> lock(mu_);
     std::ostringstream end;

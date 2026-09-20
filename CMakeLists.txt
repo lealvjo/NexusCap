@@ -41,6 +41,7 @@ add_library(nexuscap_core STATIC
   src/capture_dshow.cpp
   src/renderer_d3d11.cpp
   src/audio_wasapi.cpp
+  src/audio_file.cpp
   src/enhance_passthrough.cpp
   src/enhance_dlss_streamline.cpp
   src/mvec_optical_flow.cpp
@@ -156,5 +157,8 @@ add_custom_command(TARGET NexusCap POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_SOURCE_DIR}/assets/perf_test_4k.mp4"
     "$<TARGET_FILE_DIR:NexusCap>/assets/perf_test_4k.mp4"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/assets/perf_test.m4a"
+    "$<TARGET_FILE_DIR:NexusCap>/assets/perf_test.m4a"
   COMMENT "Copy assets/logo.png, watermark.png and perf_test clips"
 )

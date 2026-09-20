@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `3.1.9` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `3.1.10` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -60,6 +60,11 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 7. **Reportar bug / Reportar performance** (checkboxes abaixo do VSYNC, off por padrão): geram `.txt` leves em `report/` e `performance/` ao lado do exe — úteis para suporte / colar numa IA.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
+
+### Novidades 3.1.10
+
+- **Benchmark não vaza no lobby:** Esc, X ou o fim do teste devolvem escala, Pass, tom, NR e Feed ao HDMI. O Lossless Scaling é encerrado (não vai para a bandeja) e o app relança o lobby limpo.
+- **Gráfico com FG off:** só a linha da captura. x2/x3/x4 só aparecem com Frame Gen ligado.
 
 ### Novidades 3.1.9
 

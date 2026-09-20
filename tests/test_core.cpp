@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -891,11 +892,23 @@ TEST_CASE("next_fg_multiplier cycles 2-3-4") {
 }
 
 TEST_CASE("FG frametime traces stack one line per multiplier even below 60 fps") {
+  CHECK(fg_frametime_trace_count(false, 1) == 1);
+  CHECK(fg_frametime_trace_count(false, 2) == 1);
+  CHECK(fg_frametime_trace_count(false, 3) == 1);
   CHECK(fg_frametime_trace_count(false, 4) == 1);
   CHECK(fg_frametime_trace_count(true, 2) == 2);
   CHECK(fg_frametime_trace_count(true, 3) == 3);
   CHECK(fg_frametime_trace_count(true, 4) == 4);
   CHECK(fg_frametime_trace_count(true, 1) == 1);
+  CHECK(hdmi_lobby_fg_multiplier(false, 2) == 1);
+  CHECK(hdmi_lobby_fg_multiplier(false, 3) == 1);
+  CHECK(hdmi_lobby_fg_multiplier(true, 3) == 3);
+  CHECK(hdmi_lobby_fg_multiplier(true, 1) == 2);
+  CHECK(fg_leftover_cleared(0, true));
+  CHECK_FALSE(fg_leftover_cleared(1, true));
+  CHECK_FALSE(fg_leftover_cleared(0, false));
+  CHECK_FALSE(fg_leftover_cleared(2, true));
+  CHECK(fg_kill_wait_max_ms() >= fg_kill_wait_step_ms());
 
   // 30 fps capture: base 33.333 ms, x2 sits at 16.667, x3 at 11.111, x4 at 8.333.
   const double cap30 = 1000.0 / 30.0;
@@ -907,6 +920,11 @@ TEST_CASE("FG frametime traces stack one line per multiplier even below 60 fps")
 
   const double cap60 = 1000.0 / 60.0;
   CHECK(fg_frametime_trace_ms(cap60, 2) == doctest::Approx(cap60 / 2.0));
+  CHECK(fg_frametime_stack_lift_px(40, 1) == 0);
+  CHECK(fg_frametime_stack_lift_px(40, 2) > 0);
+  CHECK(fg_frametime_stack_lift_px(40, 2) <= 16);
+  CHECK(fg_frametime_stack_lift_px(40, 2) < 40);
+  CHECK(fg_frametime_stack_lift_px(80, 4) <= 16);
 
   const FgFtRgb base = fg_frametime_trace_rgb(1, true);
   const FgFtRgb x2 = fg_frametime_trace_rgb(2, true);
@@ -1216,6 +1234,7 @@ TEST_CASE("mira settings xml never writes Flow 70") {
   CHECK(patched.find("LSFGFlowScale>70") == std::string::npos);
   CHECK(patched.find("LSFG3Multiplier>3") != std::string::npos);
   CHECK(patched.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos);
+  CHECK(patched.find("<DrawFps>false</DrawFps>") != std::string::npos);
   CHECK(parse_lsfg3_multiplier_from_xml(patched) == 3);
   CHECK(fg_multiplier_confirmed_on_disk(3, patched));
   CHECK_FALSE(fg_multiplier_confirmed_on_disk(4, patched));
@@ -1226,6 +1245,8 @@ TEST_CASE("ls hide only settings ui not fg output overlay") {
   CHECK(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", 0));
   CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", WS_EX_TOPMOST));
   CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED));
+  CHECK(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 180, 48));
+  CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 2560, 1440));
   CHECK_FALSE(ls_should_hide_window(L"NexusCap", L"NexusCapWnd", 0));
 }
 
@@ -1234,10 +1255,19 @@ TEST_CASE("patch_lsfg_ini mira lock") {
   CHECK(ini.find("flow_scale = 100") != std::string::npos);
   CHECK(ini.find("ui_detection_rate = 2") != std::string::npos);
   CHECK(ini.find("ui_detection_threshold = 0.30") != std::string::npos);
+  CHECK(ls_ini_fps_counter_hidden(ini));
   const std::string bad = "[lsfg]\r\nflow_scale = 70\r\nui_detection_rate = 1\r\nui_detection_threshold = 0.10\r\n";
   const std::string fixed = patch_lsfg_ini(bad);
   CHECK(fixed.find("flow_scale = 100") != std::string::npos);
   CHECK(fixed.find("ui_detection_rate = 2") != std::string::npos);
+  CHECK(ls_ini_fps_counter_hidden(fixed));
+  const std::string dirty_fps =
+      "[lsfg]\r\nflow_scale = 100\r\nui_detection_rate = 2\r\nui_detection_threshold = 0.30\r\n"
+      "[fps_counter]\r\nscale = 1.0\r\nshow_captured = 1\r\n";
+  CHECK(ls_ini_fps_counter_hidden(patch_lsfg_ini(dirty_fps)));
+  CHECK(ls_xml_draw_fps_off(patch_mira_settings_xml(
+      "<Settings><LSFGFlowScale>100</LSFGFlowScale><CaptureApi>WGC</CaptureApi><DrawFps>true</DrawFps></Settings>",
+      2)));
 }
 
 TEST_CASE("resolve_lossless_exe missing override") {
@@ -2104,7 +2134,7 @@ TEST_CASE("hide_panel and sync_image are independent contracts") {
 
 TEST_CASE("hud_panel size compact vs advanced metrics") {
   CHECK(hud_panel_width(false) == 560);
-  CHECK(hud_panel_height(false) == 220);
+  CHECK(hud_panel_height(false) == 320);
   CHECK(hud_panel_width(true) == 920);
   CHECK(hud_panel_height(true) == 640);
   CHECK(hud_panel_width(true) > hud_panel_width(false));
@@ -2601,17 +2631,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 9));
+  CHECK(app_version_is(3, 1, 10));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.9");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.9") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.9");
+  CHECK(std::string(kAppVersion) == "3.1.10");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.1.10") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.10");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.9") != std::string::npos);
+  CHECK(lobby_t.find("3.1.10") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.9") != std::string::npos);
+  CHECK(sess_t.find("3.1.10") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -3013,12 +3043,30 @@ TEST_CASE("neural rendering Bridge plan: enable/disable cannot desync") {
     CHECK(parse_reshade_nr_last_toggled(stale) == 1);
     // New append after OFF must win (Bridge-ACK-before-log bug regression).
     CHECK(parse_reshade_nr_last_toggled("10:01 NR toggled OFF via 0x124\n") == 0);
+    CHECK(parse_reshade_nr_eval_line(
+              "[RenoDX] DLSS-NR direct: EvaluateFeature succeeded: evaluation=178 options_revision=1") == 178);
+    CHECK(parse_reshade_nr_eval_line("nope") == -1);
+    CHECK(parse_reshade_nr_eval_count("EvaluateFeature succeeded: evaluation=1\n"
+                                     "noise\n"
+                                     "EvaluateFeature succeeded: evaluation=2\n") == 2);
   }
   {
     CHECK(fg_overlay_on_confirmed(true, 1));
     CHECK_FALSE(fg_overlay_on_confirmed(true, 0));  // no LS process → never FG ON
     CHECK(fg_overlay_on_confirmed(false, 0));
     CHECK_FALSE(fg_overlay_on_confirmed(false, 2));  // leftover LS → OFF not confirmed
+    CHECK(fg_overlay_reads_on(true, 2, true, 0));   // handle vivo, Toolhelp falhou
+    CHECK(fg_overlay_reads_on(true, 4, false, 1));
+    CHECK(fg_overlay_reads_on(true, 2, false, 0));  // confirm sozinho — LS a interpolar
+    CHECK(fg_overlay_reads_on(false, 2, true, 1));  // adopt sem confirm
+    CHECK(fg_overlay_reads_on(false, 4, true, 0));
+    CHECK(fg_overlay_reads_on(false, 2, false, 0, true));  // latch do F24 — Toolhelp 0 no x2
+    CHECK_FALSE(fg_overlay_reads_on(false, 4, false, 0));
+    CHECK_FALSE(fg_overlay_reads_on(false, 2, false, 0, false));
+    CHECK_FALSE(fg_overlay_reads_on(true, 1, true, 1));
+    CHECK(ls_exe_is_lossless(L"LosslessScaling.exe"));
+    CHECK(ls_exe_is_lossless(L"Lossless Scaling.exe"));
+    CHECK_FALSE(ls_exe_is_lossless(L"NexusCap.exe"));
   }
 }
 
@@ -4069,10 +4117,16 @@ TEST_CASE("file capture scale helpers stay live") {
 }
 
 TEST_CASE("perf test waits for DLSS 5 before the clock") {
+  CHECK(perf_test_pipeline_notice_title().find("Gerando") != std::string::npos);
   CHECK(perf_test_pipeline_notice_title().find("pipeline") != std::string::npos);
   CHECK(perf_test_pipeline_notice_title().find("Benchmark") != std::string::npos);
-  CHECK(perf_test_pipeline_notice_detail().find("relogio") != std::string::npos);
-  CHECK(session_notice_perf_test_hold().find("Repreparando") != std::string::npos);
+  CHECK(perf_test_pipeline_notice_detail().find("Aguarde") != std::string::npos);
+  CHECK(session_notice_perf_test_hold().find("Gerando") != std::string::npos);
+  CHECK(perf_test_pipeline_fail_title().find("nao ficou pronto") != std::string::npos);
+  CHECK(perf_test_pipeline_fail_detail().find("Timeout") != std::string::npos);
+  CHECK_FALSE(perf_test_should_fail_pipeline(false, kPerfTestRevealMaxMs - 1));
+  CHECK(perf_test_should_fail_pipeline(false, kPerfTestRevealMaxMs));
+  CHECK_FALSE(perf_test_should_fail_pipeline(true, kPerfTestRevealMaxMs));
   CHECK_FALSE(perf_test_dlss5_ready(false, 200));
   CHECK_FALSE(perf_test_dlss5_ready(true, 1));
   CHECK_FALSE(perf_test_dlss5_ready(true, kStatsWarmupFrames));
@@ -4082,19 +4136,52 @@ TEST_CASE("perf test waits for DLSS 5 before the clock") {
   CHECK_FALSE(perf_test_should_start_clock(false, 10, false, false, false));
   CHECK_FALSE(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, true, false, false));
   CHECK(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, true, true, false));
-  CHECK_FALSE(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, true, false, true));
+  CHECK(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, true, false, true));
   CHECK_FALSE(perf_test_params_ready(true, 1, false, false, false));
   CHECK(perf_test_params_ready(true, kStatsWarmupFrames + 1, false, false, false));
-  CHECK_FALSE(perf_test_params_ready(true, kStatsWarmupFrames + 1, true, false, true));
+  CHECK(perf_test_params_ready(true, kStatsWarmupFrames + 1, true, false, true));
   CHECK_FALSE(perf_test_fg_ready(true, false, false));
-  CHECK_FALSE(perf_test_fg_ready(true, false, true));
+  CHECK(perf_test_fg_ready(true, false, true));
   CHECK(perf_test_fg_ready(true, true, false));
   CHECK(perf_test_fg_ready(false, false, false));
-  CHECK_FALSE(perf_test_should_reveal_window(false, kPerfTestRevealMaxMs - 1));
+  CHECK_FALSE(perf_test_should_reveal_window(false, 0));
+  CHECK_FALSE(perf_test_should_reveal_window(false, kPerfTestRevealMaxMs));
   CHECK(perf_test_should_reveal_window(true, 0));
-  CHECK(perf_test_should_reveal_window(false, kPerfTestRevealMaxMs));
   CHECK_FALSE(perf_test_should_stop(false));
   CHECK(perf_test_should_stop(true));
+  CHECK_FALSE(perf_test_nr_runtime_live(true, false));
+  CHECK_FALSE(perf_test_nr_runtime_live(false, true));
+  CHECK(perf_test_nr_runtime_live(true, true));
+  CHECK_FALSE(perf_test_nr_evals_are_live(0));
+  CHECK(perf_test_nr_evals_are_live(1));
+  CHECK(perf_test_nr_evals_are_live(kPerfTestNrMinEvals));
+  CHECK_FALSE(perf_test_dlss5_ready(true, kStatsWarmupFrames + 1, false));
+  CHECK(perf_test_dlss5_ready(true, kStatsWarmupFrames + 1, true));
+  CHECK_FALSE(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, false, false, false, 0, false));
+  CHECK(perf_test_should_start_clock(true, kStatsWarmupFrames + 1, false, false, false, 0, true));
+  CHECK(session_teardown_step_before(SessionTeardownStep::PresentBlack, SessionTeardownStep::HideWindow));
+  CHECK(session_teardown_step_before(SessionTeardownStep::HideWindow, SessionTeardownStep::WriteAnalyze));
+  CHECK(session_teardown_step_before(SessionTeardownStep::WriteAnalyze, SessionTeardownStep::ShutdownFg));
+  CHECK(session_teardown_step_before(SessionTeardownStep::ShutdownFg, SessionTeardownStep::ReleaseD3d));
+  CHECK(session_teardown_step_before(SessionTeardownStep::ReleaseD3d, SessionTeardownStep::DestroyHwnd));
+  CHECK_FALSE(session_teardown_step_before(SessionTeardownStep::ReleaseD3d, SessionTeardownStep::HideWindow));
+}
+
+TEST_CASE("perf test A carregar never blocks forever after NR is ready") {
+  const uint64_t ready = kStatsWarmupFrames + 1;
+  CHECK(perf_test_carregar_can_block(false, true, false, false, 0));
+  CHECK(perf_test_carregar_can_block(true, true, false, false, 0));
+  CHECK_FALSE(perf_test_carregar_can_block(true, true, true, false, 0));
+  CHECK_FALSE(perf_test_carregar_can_block(true, true, false, true, 0));
+  CHECK_FALSE(perf_test_carregar_can_block(true, true, false, false, kPerfTestFgWaitMaxMs));
+  CHECK_FALSE(perf_test_should_start_clock(true, ready, true, false, false, 0));
+  CHECK(perf_test_should_start_clock(true, ready, true, false, false, kPerfTestFgWaitMaxMs));
+  CHECK(perf_test_should_start_clock(true, ready, true, false, true, 0));
+  CHECK(perf_test_should_start_clock(true, ready, true, true, false, 0));
+  // NR ainda nao pronto: timeout do FG nao dispara o relogio (stall inicial).
+  CHECK_FALSE(perf_test_should_start_clock(false, ready, true, false, false, 60000));
+  CHECK_FALSE(perf_test_should_start_clock(true, 1, true, false, false, kPerfTestFgWaitMaxMs));
+  CHECK(fg_overlay_reads_on(true, 4, true, 0));
 }
 
 TEST_CASE("perf test remain_sec and timer") {
@@ -4129,6 +4216,14 @@ TEST_CASE("perf result popup only after this benchmark") {
   CHECK_FALSE(perf_test_should_popup_result(false, true));
   CHECK_FALSE(perf_test_should_popup_result(true, false));
   CHECK_FALSE(perf_test_should_popup_result(false, false));
+  CHECK(perf_test_should_popup_result(false, true, true));  // relaunch da escala 75%
+  CHECK_FALSE(perf_test_should_popup_result(false, false, true));
+  {
+    char exe[] = "NexusCap.exe";
+    char a0[] = "--show-perf-result";
+    char* argv[] = {exe, a0};
+    CHECK(parse_args(2, argv).popup_perf_result);
+  }
 }
 
 TEST_CASE("perf test lobby says Benchmark") {
@@ -4137,7 +4232,17 @@ TEST_CASE("perf test lobby says Benchmark") {
   CHECK(std::string(perf_test_lobby_start()) == "Iniciar benchmark");
   CHECK(std::string(perf_test_lobby_blurb()).find("40") != std::string::npos);
   CHECK(std::string(perf_test_lobby_blurb()).find("CFG HDMI") != std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find("beta") != std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find("otimiz") != std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find("nitid") != std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find("modelo") != std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find("equacao") != std::string::npos);
   CHECK(std::string(perf_test_counting_notice()).find("Benchmark") != std::string::npos);
+  CHECK(std::string(perf_test_hz_title()).find("30") != std::string::npos);
+  CHECK(std::string(perf_test_hz_title()).find("60 Hz") != std::string::npos);
+  CHECK(std::string(perf_test_hz_blurb()).find("HDMI") != std::string::npos);
+  CHECK(std::string(perf_test_audio_toggle()) == "Habilitar som no teste");
+  CHECK(std::string(perf_test_audio_hint()).find("audio") != std::string::npos);
 }
 
 TEST_CASE("restart notice explains the reason and covers the new process boot") {
@@ -4784,6 +4889,7 @@ TEST_CASE("perf test plan and result serialize") {
   p.nr_pass_count = 4;
   p.renodx_preset = 2;
   p.fg_multiplier = 3;
+  p.audio = false;
   p.video = "C:\\vids\\last.mp4";
   PerfTestPlan back;
   CHECK(parse_perf_test_plan(serialize_perf_test_plan(p), back));
@@ -4794,7 +4900,11 @@ TEST_CASE("perf test plan and result serialize") {
   CHECK(back.nr_pass_count == 4);
   CHECK(back.renodx_preset == 2);
   CHECK(back.fg_multiplier == 3);
+  CHECK_FALSE(back.audio);
   CHECK(back.video == "C:\\vids\\last.mp4");
+  PerfTestPlan oldp;
+  CHECK(parse_perf_test_plan("width=1920\nheight=1080\nplan_fps=60\n", oldp));
+  CHECK(oldp.audio);
 
   PerfTestResult r;
   r.valid = true;
@@ -4859,6 +4969,8 @@ TEST_CASE("perf test finds newest video in search dirs") {
   CHECK(std::string(perf_test_bundled_filename_for(1920, 1080)) == "perf_test_1080.mp4");
   CHECK(std::string(perf_test_bundled_filename_for(2560, 1440)) == "perf_test_1440.mp4");
   CHECK(std::string(perf_test_bundled_filename_for(3840, 2160)) == "perf_test_4k.mp4");
+  CHECK(std::string(perf_test_audio_filename()) == "perf_test.m4a");
+  CHECK(perf_test_audio_sidecar_path("D:\\app\\assets\\perf_test_1440.mp4").find("perf_test.m4a") != std::string::npos);
   {
     std::ofstream f1080((root / "assets" / "perf_test_1080.mp4").string());
     f1080 << "1080";
@@ -4924,6 +5036,7 @@ TEST_CASE("parse_args --perf-test keeps windowed plan knobs") {
   CHECK(c.renodx_preset == 1);
   CHECK(c.fg_multiplier == 3);
   CHECK(c.fg_auto_start);
+  CHECK(c.bug_report);
   CHECK(c.video_path == "C:\\clip.mp4");
   CHECK(c.enhance == EnhanceBackend::Renodx);
   CHECK(c.perf_cli_override);
@@ -4931,6 +5044,21 @@ TEST_CASE("parse_args --perf-test keeps windowed plan knobs") {
   CHECK(args.find("--perf-test") != std::string::npos);
   CHECK(args.find("--width 1920") != std::string::npos);
   CHECK(args.find("--fg-x 3") != std::string::npos);
+  CHECK(args.find("--perf-audio") != std::string::npos);
+  CHECK(c.perf_test_audio);
+}
+
+TEST_CASE("parse_args --no-perf-audio stays off the HDMI CFG") {
+  char exe[] = "NexusCap.exe";
+  char a0[] = "--perf-test";
+  char a1[] = "--no-perf-audio";
+  char* argv[] = {exe, a0, a1};
+  const AppConfig c = parse_args(3, argv);
+  CHECK(c.perf_test);
+  CHECK_FALSE(c.perf_test_audio);
+  PerfTestPlan p = perf_test_plan_from_config(c);
+  CHECK_FALSE(p.audio);
+  CHECK(perf_test_cli_args(p).find("--no-perf-audio") != std::string::npos);
 }
 
 TEST_CASE("perf test plan never writes into real HDMI presets") {
@@ -4954,6 +5082,7 @@ TEST_CASE("perf test plan never writes into real HDMI presets") {
   p.fg_multiplier = 3;
   apply_perf_test_plan_to_config(p, cfg);
   CHECK(cfg.perf_test);
+  CHECK(cfg.perf_test_audio);
   CHECK(cfg.nr_pass_count == 3);
   CHECK(cfg.renodx_preset == 2);
   CHECK(cfg.scale_percent == 50);
@@ -4966,6 +5095,138 @@ TEST_CASE("perf test plan never writes into real HDMI presets") {
   CHECK(s.neural_rendering == before.neural_rendering);
   CHECK(serialize_settings_ini(s) == serialize_settings_ini(before));
   CHECK_FALSE(session_writes_renodx_off_files(cfg));
+}
+
+TEST_CASE("benchmark knobs do not propagate to lobby HDMI restore") {
+  PersistedSettings hdmi = default_settings();
+  hdmi.scale_percent = 100;
+  hdmi.nr_pass_count = 1;
+  hdmi.renodx_preset = 0;
+  hdmi.fg_enabled = false;
+  hdmi.fg_multiplier = 2;
+  hdmi.neural_rendering = true;
+  hdmi.enhance_renodx = true;
+  const PersistedSettings before = hdmi;
+
+  PerfTestPlan p;
+  p.width = 2560;
+  p.height = 1440;
+  p.fps = 60;
+  p.scale_percent = 75;
+  p.nr_pass_count = 3;
+  p.renodx_preset = 2;
+  p.fg_multiplier = 3;
+
+  AppConfig cfg;
+  apply_perf_test_plan_to_config(p, cfg);
+  apply_session_cfg_to_persisted(cfg, hdmi);
+  CHECK(serialize_settings_ini(hdmi) == serialize_settings_ini(before));
+
+  apply_persisted_to_config(hdmi, cfg);
+  CHECK(cfg.scale_percent == 100);
+  CHECK(cfg.nr_pass_count == 1);
+  CHECK(cfg.renodx_preset == 0);
+  CHECK_FALSE(cfg.fg_auto_start);
+  CHECK(cfg.fg_multiplier == 2);
+
+  const auto r = hdmi_restore_after_perf_test(hdmi);
+  CHECK(r.scale_percent == 100);
+  CHECK(r.nr_pass_count == 1);
+  CHECK(r.renodx_preset == 0);
+  CHECK(r.enhance_renodx);
+  CHECK(r.neural_rendering);
+  CHECK_FALSE(r.fg_enabled);
+  CHECK(r.fg_multiplier == 2);
+  CHECK(r.lobby_feed_work_resolution == 100);
+  CHECK(hdmi_lobby_fg_multiplier(r.fg_enabled, r.fg_multiplier) == 1);
+  {
+    const auto hud = make_lobby_hud_preview_lines(hdmi, 60.0);
+    bool saw_fg_off = false;
+    bool saw_test_scale = false;
+    bool saw_test_fg = false;
+    for (int i = 0; i < hud.count; ++i) {
+      if (std::strstr(hud.line[i], "FG off")) saw_fg_off = true;
+      if (std::strstr(hud.line[i], "75%")) saw_test_scale = true;
+      if (std::strstr(hud.line[i], "x3")) saw_test_fg = true;
+    }
+    CHECK(saw_fg_off);
+    CHECK_FALSE(saw_test_scale);
+    CHECK_FALSE(saw_test_fg);
+  }
+
+  hdmi.fg_enabled = true;
+  hdmi.fg_multiplier = 2;
+  hdmi.scale_percent = 100;
+  const auto on = hdmi_restore_after_perf_test(hdmi);
+  CHECK(on.fg_enabled);
+  CHECK(hdmi_lobby_fg_multiplier(on.fg_enabled, on.fg_multiplier) == 2);
+  CHECK(perf_test_return_needs_fresh_process(true));
+  CHECK_FALSE(perf_test_return_needs_fresh_process(false));
+}
+
+TEST_CASE("benchmark Esc/X/timer restore suite") {
+  CHECK(session_exit_code_after_esc(true) == kSessionExitBackToLobby);
+  CHECK(session_exit_code_after_window_close(true) == session_exit_code_after_esc(true));
+  CHECK(session_exit_code_after_window_close(false) == session_exit_code_after_esc(false));
+  CHECK(session_user_leave_returns_to_lobby(true));
+  CHECK_FALSE(session_user_leave_returns_to_lobby(false));
+  CHECK(lobby_message_exits_app(0x0010));  // WM_CLOSE no lobby
+  CHECK_FALSE(lobby_message_exits_app(0x0012));
+  CHECK(lobby_message_is_spurious_quit(0x0012));
+  CHECK(std::strcmp(perf_test_return_relaunch_args(), "--show-perf-result") == 0);
+  CHECK(perf_test_return_needs_fresh_process(true));
+  CHECK_FALSE(fg_leftover_cleared(1, true));
+  CHECK(fg_leftover_cleared(0, true));
+  CHECK_FALSE(fg_leftover_cleared(0, false));
+
+  CHECK(fg_frametime_trace_count(false, 2) == 1);
+  CHECK(fg_frametime_trace_count(false, 4) == 1);
+  CHECK(fg_frametime_trace_count(true, 4) == 4);
+
+  const int scales[] = {50, 75, 100};
+  const int passes[] = {1, 3, 4};
+  const int fgs[] = {1, 2, 3, 4};
+  for (int sc : scales) {
+    for (int ps : passes) {
+      for (int fg : fgs) {
+        PersistedSettings hdmi = default_settings();
+        hdmi.scale_percent = 100;
+        hdmi.nr_pass_count = 4;
+        hdmi.renodx_preset = 0;
+        hdmi.fg_enabled = false;
+        hdmi.fg_multiplier = 2;
+        hdmi.enhance_renodx = true;
+        hdmi.neural_rendering = true;
+        const PersistedSettings before = hdmi;
+
+        PerfTestPlan p;
+        p.width = 2560;
+        p.height = 1440;
+        p.fps = 60;
+        p.scale_percent = sc;
+        p.nr_pass_count = ps;
+        p.renodx_preset = 2;
+        p.fg_multiplier = fg;
+        AppConfig cfg;
+        apply_perf_test_plan_to_config(p, cfg);
+        apply_session_cfg_to_persisted(cfg, hdmi);
+        CHECK(serialize_settings_ini(hdmi) == serialize_settings_ini(before));
+
+        apply_persisted_to_config(hdmi, cfg);
+        const auto r = hdmi_restore_after_perf_test(hdmi);
+        CHECK(r.scale_percent == 100);
+        CHECK(r.nr_pass_count == 4);
+        CHECK(r.renodx_preset == 0);
+        CHECK_FALSE(r.fg_enabled);
+        CHECK(r.lobby_feed_work_resolution == 100);
+        CHECK(hdmi_lobby_fg_multiplier(r.fg_enabled, r.fg_multiplier) == 1);
+        CHECK(cfg.scale_percent == 100);
+        CHECK(cfg.nr_pass_count == 4);
+        CHECK_FALSE(cfg.fg_auto_start);
+        CHECK(perf_test_return_needs_fresh_process(true));
+      }
+    }
+  }
 }
 
 TEST_CASE("apply_perf_test_plan_to_config does not keep exclusive fullscreen") {
@@ -4987,8 +5248,29 @@ TEST_CASE("apply_perf_test_plan_to_config does not keep exclusive fullscreen") {
   CHECK(cfg.height == 2160);
   CHECK(cfg.scale_percent == 50);
   CHECK_FALSE(cfg.fg_auto_start);
+  CHECK(cfg.bug_report);
   CHECK(cfg.video_path == "last.mp4");
   CHECK(cfg.mini_overlay);
+}
+
+TEST_CASE("benchmark always writes bug report and does not wait for FG when off") {
+  AppConfig cfg;
+  cfg.bug_report = false;
+  cfg.fg_auto_start = true;
+  PerfTestPlan p;
+  p.width = 2560;
+  p.height = 1440;
+  p.fps = 60;
+  p.fg_multiplier = 1;
+  apply_perf_test_plan_to_config(p, cfg);
+  CHECK(cfg.perf_test);
+  CHECK(cfg.bug_report);
+  CHECK_FALSE(cfg.fg_auto_start);
+  const uint64_t ready = kStatsWarmupFrames + 1;
+  CHECK(perf_test_should_start_clock(true, ready, false, false, false, 0));
+  CHECK_FALSE(perf_test_carregar_can_block(true, false, false, false, 0));
+  PersistedSettings s = default_settings();
+  CHECK_FALSE(s.ui.bug_report);
 }
 
 TEST_CASE("perf test combos pass x scale x scene color") {

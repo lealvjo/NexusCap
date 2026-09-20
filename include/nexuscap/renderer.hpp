@@ -257,6 +257,7 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
                        bool start_hidden = false);
 
 void show_session_window(HWND hwnd, bool maximize = false);
+void hide_session_window(HWND hwnd);
 
 // Switch borderless fullscreen ↔ overlapped window and resize the swapchain client.
 // Returns client width/height written into out_client_w/h when non-null.

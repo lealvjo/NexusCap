@@ -73,6 +73,7 @@ struct AppConfig {
   bool perf_test = false;     // --perf-test: FileCapture em janela, sem gravar no CFG HDMI
   bool popup_perf_result = false;  // so no regresso deste benchmark; nao reabrir no HDMI/preview
   bool perf_cli_override = false;  // --width/--pass/--scale/--preset no CLI; nao sobrescrever com o plano
+  bool perf_test_audio = true;     // som do clipe no Benchmark; so plano/CLI, nao CFG HDMI
   std::string video_path;     // --video=: mp4/mkv do teste de performance
 
   HotkeyConfig hotkeys{};
@@ -114,12 +115,12 @@ inline unsigned present_interval_for_target(bool sync_image, double target_fps, 
 // Mini overlay: thin Steam Deck-style top bar (height only; width follows owner).
 inline int hud_panel_width(bool advanced_metrics) { return advanced_metrics ? 920 : 560; }
 inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
-  int h = advanced_metrics ? 640 : 220;
+  int h = advanced_metrics ? 640 : 320;  // compact inclui grafico FT + linhas FG
   // 5 lines: CPU / GPU / RAM / VRAM / PWR
   if (hw_info) h += 5 * 28;
   return h;
 }
-inline int hud_mini_overlay_height() { return 140; }  // 3 text rows so stalls/L600 are not clipped
+inline int hud_mini_overlay_height() { return 168; }  // 3 text rows + grafico FT com linhas FG
 inline int hud_mini_overlay_font_px() { return 27; }  // +50% vs 18
 inline int hud_mini_overlay_rows() { return 3; }
 
@@ -492,6 +493,12 @@ inline int session_exit_code_after_esc(bool session_from_lobby) {
   return session_from_lobby ? kSessionExitBackToLobby : 0;
 }
 
+// Esc e o X da janela: mesmo destino (teardown + lobby). Nao destroi a HWND no clique.
+inline int session_exit_code_after_window_close(bool session_from_lobby) {
+  return session_exit_code_after_esc(session_from_lobby);
+}
+inline bool session_user_leave_returns_to_lobby(bool session_from_lobby) { return session_from_lobby; }
+
 // CFG na captura (Ctrl+M) pediu reinício: sai da sessão, salva e volta com --autostart.
 inline constexpr int kSessionExitRelaunch = 101;
 
@@ -671,10 +678,10 @@ inline std::string session_notice_lobby_iniciar_apply() {
   return "Aplicando configuracao — DLSS 5, preset e escala do CFG entram na sessao";
 }
 
-inline std::string perf_test_pipeline_notice_title() { return "Repreparando o pipeline do Benchmark"; }
-inline std::string perf_test_pipeline_notice_detail() {
-  return "O relogio comeca quando NR e FG ja tiverem carregado";
-}
+inline std::string perf_test_pipeline_notice_title() { return "Gerando o pipeline do Benchmark"; }
+inline std::string perf_test_pipeline_notice_detail() { return "Aguarde — a janela abre quando estiver pronto"; }
+inline std::string perf_test_pipeline_fail_title() { return "Pipeline do Benchmark nao ficou pronto"; }
+inline std::string perf_test_pipeline_fail_detail() { return "Timeout. Volta ao lobby — tenta de novo."; }
 inline std::string session_notice_perf_test_hold() {
   return perf_test_pipeline_notice_title() + " — " + perf_test_pipeline_notice_detail();
 }

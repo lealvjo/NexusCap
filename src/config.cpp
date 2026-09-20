@@ -118,6 +118,12 @@ AppConfig parse_args(int argc, char** argv) {
       next(c.fg_path);
     } else if (a == "--perf-test") {
       c.perf_test = true;
+    } else if (a == "--show-perf-result") {
+      c.popup_perf_result = true;
+    } else if (a == "--perf-audio") {
+      c.perf_test_audio = true;
+    } else if (a == "--no-perf-audio") {
+      c.perf_test_audio = false;
     } else if (a.rfind("--video=", 0) == 0) {
       c.video_path = a.substr(8);
     } else if (a == "--video" && i + 1 < argc) {
@@ -158,6 +164,7 @@ AppConfig parse_args(int argc, char** argv) {
     c.nr_runtime_on = true;
     if (c.fg_multiplier >= 2) c.fg_auto_start = true;
     else c.fg_auto_start = false;
+    c.bug_report = true;
   }
   return c;
 }

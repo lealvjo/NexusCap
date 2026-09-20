@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <cstdlib>
+#include <ios>
 #include <string>
 
 namespace nexuscap {
@@ -180,6 +182,31 @@ inline int parse_reshade_nr_last_toggled(const std::string& log_text) {
   return last;
 }
 
+// "EvaluateFeature succeeded: evaluation=178" — prova de NR real, nao o flag do plano.
+inline int parse_reshade_nr_eval_line(const std::string& line) {
+  if (line.find("EvaluateFeature succeeded") == std::string::npos) return -1;
+  const auto ev = line.find("evaluation=");
+  if (ev == std::string::npos) return 1;
+  const auto eq = line.find('=', ev);
+  if (eq == std::string::npos) return 1;
+  const int n = std::atoi(line.c_str() + eq + 1);
+  return n > 0 ? n : 1;
+}
+
+inline int parse_reshade_nr_eval_count(const std::string& log_text) {
+  int n = 0;
+  size_t i = 0;
+  while (i < log_text.size()) {
+    size_t e = log_text.find('\n', i);
+    if (e == std::string::npos) e = log_text.size();
+    std::string line = log_text.substr(i, e - i);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (parse_reshade_nr_eval_line(line) >= 0) ++n;
+    i = e + 1;
+  }
+  return n;
+}
+
 // Measured on the multipass build: it never reads NRToggleKey (its ReShade sections
 // [RENODX-DLSS]* carry no key binding) and an injected edge produces no log line, no state
 // change and no frame-cost change — NR runs for the whole session there. Only the stable
@@ -210,6 +237,7 @@ enum class NrConfirmPoll { Pending, Confirmed, Failed };
 
 // Read only bytes appended since log_size_before; -1 = no toggle line yet.
 int peek_reshade_nr_toggled_since(const std::string& exe_dir, std::streamoff log_size_before);
+int consume_reshade_nr_evals(const std::string& exe_dir, std::streamoff& cursor);
 
 NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_on, double now_ms);
 

@@ -151,6 +151,15 @@ int peek_reshade_nr_toggled_since(const std::string& exe_dir, std::streamoff log
   return parse_reshade_nr_last_toggled(read_file_from_off(exe_dir + "\\ReShade.log", log_size_before));
 }
 
+int consume_reshade_nr_evals(const std::string& exe_dir, std::streamoff& cursor) {
+  const std::string path = exe_dir + "\\ReShade.log";
+  const std::streamoff end = file_size_off(path);
+  if (end <= cursor) return 0;
+  const int n = parse_reshade_nr_eval_count(read_file_from_off(path, cursor));
+  cursor = end;
+  return n;
+}
+
 NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_on, double now_ms) {
   if (!pending.active || !runtime_on) return NrConfirmPoll::Failed;
   const int logged = peek_reshade_nr_toggled_since(pending.exe_dir, pending.log_size_before);

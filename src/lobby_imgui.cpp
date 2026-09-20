@@ -377,6 +377,13 @@ struct LobbyPreview {
 LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   if (ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp)) return true;
   switch (msg) {
+    case WM_ERASEBKGND: {
+      HDC hdc = reinterpret_cast<HDC>(wp);
+      RECT rc{};
+      GetClientRect(hwnd, &rc);
+      FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+      return 1;
+    }
     case WM_SIZE:
       if (g_dx.device && wp != SIZE_MINIMIZED) {
         if (g_dx.rtv) {
@@ -805,11 +812,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   g_start_requested = false;
   g_open_gear = lobby_consume_open_cfg(cfg.open_lobby_cfg);
   g_open_perf = false;
-  const bool have_last =
-      read_perf_test_result_file(default_perf_test_result_path(app_data_dir()), g_perf_result) &&
-      g_perf_result.valid;
-  g_show_perf_result = perf_test_should_popup_result(cfg.popup_perf_result, have_last);
+  const std::string last_path = default_perf_test_result_path(app_data_dir());
+  const bool have_last = read_perf_test_result_file(last_path, g_perf_result) && g_perf_result.valid;
+  g_show_perf_result = perf_test_should_popup_result(cfg.popup_perf_result, have_last, g_perf_result.popup);
   cfg.popup_perf_result = false;
+  if (g_show_perf_result && g_perf_result.popup) {
+    g_perf_result.popup = false;
+    (void)write_perf_test_result_file(last_path, g_perf_result);
+  }
   if (!read_perf_test_plan_file(default_perf_test_plan_path(app_data_dir()), g_perf_plan)) {
     g_perf_plan = PerfTestPlan{};
   }
@@ -834,16 +844,16 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     if (want_nr != nr_runtime_on) nr_boot_retries = 180;
   }
 
-  // Toda vez que o lobby abre: regrava mira-lock (a pessoa pode ter mexido no Lossless).
+  // Lobby = HDMI. Mata LS leftover do Benchmark e nao lanca Frame Gen no menu.
   {
     LosslessFgController fg;
-    fg.configure(armed_fg_multiplier(settings.fg_enabled, settings.fg_multiplier), settings.fg_path);
     std::string ferr;
-    (void)fg.apply_profile(ferr);
+    (void)fg.apply_hdmi_profile_without_launch(settings.fg_enabled, settings.fg_multiplier, settings.fg_path,
+                                               ferr);
   }
 
-  WNDCLASSEXW wc{sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hi, nullptr, nullptr, nullptr, nullptr, L"NexusCapLobby",
-                 nullptr};
+  WNDCLASSEXW wc{sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hi, nullptr, nullptr,
+                 static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)), nullptr, L"NexusCapLobby", nullptr};
   wc.hIcon = LoadIconW(hi, MAKEINTRESOURCEW(kAppIconResourceId));
   if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
   wc.hIconSm = wc.hIcon;
@@ -970,7 +980,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     opt.capture_buffering = settings.capture_buffering;
     return preview.ensure(settings.device_name, opt);
   };
-  restart_preview();
+  if (!restart_preview()) {
+    Sleep(static_cast<DWORD>(capture_device_settle_ms()));
+    (void)restart_preview();
+  }
 
   float scale_f = static_cast<float>(clamp_scale_percent(settings.scale_percent));
   // The lobby process always boots the Feed at 100% (menus would be downsampled too), so
@@ -1880,11 +1893,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           g_perf_plan.height = 2160;
         }
 
-        ImGui::TextUnformatted("Meta de FPS");
+        ImGui::TextUnformatted(perf_test_hz_title());
+        ImGui::TextDisabled("%s", perf_test_hz_blurb());
         int fps_i = g_perf_plan.fps < 45.0 ? 30 : 60;
-        if (ImGui::RadioButton("30##perffps", fps_i == 30)) g_perf_plan.fps = 30;
+        if (ImGui::RadioButton("30 Hz##perffps", fps_i == 30)) g_perf_plan.fps = 30;
         ImGui::SameLine();
-        if (ImGui::RadioButton("60##perffps", fps_i == 60)) g_perf_plan.fps = 60;
+        if (ImGui::RadioButton("60 Hz##perffps", fps_i == 60)) g_perf_plan.fps = 60;
+
+        ImGui::Separator();
+        bool audio_on = g_perf_plan.audio;
+        if (ImGui::Checkbox(perf_test_audio_toggle(), &audio_on)) g_perf_plan.audio = audio_on;
+        ImGui::TextDisabled("%s", perf_test_audio_hint());
 
         ImGui::Separator();
         ImGui::TextUnformatted("Escala do Feed");
@@ -1932,14 +1951,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             std::string name = g_perf_plan.video;
             const auto slash = name.find_last_of("\\/");
             if (slash != std::string::npos) name = name.substr(slash + 1);
-            ImGui::TextDisabled("O clipe segue a resolucao do plano: %s (60 fps).", name.c_str());
+            ImGui::TextDisabled("O clipe segue a resolucao do plano: %s. O ficheiro e 60 fps; o pino simula 30 ou 60 Hz.",
+                                name.c_str());
           }
         }
         ImGui::TextDisabled("Mesmo Present da sessao HDMI. O clipe 1440 e o da captura, nao um 22 Mbps mole.");
         ImGui::TextDisabled("Se so o Frame Gen chega a meta: Jogavel com FG (fps gerado, latencia maior).");
         ImGui::TextDisabled("Se o cap ja e a meta e o FG pesou: Apertado (desliga o FG e ficas nativo).");
         ImGui::TextDisabled("Se nao for Bom, a escala sai de (fps/meta)^(2/3). Se 50% ainda nao chega, Pass 1x.");
-        ImGui::TextDisabled("Roda 40 s no Present+NR+FG em janela tela cheia.");
+        ImGui::TextDisabled("Roda no Present+NR+FG em janela tela cheia.");
         ImGui::TextDisabled("So grava o plano do teste. Pass, tom e escala do CFG HDMI nao mudam.");
 
         ImGui::Spacing();
@@ -2056,7 +2076,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     }
 
     ImGui::Render();
-    const float clear[4] = {0.06f, 0.07f, 0.10f, 1.f};
+    const float clear[4] = {0.f, 0.f, 0.f, 1.f};
     g_dx.ctx->OMSetRenderTargets(1, &g_dx.rtv, nullptr);
     g_dx.ctx->ClearRenderTargetView(g_dx.rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());

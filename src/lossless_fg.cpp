@@ -99,7 +99,11 @@ BOOL CALLBACK enum_hide_ls(HWND hwnd, LPARAM) {
   wchar_t cls[128]{};
   GetClassNameW(hwnd, cls, 128);
   const unsigned ex = static_cast<unsigned>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  if (ls_should_hide_window(title, cls, ex)) ShowWindow(hwnd, SW_HIDE);
+  RECT rc{};
+  GetWindowRect(hwnd, &rc);
+  const int w = rc.right - rc.left;
+  const int h = rc.bottom - rc.top;
+  if (ls_should_hide_window(title, cls, ex, w, h)) ShowWindow(hwnd, SW_HIDE);
   return TRUE;
 }
 
@@ -184,6 +188,10 @@ std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier) {
   replace_tag(xml, "SyncMode", "VSYNC1");
   replace_tag(xml, "GsyncSupport", "false");
   replace_tag(xml, "DrawFps", "false");
+  if (xml.find("<DrawFps>") == std::string::npos) {
+    const size_t at = xml.find("<CaptureApi>");
+    if (at != std::string::npos) xml.insert(at, "<DrawFps>false</DrawFps>");
+  }
   replace_tag(xml, "CaptureApi", "WGC");
   replace_tag(xml, "QueueTarget", "1");
 
@@ -214,12 +222,12 @@ std::string patch_lsfg_ini(const std::string& ini_in) {
                      "base_framerate_threshold = 10\r\n"
                      "\r\n"
                      "[fps_counter]\r\n"
-                     "scale = 1.0\r\n"
+                     "scale = 0\r\n"
                      "color = 0xD3D3D3\r\n"
                      "font = Consolas\r\n"
                      "offset_x = 0\r\n"
                      "offset_y = 0\r\n"
-                     "show_captured = 1\r\n";
+                     "show_captured = 0\r\n";
   if (ini_in.empty()) return good;
 
   std::string out = ini_in;
@@ -240,6 +248,27 @@ std::string patch_lsfg_ini(const std::string& ini_in) {
       out.find("ui_detection_rate = 2") == std::string::npos) {
     return good;
   }
+  // Medidor do LS: some o chip mesmo se o XML ainda tiver DrawFps true.
+  const size_t fps_sec = out.find("[fps_counter]");
+  const char* hidden = "[fps_counter]\r\n"
+                       "scale = 0\r\n"
+                       "color = 0xD3D3D3\r\n"
+                       "font = Consolas\r\n"
+                       "offset_x = 0\r\n"
+                       "offset_y = 0\r\n"
+                       "show_captured = 0\r\n";
+  if (fps_sec == std::string::npos) {
+    if (!out.empty() && out.back() != '\n') out += "\r\n";
+    out += "\r\n";
+    out += hidden;
+  } else {
+    size_t next = out.find("\n[", fps_sec + 1);
+    if (next == std::string::npos) {
+      out.replace(fps_sec, out.size() - fps_sec, hidden);
+    } else {
+      out.replace(fps_sec, next + 1 - fps_sec, std::string(hidden) + "\r\n");
+    }
+  }
   return out;
 }
 
@@ -253,6 +282,7 @@ void LosslessFgController::configure(int multiplier, const std::string& exe_over
   if (state_.multiplier <= 1) {
     state_.status = FgStatus::Off;
     state_.active = false;
+    confirmed_on_ = false;
   } else if (state_.exe_path.empty()) {
     state_.status = FgStatus::Missing;
     state_.last_error = "LosslessScaling.exe not found (Steam path)";
@@ -281,10 +311,13 @@ bool LosslessFgController::write_settings_file(const std::string& xml, std::stri
     // Backup only once — use CopyFile for existing settings.
     CopyFileW(utf8_to_wide(path).c_str(), utf8_to_wide(bak).c_str(), TRUE);
   }
+  SetFileAttributesW(utf8_to_wide(path).c_str(), FILE_ATTRIBUTE_NORMAL);
   if (!write_file_utf8_nobom(path, xml)) {
     err = "failed to write Settings.xml";
     return false;
   }
+  // LS no save-on-exit regrava DrawFps=true. Trava o arquivo na nossa mira.
+  SetFileAttributesW(utf8_to_wide(path).c_str(), FILE_ATTRIBUTE_READONLY);
   return true;
 }
 
@@ -303,6 +336,55 @@ bool LosslessFgController::write_ini_alongside_exe(std::string& err) {
     return true;
   }
   return true;
+}
+
+bool LosslessFgController::kill_all_lossless_and_wait(DWORD timeout_ms) {
+  const DWORD cap = timeout_ms > 0 ? timeout_ms : static_cast<DWORD>(fg_kill_wait_max_ms());
+  terminate_extra_lossless_processes(0);
+  const DWORD t0 = GetTickCount();
+  for (;;) {
+    bool snap_ok = true;
+    const unsigned n = count_running_lossless_processes(true, &snap_ok);
+    if (fg_leftover_cleared(n, snap_ok)) {
+      if (proc_) {
+        CloseHandle(proc_);
+        proc_ = nullptr;
+      }
+      if (job_) {
+        CloseHandle(job_);
+        job_ = nullptr;
+      }
+      state_.pid = 0;
+      state_.active = false;
+      confirmed_on_ = false;
+      return true;
+    }
+    if (GetTickCount() - t0 >= cap) {
+      terminate_extra_lossless_processes(0);
+      bool ok2 = true;
+      const unsigned left = count_running_lossless_processes(true, &ok2);
+      return fg_leftover_cleared(left, ok2);
+    }
+    Sleep(static_cast<DWORD>(fg_kill_wait_step_ms()));
+  }
+}
+
+void LosslessFgController::pulse_fg_hotkey() { (void)send_ls_hotkey(); }
+
+bool LosslessFgController::apply_hdmi_profile_without_launch(bool fg_enabled, int fg_mult,
+                                                             const std::string& path, std::string& err) {
+  if (confirmed_on_ || state_.active) pulse_fg_hotkey();
+  (void)kill_all_lossless_and_wait(static_cast<DWORD>(fg_kill_wait_max_ms()));
+  configure(hdmi_lobby_fg_multiplier(fg_enabled, fg_mult), path);
+  const bool ok = apply_profile(err);
+  bool snap_ok = true;
+  const unsigned left = count_running_lossless_processes(true, &snap_ok);
+  if (!fg_leftover_cleared(left, snap_ok)) {
+    if (!err.empty()) err += "; ";
+    err += "Lossless Scaling ainda vivo apos terminate (" + std::to_string(left) + ")";
+    return false;
+  }
+  return ok;
 }
 
 bool LosslessFgController::apply_profile(std::string& err) {
@@ -332,6 +414,12 @@ bool LosslessFgController::apply_profile(std::string& err) {
   const std::string on_disk = path.empty() ? std::string() : read_file_utf8(path);
   if (!fg_multiplier_confirmed_on_disk(m, on_disk)) {
     err = "Settings.xml LSFG3Multiplier != " + std::to_string(m) + " apos gravar";
+    state_.status = FgStatus::Error;
+    state_.last_error = err;
+    return false;
+  }
+  if (!ls_xml_draw_fps_off(on_disk)) {
+    err = "Settings.xml DrawFps ainda true apos gravar";
     state_.status = FgStatus::Error;
     state_.last_error = err;
     return false;
@@ -441,25 +529,29 @@ bool LosslessFgController::ensure_process(std::string& err, bool allow_adopt) {
   return true;
 }
 
-unsigned LosslessFgController::count_running_lossless_processes() {
+unsigned LosslessFgController::count_running_lossless_processes(bool force, bool* snapshot_ok) {
   // Throttle Toolhelp — overlay + reconcile called every Present otherwise.
   static unsigned cached = 0;
   static DWORD last_tick = 0;
   const DWORD now = GetTickCount();
-  if (last_tick != 0 && (now - last_tick) < 200) return cached;
+  if (!force && last_tick != 0 && (now - last_tick) < 200) {
+    if (snapshot_ok) *snapshot_ok = true;
+    return cached;
+  }
   last_tick = now;
 
   unsigned n = 0;
   HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snap == INVALID_HANDLE_VALUE) {
-    cached = 0;
-    return 0;
+    if (snapshot_ok) *snapshot_ok = false;
+    return cached;  // falha do snapshot nao mente FG off
   }
+  if (snapshot_ok) *snapshot_ok = true;
   PROCESSENTRY32W pe{};
   pe.dwSize = sizeof(pe);
   if (Process32FirstW(snap, &pe)) {
     do {
-      if (_wcsicmp(pe.szExeFile, L"LosslessScaling.exe") == 0) ++n;
+      if (ls_exe_is_lossless(pe.szExeFile)) ++n;
     } while (Process32NextW(snap, &pe));
   }
   CloseHandle(snap);
@@ -474,7 +566,7 @@ void LosslessFgController::terminate_extra_lossless_processes(DWORD keep_pid) {
   pe.dwSize = sizeof(pe);
   if (Process32FirstW(snap, &pe)) {
     do {
-      if (_wcsicmp(pe.szExeFile, L"LosslessScaling.exe") != 0) continue;
+      if (!ls_exe_is_lossless(pe.szExeFile)) continue;
       if (keep_pid != 0 && pe.th32ProcessID == keep_pid) continue;
       HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
       if (h) {
@@ -494,7 +586,7 @@ bool LosslessFgController::adopt_existing_lossless(std::string& err) {
   pe.dwSize = sizeof(pe);
   if (Process32FirstW(snap, &pe)) {
     do {
-      if (_wcsicmp(pe.szExeFile, L"LosslessScaling.exe") == 0) {
+      if (ls_exe_is_lossless(pe.szExeFile)) {
         found = pe.th32ProcessID;
         break;
       }
@@ -540,9 +632,12 @@ bool LosslessFgController::request_toggle(HWND target, std::string& err) {
       state_.last_error = err;
       return false;
     }
-    if (!ensure_process(err)) return false;
-    pending_ = FgPending::OnWaitLaunch;
-    pending_due_ms_ = -350;
+    // LS no exit grava DrawFps=true por cima do XML. Espera morrer, so depois escreve e lanca.
+    pending_want_mult_ = state_.multiplier;
+    if (proc_) shutdown(/*wait_ms=*/50);
+    terminate_extra_lossless_processes(0);
+    pending_ = FgPending::OnWaitDead;
+    pending_due_ms_ = -80;
     pending_retries_ = 0;
     return true;
   }
@@ -586,29 +681,11 @@ bool LosslessFgController::request_set_multiplier(int multiplier, HWND target, s
     state_.active = false;
   }
   state_.multiplier = m;
-  if (!apply_profile(err)) {
-    state_.multiplier = pending_prev_mult_;
-    return false;
-  }
   shutdown(/*wait_ms=*/50);
-  configure(m, state_.exe_path);
-  if (!ensure_process(err, /*allow_adopt=*/false)) {
-    state_.multiplier = pending_prev_mult_;
-    return false;
-  }
-  {
-    const std::string path = localappdata_settings_path();
-    const std::string on_disk = path.empty() ? std::string() : read_file_utf8(path);
-    if (!fg_multiplier_confirmed_on_disk(m, on_disk)) {
-      err = "LSFG3Multiplier no disco != x" + std::to_string(m);
-      state_.multiplier = pending_prev_mult_;
-      state_.status = FgStatus::Error;
-      state_.last_error = err;
-      return false;
-    }
-  }
-  pending_ = FgPending::MultWaitLaunch;
-  pending_due_ms_ = -350;
+  terminate_extra_lossless_processes(0);
+  pending_ = FgPending::MultWaitDead;
+  pending_due_ms_ = -80;
+  pending_retries_ = 0;
   return true;
 }
 
@@ -638,12 +715,46 @@ bool LosslessFgController::tick(double now_ms) {
     return true;
   };
 
+  auto launch_fresh = [&]() -> bool {
+    std::string e;
+    if (pending_ == FgPending::MultWaitDead && pending_want_mult_ >= 2) {
+      state_.multiplier = pending_want_mult_;
+      configure(pending_want_mult_, state_.exe_path);
+    }
+    if (!apply_profile(e)) {
+      fail(e);
+      return false;
+    }
+    if (!ensure_process(e, /*allow_adopt=*/false)) {
+      fail(e);
+      return false;
+    }
+    return true;
+  };
+
   switch (pending_) {
-    case FgPending::OnWaitLaunch:
+    case FgPending::OnWaitDead:
+    case FgPending::MultWaitDead:
+      if (count_running_lossless_processes(true) > 0) {
+        terminate_extra_lossless_processes(0);
+        if (pending_retries_ < 12) {
+          ++pending_retries_;
+          pending_due_ms_ = now_ms + 80.0;
+          return false;
+        }
+      }
+      if (!launch_fresh()) return true;
+      pending_ = (pending_ == FgPending::OnWaitDead) ? FgPending::OnWaitLaunch : FgPending::MultWaitLaunch;
+      pending_due_ms_ = now_ms + 350.0;  // LS ler o XML (DrawFps false) antes do F24
+      return false;
+    case FgPending::OnWaitLaunch: {
+      std::string stamp;
+      (void)apply_profile(stamp);  // tapa save-on-exit do LS velho
       hide_ls_windows();
       pending_ = FgPending::OnSendHotkey;
       pending_due_ms_ = now_ms;  // immediate next tick
       return false;
+    }
     case FgPending::OnSendHotkey:
       if (!focus_window(pending_hwnd_)) return fail("failed to focus NexusCap window");
       hide_ls_windows();
@@ -652,11 +763,12 @@ bool LosslessFgController::tick(double now_ms) {
       pending_due_ms_ = now_ms + 120.0;
       return false;
     case FgPending::OnConfirm:
-      if (count_running_lossless_processes() == 0) {
+      if (count_running_lossless_processes(true) == 0) {
         return fail("LosslessScaling exited after hotkey (FG nao confirmado)");
       }
       state_.active = true;
       state_.status = FgStatus::On;
+      confirmed_on_ = true;
       return ok_done();
     case FgPending::OffAfterHotkey:
       shutdown(/*wait_ms=*/50);  // don't block Present for 800ms
@@ -665,7 +777,7 @@ bool LosslessFgController::tick(double now_ms) {
       pending_retries_ = 0;
       return false;
     case FgPending::OffConfirmDead:
-      if (count_running_lossless_processes() > 0) {
+      if (count_running_lossless_processes(true) > 0) {
         terminate_extra_lossless_processes(0);
         if (pending_retries_ < 3) {
           ++pending_retries_;
@@ -677,6 +789,7 @@ bool LosslessFgController::tick(double now_ms) {
       }
       state_.active = false;
       state_.status = FgStatus::Ready;
+      confirmed_on_ = false;
       return ok_done();
     case FgPending::MultWaitLaunch:
       hide_ls_windows();
@@ -758,6 +871,12 @@ bool LosslessFgController::send_ls_hotkey() {
   inputs[1].ki.wVk = VK_F24;
   inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
   const UINT sent = SendInput(2, inputs, sizeof(INPUT));
+  // Keyup extra — se o down ficou preso, a tecla nao trava o Benchmark.
+  INPUT up{};
+  up.type = INPUT_KEYBOARD;
+  up.ki.wVk = VK_F24;
+  up.ki.dwFlags = KEYEVENTF_KEYUP;
+  SendInput(1, &up, sizeof(INPUT));
   return sent == 2;
 }
 
@@ -785,15 +904,33 @@ void LosslessFgController::shutdown(DWORD wait_ms) {
   }
   state_.pid = 0;
   state_.active = false;
+  confirmed_on_ = false;
   if (state_.status == FgStatus::On || state_.status == FgStatus::Ready) {
     state_.status = state_.multiplier <= 1 ? FgStatus::Off
                                            : (state_.exe_path.empty() ? FgStatus::Missing : FgStatus::Ready);
   }
 }
 
+bool LosslessFgController::owned_process_alive() const {
+  if (!proc_) return false;
+  DWORD code = 0;
+  if (!GetExitCodeProcess(proc_, &code)) return false;
+  return code == STILL_ACTIVE;
+}
+
+bool LosslessFgController::overlay_reads_on() const {
+  return fg_overlay_reads_on(state_.active, state_.multiplier, owned_process_alive(),
+                             count_running_lossless_processes(true), confirmed_on_);
+}
+
 void LosslessFgController::reconcile_process() {
+  if (confirmed_on_) return;  // Toolhelp 0 depois do F24 mentia FG off no x2
   if (!state_.active) return;
-  if (count_running_lossless_processes() > 0) return;
+  if (owned_process_alive()) return;
+  bool snap_ok = true;
+  const unsigned running = count_running_lossless_processes(true, &snap_ok);
+  if (!snap_ok) return;
+  if (running > 0) return;
   state_.active = false;
   state_.pid = 0;
   state_.status = state_.exe_path.empty() ? FgStatus::Missing : FgStatus::Ready;

@@ -36,16 +36,28 @@ using Microsoft::WRL::ComPtr;
 namespace nexuscap {
 namespace {
 
+// MSI: 0 ms no fundo, hitch sobe. FG empilha um pouco acima da linha base.
+int frametime_y(int gy, int gh, double ms, double ceil_ms) {
+  const double t = (std::max)(0.0, (std::min)(1.0, ms / (std::max)(ceil_ms, 1.0)));
+  return gy + gh - 2 - static_cast<int>(t * (gh - 4));
+}
+
+int frametime_y_trace(int gy, int gh, double cap_ms, int k, double ceil_ms) {
+  const int y_cap = frametime_y(gy, gh, cap_ms, ceil_ms);
+  if (k <= 1) return y_cap;
+  const int y_fg = frametime_y(gy, gh, fg_frametime_trace_ms(cap_ms, k), ceil_ms);
+  const int y = y_cap - fg_frametime_stack_lift_px(y_fg - y_cap, k);
+  const int top = gy + 2;
+  const int bot = gy + gh - 2;
+  return y < top ? top : (y > bot ? bot : y);
+}
+
 void paint_frametime_traces(HDC hdc, int gx, int gy, int gw, int gh, const OverlayState& o, int pen_w) {
   if (!hdc || o.ft_hist.size() < 2 || gw < 8) return;
   const double target_ms = o.target_fps > 0 ? 1000.0 / o.target_fps : (1000.0 / 60.0);
   double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
   for (double v : o.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
   ceil_ms = (std::min)(ceil_ms, 80.0);
-  auto y_for = [&](double ms) -> int {
-    const double t = (std::max)(0.0, (std::min)(1.0, ms / ceil_ms));
-    return gy + gh - 2 - static_cast<int>(t * (gh - 4));
-  };
   const size_t hn = o.ft_hist.size();
   const int traces = fg_frametime_trace_count(o.fg_on, o.fg_multiplier);
   const int w = (std::max)(1, pen_w);
@@ -55,7 +67,7 @@ void paint_frametime_traces(HDC hdc, int gx, int gy, int gw, int gh, const Overl
     HGDIOBJ old = SelectObject(hdc, pen);
     for (size_t i = 0; i < hn; ++i) {
       const int x = gx + 2 + static_cast<int>((gw - 4) * static_cast<int>(i) / static_cast<int>(hn - 1));
-      const int y = y_for(fg_frametime_trace_ms(o.ft_hist[i], k));
+      const int y = frametime_y_trace(gy, gh, o.ft_hist[i], k, ceil_ms);
       if (i == 0)
         MoveToEx(hdc, x, y, nullptr);
       else
@@ -64,6 +76,61 @@ void paint_frametime_traces(HDC hdc, int gx, int gy, int gw, int gh, const Overl
     SelectObject(hdc, old);
     DeleteObject(pen);
   }
+}
+
+void paint_frametime_graph(HDC hdc, int gx, int gy, int gw, int gh, const OverlayState& o, int pen_w) {
+  if (!hdc || gw < 8 || gh < 16) return;
+  RECT graph_rc{gx, gy, gx + gw, gy + gh};
+  if (overlay_draws_plate(o.overlay_no_bg)) {
+    HBRUSH gbg = CreateSolidBrush(RGB(8, 10, 14));
+    FillRect(hdc, &graph_rc, gbg);
+    DeleteObject(gbg);
+  }
+  HPEN border = CreatePen(PS_SOLID, 1, o.overlay_no_bg ? RGB(90, 96, 110) : RGB(50, 56, 68));
+  HGDIOBJ old_pen = SelectObject(hdc, border);
+  HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+  Rectangle(hdc, gx, gy, gx + gw, gy + gh);
+
+  const double target_ms = o.target_fps > 0 ? 1000.0 / o.target_fps : (1000.0 / 60.0);
+  double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
+  for (double v : o.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
+  ceil_ms = (std::min)(ceil_ms, 80.0);
+  auto y_for = [&](double ms) -> int { return frametime_y(gy, gh, ms, ceil_ms); };
+  HPEN target_pen = CreatePen(PS_DOT, 1, RGB(70, 160, 90));
+  SelectObject(hdc, target_pen);
+  const int y_tgt = y_for(target_ms);
+  MoveToEx(hdc, gx + 1, y_tgt, nullptr);
+  LineTo(hdc, gx + gw - 1, y_tgt);
+  DeleteObject(target_pen);
+
+  paint_frametime_traces(hdc, gx, gy, gw, gh, o, pen_w);
+
+  const int traces = fg_frametime_trace_count(o.fg_on, o.fg_multiplier);
+  if (traces >= 2) {
+    HFONT lf = CreateFontW(13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                           CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HGDIOBJ oldf = SelectObject(hdc, lf);
+    SetBkMode(hdc, TRANSPARENT);
+    const wchar_t* names[4] = {L"cap", L"x2", L"x3", L"x4"};
+    int x = gx + 6;
+    const int ly = gy + 3;
+    for (int k = 1; k <= traces && k <= 4; ++k) {
+      const FgFtRgb rgb = fg_frametime_trace_rgb(k, o.ft_stable);
+      RECT sw{x, ly + 2, x + 9, ly + 12};
+      HBRUSH br = CreateSolidBrush(RGB(rgb.r, rgb.g, rgb.b));
+      FillRect(hdc, &sw, br);
+      DeleteObject(br);
+      SetTextColor(hdc, RGB(rgb.r, rgb.g, rgb.b));
+      TextOutW(hdc, x + 11, ly, names[k - 1], static_cast<int>(wcslen(names[k - 1])));
+      x += 36;
+    }
+    SelectObject(hdc, oldf);
+    DeleteObject(lf);
+  }
+
+  SelectObject(hdc, old_brush);
+  SelectObject(hdc, old_pen);
+  DeleteObject(border);
 }
 
 static const char* kShaderSrc = R"(
@@ -109,6 +176,13 @@ float4 PSMain(VSOut i) : SV_Target {
 )";
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_ERASEBKGND) {
+    HDC hdc = reinterpret_cast<HDC>(wp);
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+    return 1;
+  }
   if (msg == WM_DESTROY) {
     PostQuitMessage(0);
     return 0;
@@ -778,39 +852,7 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     TextOutW(hdc, tx, y0, tb, static_cast<int>(wcslen(tb)));
   }
 
-  if (gw >= 64) {
-    RECT graph_rc{gx, gy, gx + gw, gy + gh};
-    if (overlay_draws_plate(o.overlay_no_bg)) {
-      HBRUSH gbg = CreateSolidBrush(RGB(8, 10, 14));
-      FillRect(hdc, &graph_rc, gbg);
-      DeleteObject(gbg);
-    }
-    HPEN border = CreatePen(PS_SOLID, 1, o.overlay_no_bg ? RGB(90, 96, 110) : RGB(50, 56, 68));
-    HGDIOBJ old_pen = SelectObject(hdc, border);
-    HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    Rectangle(hdc, gx, gy, gx + gw, gy + gh);
-
-    const double target_ms = o.target_fps > 0 ? 1000.0 / o.target_fps : (1000.0 / 60.0);
-    double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
-    if (!o.ft_hist.empty()) {
-      for (double v : o.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
-    }
-    ceil_ms = (std::min)(ceil_ms, 80.0);
-    auto y_for = [&](double ms) -> int {
-      const double t = (std::max)(0.0, (std::min)(1.0, ms / ceil_ms));
-      return gy + gh - 2 - static_cast<int>(t * (gh - 4));
-    };
-    HPEN target_pen = CreatePen(PS_DOT, 1, RGB(70, 160, 90));
-    SelectObject(hdc, target_pen);
-    const int y_tgt = y_for(target_ms);
-    MoveToEx(hdc, gx + 1, y_tgt, nullptr);
-    LineTo(hdc, gx + gw - 1, y_tgt);
-    DeleteObject(target_pen);
-    paint_frametime_traces(hdc, gx, gy, gw, gh, o, 2);
-    SelectObject(hdc, old_brush);
-    SelectObject(hdc, old_pen);
-    DeleteObject(border);
-  }
+  if (gw >= 64) paint_frametime_graph(hdc, gx, gy, gw, gh, o, 2);
 
   SelectObject(hdc, old);
   DeleteObject(mini_font);
@@ -1251,7 +1293,12 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
                                   true);
       swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
     }
-    swprintf(lines[n++], 180, L"frametime  %.2f ms   present %.2f", o.frame_ms, o.present_ms);
+    if (fg_frametime_trace_count(o.fg_on, o.fg_multiplier) >= 2) {
+      swprintf(lines[n++], 180, L"frametime  %.2f ms   FG %.2f   present %.2f", o.frame_ms,
+               fg_frametime_trace_ms(o.frame_ms, o.fg_multiplier), o.present_ms);
+    } else {
+      swprintf(lines[n++], 180, L"frametime  %.2f ms   present %.2f", o.frame_ms, o.present_ms);
+    }
     {
       char stack[96]{};
       format_dlss5_stack_hud_line(stack, sizeof(stack), o.renodx_on, o.feed_on, o.nr_pass_count);
@@ -1292,6 +1339,11 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       SetTextColor(hdc, c);
       TextOutW(hdc, 14, y, lines[i], static_cast<int>(wcslen(lines[i])));
     }
+    const int gx = 14;
+    const int gy = 10 + n * 28 + 6;
+    const int gw = (std::max)(120, static_cast<int>(rc.right - rc.left) - 28);
+    const int gh = (std::max)(72, static_cast<int>(rc.bottom - rc.top) - gy - 10);
+    paint_frametime_graph(hdc, gx, gy, gw, gh, o, 2);
     SelectObject(hdc, old);
     DeleteObject(font);
     return;
@@ -1398,50 +1450,22 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     TextOutW(hdc, 14, y, lines[i], static_cast<int>(wcslen(lines[i])));
   }
 
-  // MSI-style frametime line graph (spikes = hitch).
+  // MSI-style frametime line graph (spikes = hitch) + uma linha FG por xN.
   const int gx = 14;
   const int gy = 10 + 5 * 28 + 6;
   const int gw = (std::max)(120, static_cast<int>(rc.right - rc.left) - 28);
   const int gh = 110;
-  RECT graph_rc{gx, gy, gx + gw, gy + gh};
-  if (overlay_draws_plate(o.overlay_no_bg)) {
-    HBRUSH gbg = CreateSolidBrush(RGB(8, 10, 14));
-    FillRect(hdc, &graph_rc, gbg);
-    DeleteObject(gbg);
-  }
-  HPEN border = CreatePen(PS_SOLID, 1, o.overlay_no_bg ? RGB(90, 96, 110) : RGB(50, 56, 68));
-  HGDIOBJ old_pen = SelectObject(hdc, border);
-  HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-  Rectangle(hdc, gx, gy, gx + gw, gy + gh);
+  paint_frametime_graph(hdc, gx, gy, gw, gh, o, 2);
 
   double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
   if (!o.ft_hist.empty()) {
     for (double v : o.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
   }
   ceil_ms = (std::min)(ceil_ms, 80.0);
-
-  auto y_for = [&](double ms) -> int {
-    const double t = (std::max)(0.0, (std::min)(1.0, ms / ceil_ms));
-    return gy + gh - 2 - static_cast<int>(t * (gh - 4));
-  };
-
-  HPEN target_pen = CreatePen(PS_DOT, 1, RGB(70, 160, 90));
-  SelectObject(hdc, target_pen);
-  const int y_tgt = y_for(target_ms);
-  MoveToEx(hdc, gx + 1, y_tgt, nullptr);
-  LineTo(hdc, gx + gw - 1, y_tgt);
-  DeleteObject(target_pen);
-
-  paint_frametime_traces(hdc, gx, gy, gw, gh, o, 2);
-
-  SelectObject(hdc, old_pen);
-  SelectObject(hdc, old_brush);
-  DeleteObject(border);
-
   wchar_t scale[64];
   swprintf(scale, 64, L"0 - %.0f ms  (tgt %.2f)", ceil_ms, target_ms);
   SetTextColor(hdc, RGB(110, 120, 140));
-  TextOutW(hdc, gx + 6, gy + 4, scale, static_cast<int>(wcslen(scale)));
+  TextOutW(hdc, gx + 6, gy + gh - 18, scale, static_cast<int>(wcslen(scale)));
 
   const int text_y0 = gy + gh + 10;
   for (int i = 5; i < nlines; ++i) {
@@ -1710,12 +1734,18 @@ void show_session_window(HWND hwnd, bool maximize) {
   BringWindowToTop(hwnd);
 }
 
+void hide_session_window(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd)) return;
+  ShowWindow(hwnd, SW_HIDE);
+}
+
 HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_t* title, bool start_hidden) {
   WNDCLASSW wc{};
   wc.lpfnWndProc = WndProc;
   wc.hInstance = hi;
   wc.lpszClassName = L"NexusCapWnd";
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
   wc.hIcon = LoadIconW(hi, MAKEINTRESOURCEW(kAppIconResourceId));
   if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
   RegisterClassW(&wc);
@@ -1753,8 +1783,19 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
       SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
     }
   }
-  if (hwnd && !fullscreen && !start_hidden) {
-    ShowWindow(hwnd, SW_SHOWMAXIMIZED);  // janela cobrindo tudo (não exclusive fullscreen)
+  if (hwnd && !fullscreen) {
+    if (start_hidden) {
+      MONITORINFO mi{sizeof(mi)};
+      HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
+      if (GetMonitorInfoW(mon, &mi)) {
+        SetWindowPos(hwnd, nullptr, mi.rcWork.left, mi.rcWork.top,
+                     mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+      }
+      ShowWindow(hwnd, SW_HIDE);
+    } else {
+      ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+    }
   }
   return hwnd;
 }

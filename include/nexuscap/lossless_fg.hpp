@@ -76,7 +76,8 @@ inline int next_fg_multiplier(int m) {
 inline bool fg_wants_process(int multiplier) { return clamp_fg_multiplier(multiplier) >= 2; }
 
 // Graph traces: capture (k=1) plus one line per FG multiplier up to x4.
-// x2 → 2 lines, x3 → 3, x4 → 4. Off → only the capture line.
+// x2 → 2 lines, x3 → 3, x4 → 4. Off / x1 → only the capture line (armed xN does not count).
+// Planned xN stacks only while FG is ON — nao espera o LS confirmar, mas FG off = 1 linha.
 // Interval is capture_ms / k so 30 fps (33.3 ms) still stacks x2/x3/x4 above the base.
 inline int fg_frametime_trace_count(bool fg_on, int fg_mult) {
   if (!fg_on) return 1;
@@ -87,6 +88,15 @@ inline int fg_frametime_trace_count(bool fg_on, int fg_mult) {
 inline double fg_frametime_trace_ms(double capture_ms, int trace_k) {
   const int k = trace_k < 1 ? 1 : trace_k;
   return capture_ms / static_cast<double>(k);
+}
+
+// Empilha x2/x3/x4 um pouco acima da linha base (nao no teto do grafico).
+inline int fg_frametime_stack_lift_px(int natural_gap, int trace_k, int max_lift = 16) {
+  if (trace_k <= 1) return 0;
+  const int g = natural_gap < 0 ? -natural_gap : natural_gap;
+  const int cap = max_lift > 4 ? max_lift : 16;
+  const int lift = g * 25 / 100 + (trace_k - 1) * 4;
+  return lift < 4 ? 4 : (lift > cap ? cap : lift);
 }
 
 struct FgFtRgb {
@@ -489,6 +499,17 @@ inline int armed_fg_multiplier(bool /*fg_enabled*/, int fg_mult) {
   return clamp_fg_multiplier(fg_mult >= 2 ? fg_mult : 2);
 }
 
+// Lobby / pos-Benchmark: XML+processo so seguem o HDMI ligado. Off = x1, sem gerar.
+inline int hdmi_lobby_fg_multiplier(bool fg_enabled, int fg_mult) {
+  return fg_enabled ? armed_fg_multiplier(true, fg_mult) : 1;
+}
+
+// WM_CLOSE manda o LS para o tray (CloseToTray) — nao conta como morto.
+// So zero processos no Toolhelp (snapshot ok) libera o lobby.
+inline bool fg_leftover_cleared(unsigned running, bool snapshot_ok) { return snapshot_ok && running == 0; }
+inline int fg_kill_wait_step_ms() { return 50; }
+inline int fg_kill_wait_max_ms() { return 1500; }
+
 // Pure helpers (unit-tested): mira-lock profile fragments.
 std::string default_steam_lossless_exe();
 std::string resolve_lossless_exe(const std::string& override_path);
@@ -497,20 +518,33 @@ bool lossless_exe_exists(const std::string& path);
 // Lobby CFG: só liga FG se o exe existir (auto Steam ou Pasta).
 inline bool lobby_fg_can_enable(const std::string& fg_path) { return !resolve_lossless_exe(fg_path).empty(); }
 
-inline bool mira_lock_xml_ok(const std::string& xml) {
-  return xml.find("LSFGFlowScale>100") != std::string::npos && xml.find("LSFGFlowScale>70") == std::string::npos &&
-         xml.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos;
+inline bool ls_xml_draw_fps_off(const std::string& xml) {
+  return xml.find("<DrawFps>false</DrawFps>") != std::string::npos &&
+         xml.find("<DrawFps>true</DrawFps>") == std::string::npos;
 }
 
-// Hide only the LS settings UI. The FG output is topmost/layered — hiding it
-// leaves the user looking at our 40 Hz Present with the LS FPS chip on top.
-inline bool ls_should_hide_window(const wchar_t* title, const wchar_t* cls, unsigned ex_style) {
+inline bool mira_lock_xml_ok(const std::string& xml) {
+  return xml.find("LSFGFlowScale>100") != std::string::npos && xml.find("LSFGFlowScale>70") == std::string::npos &&
+         xml.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos && ls_xml_draw_fps_off(xml);
+}
+
+inline bool ls_ini_fps_counter_hidden(const std::string& ini) {
+  const size_t sec = ini.find("[fps_counter]");
+  if (sec == std::string::npos) return false;
+  return ini.find("scale = 0", sec) != std::string::npos && ini.find("show_captured = 0", sec) != std::string::npos;
+}
+
+// Hide the LS settings UI and the small DrawFps chip. Keep the big FG output
+// (topmost/layered, capture-sized) or Present cai para 40 Hz com o medidor por cima.
+inline bool ls_should_hide_window(const wchar_t* title, const wchar_t* cls, unsigned ex_style, int w = 0,
+                                  int h = 0) {
   if (!title) title = L"";
   if (!cls) cls = L"";
   const bool named = wcsstr(title, L"Lossless Scaling") != nullptr || wcsstr(cls, L"Lossless") != nullptr;
   if (!named) return false;
-  if (ex_style & WS_EX_TOPMOST) return false;
-  if (ex_style & WS_EX_LAYERED) return false;
+  if ((ex_style & WS_EX_TOPMOST) || (ex_style & WS_EX_LAYERED)) {
+    return w > 0 && h > 0 && w <= 420 && h <= 220;
+  }
   return true;
 }
 inline bool mira_lock_ini_ok(const std::string& ini) {
@@ -535,6 +569,21 @@ inline int parse_lsfg3_multiplier_from_xml(const std::string& xml) {
   int m = 0;
   if (!parse_fg_multiplier(raw, m)) return 0;
   return clamp_fg_multiplier(m);
+}
+
+inline bool ls_exe_is_lossless(const wchar_t* exe) {
+  if (!exe || !exe[0]) return false;
+  if (_wcsicmp(exe, L"LosslessScaling.exe") == 0) return true;
+  if (_wcsicmp(exe, L"Lossless Scaling.exe") == 0) return true;
+  return wcsstr(exe, L"LosslessScaling") != nullptr || wcsstr(exe, L"Lossless Scaling") != nullptr;
+}
+
+// HUD ON se o xN esta armado E (confirmou, OU o processo owned vive, OU o Toolhelp achou LS).
+// active sozinho basta — exigir processo depois do confirm mentia "FG off" com LS a interpolar.
+inline bool fg_overlay_reads_on(bool state_active, int mult, bool owned_alive, unsigned running_ls,
+                               bool confirmed = false) {
+  if (clamp_fg_multiplier(mult) < 2) return false;
+  return state_active || confirmed || owned_alive || running_ls > 0;
 }
 
 // Overlay xN only after disk confirms the same multiplier (no memory-only hope).
@@ -576,6 +625,15 @@ public:
   // Apply mira profile to %LOCALAPPDATA%\Lossless Scaling\Settings.xml (+ Steam config.ini).
   bool apply_profile(std::string& err);
 
+  // Lobby / pos-Benchmark: mata LS leftover, grava mira HDMI, nao lanca processo.
+  bool apply_hdmi_profile_without_launch(bool fg_enabled, int fg_mult, const std::string& path,
+                                         std::string& err);
+
+  // Esc/fim do teste: F24 off se estiver gerando, TerminateProcess em todo LS, espera count=0.
+  // Nao usa WM_CLOSE (tray). Chamar com a janela da sessao ainda viva.
+  void pulse_fg_hotkey();
+  bool kill_all_lossless_and_wait(DWORD timeout_ms = 0);
+
   // Start LS process under Job Object if multiplier >= 2 and exe exists.
   // allow_adopt=false forces a fresh process (required after x2↔x3↔x4 so LS reloads XML).
   // No Sleep — caller waits via tick() so Present keeps running.
@@ -596,7 +654,12 @@ public:
   void shutdown(DWORD wait_ms = 800);
 
   // How many LosslessScaling.exe are running (0 = none). Used to avoid duplicate instances.
-  static unsigned count_running_lossless_processes();
+  // force=true ignora o cache de 200 ms (confirmacao ON/OFF / espera o processo morrer).
+  // snapshot_ok=false: Toolhelp falhou — nao tratar o valor como zero real.
+  static unsigned count_running_lossless_processes(bool force = false, bool* snapshot_ok = nullptr);
+
+  bool owned_process_alive() const;
+  bool overlay_reads_on() const;
 
   // If active but LS process gone → clear active (HUD never stays ON as false positive).
   void reconcile_process();
@@ -604,11 +667,13 @@ public:
 private:
   enum class FgPending {
     None,
+    OnWaitDead,
     OnWaitLaunch,
     OnSendHotkey,
     OnConfirm,
     OffAfterHotkey,
     OffConfirmDead,
+    MultWaitDead,
     MultWaitLaunch,
     MultAfterLaunch,
   };
@@ -635,6 +700,7 @@ private:
   bool pending_was_active_ = false;
   int pending_retries_ = 0;
   bool pending_finished_ok_ = false;
+  bool confirmed_on_ = false;  // F24 confirmou — HUD nao volta a off se o Toolhelp mentir
 };
 
 }  // namespace nexuscap

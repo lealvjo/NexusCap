@@ -894,6 +894,10 @@ inline bool feed_scale_change_needs_relaunch(bool renodx_stack, int loaded_scale
   return feed_work_resolution_for_session(loaded_scale) != feed_work_resolution_for_session(want_scale);
 }
 
+// Esc/X/timer do Benchmark: o processo ainda tem Pass/tom/NR/Feed/LS do teste na RAM.
+// Gravar o HDMI no disco nao descarrega o addon — precisa processo novo.
+inline bool perf_test_return_needs_fresh_process(bool was_perf_test) { return was_perf_test; }
+
 // Lobby Present is the process's first swapchain — Feed/ReShade lock there. Iniciar in the
 // same process cannot apply CFG (scale, Cinema, NR on/off). Ctrl+M works because it relaunches.
 // Always --autostart so the capture window is the first Present with disk already matching CFG.
@@ -978,10 +982,44 @@ inline bool sync_persisted_session_files(const std::string& exe_dir, const Persi
   return true;
 }
 
-// Depois do teste: devolve Pass/tom/NR/Feed ao CFG HDMI. O plano fica so em perf_test_plan.txt.
+// Alvo do lobby apos Benchmark: so persist HDMI. O plano do teste nao entra.
+struct HdmiRestoreAfterPerfTest {
+  int scale_percent = 100;
+  int nr_pass_count = 1;
+  int renodx_preset = 0;
+  bool enhance_renodx = false;
+  bool neural_rendering = false;
+  bool fg_enabled = false;
+  int fg_multiplier = 2;
+  int lobby_feed_work_resolution = 100;
+};
+
+inline HdmiRestoreAfterPerfTest hdmi_restore_after_perf_test(const PersistedSettings& s) {
+  HdmiRestoreAfterPerfTest t;
+  t.scale_percent = clamp_scale_percent(s.scale_percent);
+  t.nr_pass_count = clamp_nr_pass_count(s.nr_pass_count);
+  t.renodx_preset = clamp_renodx_visual_preset(s.renodx_preset);
+  t.enhance_renodx = s.enhance_renodx;
+  t.neural_rendering = s.enhance_renodx && s.neural_rendering;
+  t.fg_enabled = s.fg_enabled;
+  t.fg_multiplier = s.fg_multiplier >= 2 ? s.fg_multiplier : 2;
+  t.lobby_feed_work_resolution = kLobbyFeedWorkResolution;
+  return t;
+}
+
+// Depois do teste: devolve escala/Pass/tom/NR/Feed ao CFG HDMI. O plano fica so em perf_test_plan.txt.
 inline bool restore_hdmi_pipeline_after_perf_test(const std::string& exe_dir, const PersistedSettings& s) {
-  (void)sync_persisted_session_files(exe_dir, s);
-  (void)sync_feed_work_resolution_in_dir(exe_dir, kLobbyFeedWorkResolution);
+  const HdmiRestoreAfterPerfTest t = hdmi_restore_after_perf_test(s);
+  PersistedSettings hdmi = s;
+  hdmi.scale_percent = t.scale_percent;
+  hdmi.nr_pass_count = t.nr_pass_count;
+  hdmi.renodx_preset = t.renodx_preset;
+  hdmi.enhance_renodx = t.enhance_renodx;
+  hdmi.neural_rendering = t.neural_rendering;
+  hdmi.fg_enabled = t.fg_enabled;
+  hdmi.fg_multiplier = t.fg_multiplier;
+  (void)sync_persisted_session_files(exe_dir, hdmi);
+  (void)sync_feed_work_resolution_in_dir(exe_dir, t.lobby_feed_work_resolution);
   return true;
 }
 

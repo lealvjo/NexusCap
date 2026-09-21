@@ -71,7 +71,7 @@ struct PersistedSettings {
   bool neural_rendering = true;
   // Gear: Default / Natural / Cinematic (RenoDX Home overlay names).
   int renodx_preset = 0;  // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
-  // Pass Count (DirectNeuralRenderingPassCount). 1=stable; 2/3=multipass; heavier GPU.
+  // Pass Count: 1=1x, 2=2x default, 3=3x, 4=1.5x, 5=2x otimizado (look exclusivo).
   int nr_pass_count = 1;
   // Origem (OBS-style). Defaults = validated HDMI path.
   int video_fourcc = 0;       // VideoFourcc::Nv12
@@ -92,8 +92,8 @@ inline int clamp_renodx_visual_preset(int v) {
   return v;
 }
 
-// Pass Count UI: 1=Krish, 2/3=multipass evaluates, 4=1.5x (same multipass motor, 1 evaluate).
-inline constexpr int kMaxNrPassCount = 4;
+// Pass Count UI: 1=Krish, 2=2x default, 3=3x, 4=1.5x, 5=2x otimizado (PassCount=2 + look).
+inline constexpr int kMaxNrPassCount = 5;
 
 inline int clamp_nr_pass_count(int v) {
   if (v < 1) return 1;
@@ -101,10 +101,13 @@ inline int clamp_nr_pass_count(int v) {
   return v;
 }
 
-// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1).
+inline bool nr_pass_is_2x_optimized(int ui) { return clamp_nr_pass_count(ui) == 5; }
+
+// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1; UI 5 → INI 2).
 inline int nr_reshade_pass_count(int ui) {
   switch (clamp_nr_pass_count(ui)) {
     case 2:
+    case 5:
       return 2;
     case 3:
       return 3;
@@ -118,11 +121,13 @@ inline int nr_reshade_pass_count(int ui) {
 inline const char* nr_pass_count_label(int v) {
   switch (clamp_nr_pass_count(v)) {
     case 2:
-      return "2x multipass";
+      return "2x default";
     case 3:
       return "3x multipass";
     case 4:
       return "1,5x";
+    case 5:
+      return "2x otimizado";
     default:
       return "1x estavel";
   }
@@ -132,11 +137,14 @@ inline const char* nr_pass_count_label(int v) {
 inline const char* nr_pass_count_15x_hint() {
   return "1,5x exclusivo NexusCap: rede neural perto do 2x, sem perder desempenho.";
 }
+inline const char* nr_pass_count_2x_opt_hint() {
+  return "2x otimizado exclusivo NexusCap: 2x de verdade, menos flicker e ghost, melhor qualidade de imagem.";
+}
 inline const char* nr_pass_count_23x_hint() {
-  return "2x/3x: mais pesados, pouco ganho, look mais processado.";
+  return "2x default / 3x: mais processados. O 2x otimizado e a opcao estavel.";
 }
 
-// Short HUD tag: "1x" / "1.5x" / "2x" / "3x".
+// Short HUD tag: "1x" / "1.5x" / "2x" / "2x+" / "3x".
 inline const char* nr_pass_count_short(int v) {
   switch (clamp_nr_pass_count(v)) {
     case 2:
@@ -145,12 +153,14 @@ inline const char* nr_pass_count_short(int v) {
       return "3x";
     case 4:
       return "1.5x";
+    case 5:
+      return "2x+";
     default:
       return "1x";
   }
 }
 
-// 1 → Krish. 2/3/4 → addons-multipass (4 = 1.5x, one evaluate on that motor).
+// 1 → Krish. 2/3/4/5 → addons-multipass (4 = 1.5x; 5 = 2x otimizado).
 inline bool nr_pass_count_uses_multipass_addon(int pass_count) {
   const int v = clamp_nr_pass_count(pass_count);
   return v >= 2;
@@ -662,16 +672,21 @@ inline std::string sanitize_multipass_home_windows(std::string text) {
   return text;
 }
 
-// Align DirectNeuralRendering* keys (Pass Count 2/3/4=1.5x).
+// Align DirectNeuralRendering* keys (2/3/4=1.5x default look; 5 = 2x otimizado exclusivo).
 inline std::string apply_reshade_multipass_look_defaults(std::string text, int pass_count,
                                                          int visual_preset = 0) {
+  const bool opt = nr_pass_is_2x_optimized(pass_count);
+  const int nits = opt ? 100 : 500;
+  const int encoding = opt ? 2 : 0;
+  const int hook = opt ? 2 : 1;
+  const int ui_corr = opt ? 2 : 1;
   // [RENODX-DLSS] global
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingDiffuseWhiteNits=", 500);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingDiffuseWhiteNits=", nits);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingDiffuseWhiteOverride=", 0);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingEncoding=", 0);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingHookPoint=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingEncoding=", encoding);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingHookPoint=", hook);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingRequireDlss=", 1);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingUiCorrectionMode=", 1);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingUiCorrectionMode=", ui_corr);
   // [RENODX-DLSS-preset1] look knobs
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingAutoMask=", 1);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingGlobalToneStrength=", 1);
@@ -683,14 +698,14 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
                             clamp_renodx_visual_preset(visual_preset));
   text = apply_reshade_nr_pass_count(std::move(text), pass_count);
   // Keep legacy NR* block in sync for tools / dual-read / Krish.
-  text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", 500);
+  text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", nits);
   text = apply_keyed_int(std::move(text), "NRIntensity=", 1);
   text = apply_keyed_int(std::move(text), "NRGlobalTone=", 1);
   text = apply_keyed_int(std::move(text), "NRLocalTone=", 1);
   text = apply_keyed_int(std::move(text), "NRLocalStructure=", 1);
   text = apply_keyed_int(std::move(text), "NRAutoMask=", 1);
   text = apply_keyed_int(std::move(text), "NRSkinStructure=", -1);
-  text = apply_keyed_int(std::move(text), "NRUICorrection=", 1);
+  text = apply_keyed_int(std::move(text), "NRUICorrection=", ui_corr);
   text = apply_reshade_visual_look_keys(std::move(text), visual_preset);
   // Multipass: Delete is the real NRToggleKey (Bridge cannot inject GetAsyncKeyState).
   text = apply_keyed_int(std::move(text), "NRToggleKey=", 0x2E);
@@ -715,11 +730,27 @@ inline std::string apply_reshade_stable_look_defaults(std::string text, int visu
   return text;
 }
 
+// UI 5 writes the same PassCount=2 as UI 2. Infer from exclusive look keys so a
+// visual-preset-only write does not wipe 2x otimizado back to 2x default.
+inline bool reshade_look_is_2x_optimized(const std::string& text) {
+  return parse_keyed_int(text, "DirectNeuralRenderingEncoding=", 0) == 2 &&
+         parse_keyed_int(text, "DirectNeuralRenderingHookPoint=", 1) == 2 &&
+         parse_keyed_int(text, "DirectNeuralRenderingUiCorrectionMode=", 1) == 2;
+}
+
+inline int infer_multipass_ui_pass_count(const std::string& text) {
+  const int raw = parse_reshade_nr_pass_count(text, 1);
+  if (raw == 2 && reshade_look_is_2x_optimized(text)) return 5;
+  return raw;
+}
+
 // Visual-preset writes must key off AddonPath, not PassCount: 1.5x is multipass + INI 1.
-inline std::string apply_reshade_look_for_current_stack(std::string text, int visual_preset) {
+// pass_count >= 0: honor the UI slot (needed to keep 2x otimizado when INI is also 2).
+inline std::string apply_reshade_look_for_current_stack(std::string text, int visual_preset,
+                                                         int pass_count = -1) {
   if (reshade_addon_path_is_multipass(text)) {
-    const int ini_passes = parse_reshade_nr_pass_count(text, 1);
-    return apply_reshade_multipass_look_defaults(std::move(text), ini_passes, visual_preset);
+    const int ui = pass_count >= 0 ? clamp_nr_pass_count(pass_count) : infer_multipass_ui_pass_count(text);
+    return apply_reshade_multipass_look_defaults(std::move(text), ui, visual_preset);
   }
   text = apply_reshade_stable_look_defaults(std::move(text), visual_preset);
   return apply_keyed_int(std::move(text), "NRToggleKey=", 0x7C);  // VK_F13 / kRenodxNrInjectVk

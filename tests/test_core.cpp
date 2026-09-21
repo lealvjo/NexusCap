@@ -380,6 +380,70 @@ TEST_CASE("overlay ft_stable no false UNSTABLE at 30/120/144") {
   CHECK_FALSE(w30.stable(1000.0 / 30.0, 25.0));  // legacy fixed cap still fails
 }
 
+TEST_CASE("overlay ft status PLAYABLE FG matches Benchmark grade") {
+  CHECK(kOverlayFtFpsSlop == doctest::Approx(kPerfTestFpsSlop));
+  CHECK(overlay_ft_status(true, true, 3, 40.0, 60.0, 120.0) == OverlayFtStatus::Stable);
+  CHECK(std::string(overlay_ft_status_label(OverlayFtStatus::Stable)) == "STABLE");
+  CHECK(std::string(overlay_ft_status_hint(OverlayFtStatus::Stable)).empty());
+
+  CHECK(overlay_ft_status(false, true, 2, 40.0, 60.0, 80.0) == OverlayFtStatus::PlayableFg);
+  CHECK(std::string(overlay_ft_status_label(OverlayFtStatus::PlayableFg)) == "PLAYABLE FG");
+  CHECK(std::string(overlay_ft_status_hint(OverlayFtStatus::PlayableFg)).find("FG cobre") != std::string::npos);
+  {
+    const FgFtRgb c = overlay_ft_status_rgb(OverlayFtStatus::PlayableFg);
+    CHECK(c.r == 255);
+    CHECK(c.g == 196);
+    CHECK(c.b == 72);
+  }
+
+  CHECK(overlay_ft_status(false, true, 2, 20.0, 60.0, 40.0) == OverlayFtStatus::Unstable);
+  CHECK(overlay_ft_status(false, true, 2, 22.0, 30.0, 44.0) == OverlayFtStatus::PlayableFg);
+  CHECK(overlay_ft_status(false, true, 4, 18.0, 60.0, 72.0) == OverlayFtStatus::Unstable);
+  CHECK(overlay_ft_status(false, false, 2, 40.0, 60.0, 80.0) == OverlayFtStatus::Unstable);
+  CHECK(overlay_ft_status(false, true, 1, 40.0, 60.0, 0) == OverlayFtStatus::Unstable);
+  CHECK(std::string(overlay_ft_status_label(OverlayFtStatus::Unstable)) == "UNSTABLE");
+
+  {
+    PerfTestSample s;
+    s.fps = 40.0;
+    s.target_fps = 60.0;
+    s.fg_multiplier = 2;
+    s.p95_present_ms = 8.0;
+    s.stalls = 0;
+    CHECK(grade_perf_test(s) == PerfTestGrade::PlayableFg);
+    CHECK(overlay_ft_status(false, true, 2, s.fps, s.target_fps, perf_test_fg_est_fps(s.fps, 2)) ==
+          OverlayFtStatus::PlayableFg);
+  }
+  {
+    PerfTestSample s;
+    s.fps = 22.0;
+    s.target_fps = 30.0;
+    s.fg_multiplier = 2;
+    s.p95_present_ms = 8.0;
+    s.stalls = 0;
+    CHECK(grade_perf_test(s) == PerfTestGrade::PlayableFg);
+    CHECK(overlay_ft_status(false, true, 2, s.fps, s.target_fps) == OverlayFtStatus::PlayableFg);
+  }
+  {
+    PerfTestSample s;
+    s.fps = 18.0;
+    s.target_fps = 60.0;
+    s.fg_multiplier = 4;
+    s.p95_present_ms = 8.0;
+    s.stalls = 0;
+    CHECK(grade_perf_test(s) == PerfTestGrade::Fail);
+    CHECK(overlay_ft_status(false, true, 4, s.fps, s.target_fps) == OverlayFtStatus::Unstable);
+  }
+
+  char a[256]{};
+  char b[256]{};
+  format_mini_overlay_lines(a, sizeof(a), b, sizeof(b), 40.0, 80.0, true, 2, true, true, 25.0, 25.0, 26.0, 30.0,
+                            false, 8.5, 2.2, 0, 0, 0, 2560, 1440, 2560, 1440, 2560, 1440, 100, false, 0, 0, 0, 0,
+                            nullptr, nullptr, 0, 0, 0, nullptr, 60.0);
+  CHECK(std::strstr(b, "PLAYABLE FG") != nullptr);
+  CHECK(std::strstr(b, "UNSTABLE") == nullptr);
+}
+
 TEST_CASE("ClusterDetector metronome gap") {
   ClusterDetector c(500.0, 3);
   FakeClock clock;
@@ -897,9 +961,13 @@ TEST_CASE("FG frametime traces stack one line per multiplier even below 60 fps")
   CHECK(fg_frametime_trace_count(false, 3) == 1);
   CHECK(fg_frametime_trace_count(false, 4) == 1);
   CHECK(fg_frametime_trace_count(true, 2) == 2);
-  CHECK(fg_frametime_trace_count(true, 3) == 3);
-  CHECK(fg_frametime_trace_count(true, 4) == 4);
+  CHECK(fg_frametime_trace_count(true, 3) == 2);
+  CHECK(fg_frametime_trace_count(true, 4) == 2);
   CHECK(fg_frametime_trace_count(true, 1) == 1);
+  CHECK(fg_frametime_trace_k(1, 3) == 1);
+  CHECK(fg_frametime_trace_k(2, 3) == 3);
+  CHECK(fg_frametime_trace_k(2, 4) == 4);
+  CHECK(fg_frametime_trace_k(2, 2) == 2);
   CHECK(hdmi_lobby_fg_multiplier(false, 2) == 1);
   CHECK(hdmi_lobby_fg_multiplier(false, 3) == 1);
   CHECK(hdmi_lobby_fg_multiplier(true, 3) == 3);
@@ -920,11 +988,26 @@ TEST_CASE("FG frametime traces stack one line per multiplier even below 60 fps")
 
   const double cap60 = 1000.0 / 60.0;
   CHECK(fg_frametime_trace_ms(cap60, 2) == doctest::Approx(cap60 / 2.0));
-  CHECK(fg_frametime_stack_lift_px(40, 1) == 0);
-  CHECK(fg_frametime_stack_lift_px(40, 2) > 0);
-  CHECK(fg_frametime_stack_lift_px(40, 2) <= 16);
-  CHECK(fg_frametime_stack_lift_px(40, 2) < 40);
-  CHECK(fg_frametime_stack_lift_px(80, 4) <= 16);
+  {
+    const int gy = 0;
+    const int gh = 120;
+    const double ceil_ms = 80.0;
+    const double cap25 = 25.0;
+    const int y_cap = fg_frametime_plot_y(gy, gh, cap25, 1, ceil_ms);
+    const int y_x3 = fg_frametime_plot_y(gy, gh, cap25, 3, ceil_ms);
+    CHECK(y_cap != y_x3);
+    CHECK(std::abs(y_cap - y_x3) > 16);
+    CHECK(y_x3 < y_cap);  // FG (mais FPS) em cima, cap em baixo
+  }
+  CHECK(fg_frametime_fps(25.0, 1) == 40);
+  CHECK(fg_frametime_fps(25.0, 3) == 120);
+  CHECK(fg_frametime_fps(1000.0 / 60.0, 1) == 60);
+  CHECK(fg_frametime_fps_gutter_px() >= 24);
+  {
+    char lab[16]{};
+    format_fg_frametime_fps_label(lab, sizeof(lab), 25.0, 1);
+    CHECK(std::string(lab) == "40");
+  }
 
   const FgFtRgb base = fg_frametime_trace_rgb(1, true);
   const FgFtRgb x2 = fg_frametime_trace_rgb(2, true);
@@ -1770,7 +1853,10 @@ TEST_CASE("pass count has no 0.5x; 1x Krish is the native floor") {
     const std::string sh = nr_pass_count_short(v);
     CHECK(lab.find("0,5") == std::string::npos);
     CHECK(lab.find("0.5") == std::string::npos);
+    CHECK(lab.find("1,7") == std::string::npos);
+    CHECK(lab.find("1.7") == std::string::npos);
     CHECK(sh.find("0.5") == std::string::npos);
+    CHECK(sh.find("1.7") == std::string::npos);
     CHECK(nr_reshade_pass_count(v) >= 1);
   }
 }
@@ -1781,28 +1867,37 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(clamp_nr_pass_count(2) == 2);
   CHECK(clamp_nr_pass_count(3) == 3);
   CHECK(clamp_nr_pass_count(4) == 4);
-  CHECK(clamp_nr_pass_count(5) == 4);
-  CHECK(clamp_nr_pass_count(9) == 4);
+  CHECK(clamp_nr_pass_count(5) == 5);
+  CHECK(clamp_nr_pass_count(9) == 5);
   CHECK(nr_reshade_pass_count(1) == 1);
   CHECK(nr_reshade_pass_count(2) == 2);
   CHECK(nr_reshade_pass_count(3) == 3);
   CHECK(nr_reshade_pass_count(4) == 1);  // 1.5x writes INI PassCount=1
-  CHECK(nr_reshade_pass_count(5) == 1);  // ini antigo 1.75x cai no 1,5x
+  CHECK(nr_reshade_pass_count(5) == 2);  // 2x otimizado: dois evaluates
   CHECK(std::string(nr_pass_count_label(1)).find("1x") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(2)).find("2x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_label(2)).find("default") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(3)).find("3x") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(4)).find("1,5x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_label(5)).find("otimizado") != std::string::npos);
   CHECK(std::string(nr_pass_count_short(4)) == "1.5x");
+  CHECK(std::string(nr_pass_count_short(5)) == "2x+");
+  CHECK_FALSE(nr_pass_is_2x_optimized(2));
+  CHECK(nr_pass_is_2x_optimized(5));
   CHECK_FALSE(nr_pass_count_uses_multipass_addon(1));
   CHECK(nr_pass_count_uses_multipass_addon(2));
   CHECK(nr_pass_count_uses_multipass_addon(3));
   CHECK(nr_pass_count_uses_multipass_addon(4));
+  CHECK(nr_pass_count_uses_multipass_addon(5));
   CHECK(nr_pass_count_change_needs_relaunch(1, 2));
   CHECK(nr_pass_count_change_needs_relaunch(1, 4));
   CHECK(nr_pass_count_change_needs_relaunch(4, 1));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(4, 2));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 3));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 5));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 1));
+  CHECK_FALSE(nr_pass_count_change_applies_live(2, 5));
+  CHECK_FALSE(nr_pass_count_change_applies_live(5, 2));
 
   {
     std::string win =
@@ -1832,7 +1927,13 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(loaded15.nr_pass_count == 4);
   PersistedSettings loaded_old175;
   REQUIRE(parse_settings_ini("[session]\nnr_pass_count=5\n", loaded_old175));
-  CHECK(loaded_old175.nr_pass_count == 4);  // 1,75x antigo vira 1,5x
+  CHECK(loaded_old175.nr_pass_count == 5);  // 5 = 2x otimizado
+  s.nr_pass_count = 5;
+  const std::string ini5 = serialize_settings_ini(s);
+  CHECK(ini5.find("nr_pass_count=5") != std::string::npos);
+  PersistedSettings loaded5;
+  REQUIRE(parse_settings_ini(ini5, loaded5));
+  CHECK(loaded5.nr_pass_count == 5);
 
   AppConfig cfg;
   apply_persisted_to_config(loaded, cfg);
@@ -1847,15 +1948,18 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(reshade.find("DirectNeuralRenderingPassCount=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingPassCount=4") == std::string::npos);
   reshade = apply_reshade_nr_pass_count(std::move(reshade), 5);
-  CHECK(parse_reshade_nr_pass_count(reshade) == 1);  // 5 clampa para 1,5x → INI 1
+  CHECK(parse_reshade_nr_pass_count(reshade) == 2);  // 2x otimizado → INI 2
 
   reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 2, /*visual=*/0);
   CHECK(parse_reshade_nr_pass_count(reshade) == 2);
   CHECK(reshade.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingRequireDlss=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingSkinStructureStrength=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingStyle=0") != std::string::npos);
+  CHECK_FALSE(reshade_look_is_2x_optimized(reshade));
   reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 1, /*Model C=*/2);
   CHECK(reshade.find("DirectNeuralRenderingStyle=2") != std::string::npos);
   reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 4, /*visual=*/0);
@@ -1896,6 +2000,114 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(setup.find("addons-multipass") != std::string::npos);
   CHECK(setup.find("AddonPath=.\\addons-stable") != std::string::npos);
 #endif
+}
+
+TEST_CASE("2x otimizado look is exclusive; 1x 1.5x 2x default 3x stay intact") {
+  CHECK(nr_reshade_pass_count(2) == 2);
+  CHECK(nr_reshade_pass_count(5) == 2);
+  CHECK(perf_test_pass_work(2) == 2.0);
+  CHECK(perf_test_pass_work(5) == 2.0);
+  CHECK(perf_test_pass_work(4) == 1.5);
+  CHECK(perf_test_pass_work(1) == 1.0);
+  CHECK(perf_test_pass_work(3) == 3.0);
+
+  const char* hints[] = {nr_pass_count_15x_hint(), nr_pass_count_2x_opt_hint(), nr_pass_count_23x_hint(),
+                         nr_pass_count_label(2), nr_pass_count_label(5)};
+  for (const char* h : hints) {
+    const std::string s(h);
+    CHECK(s.find("1,7") == std::string::npos);
+    CHECK(s.find("1.7") == std::string::npos);
+    CHECK(s.find("1,8") == std::string::npos);
+    CHECK(s.find("Lossless") == std::string::npos);
+  }
+  CHECK(std::string(nr_pass_count_2x_opt_hint()).find("NexusCap") != std::string::npos);
+  CHECK(std::string(nr_pass_count_2x_opt_hint()).find("flicker") != std::string::npos);
+
+  auto apply = [](int p) {
+    return apply_reshade_multipass_look_defaults("EnableHooks=2\nNeuralUplift=1\n", p, 0);
+  };
+  const std::string look1 = apply(1);
+  const std::string look15 = apply(4);
+  const std::string look2 = apply(2);
+  const std::string look2b = apply(2);
+  const std::string look3 = apply(3);
+  const std::string look5 = apply(5);
+  CHECK(look2 == look2b);
+  CHECK(look2 != look5);
+  CHECK(look15 != look2);
+  CHECK(look15 != look5);
+  CHECK(look3 != look2);
+  CHECK(look3 != look5);
+
+  CHECK(parse_reshade_nr_pass_count(look1) == 1);
+  CHECK(look1.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+  CHECK(parse_reshade_nr_pass_count(look15) == 1);
+  CHECK(parse_reshade_nr_pass_count(look2) == 2);
+  CHECK(parse_reshade_nr_pass_count(look3) == 3);
+  CHECK(parse_reshade_nr_pass_count(look5) == 2);
+
+  CHECK(look15.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingAutoMask=1") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingIntensity=1") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingLocalStructureStrength=1") != std::string::npos);
+
+  CHECK(look2.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(look2.find("NRDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(look2.find("NRUICorrection=1") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingAutoMask=1") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingLocalStructureStrength=1") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingSkinStructureStrength=1") != std::string::npos);
+
+  CHECK(look3.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+  CHECK(look3.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
+  CHECK(look3.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
+  CHECK(look3.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+
+  CHECK(look5.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
+  CHECK(look5.find("DirectNeuralRenderingHookPoint=2") != std::string::npos);
+  CHECK(look5.find("DirectNeuralRenderingUiCorrectionMode=2") != std::string::npos);
+  CHECK(look5.find("DirectNeuralRenderingDiffuseWhiteNits=100") != std::string::npos);
+  CHECK(look5.find("NRDiffuseWhiteNits=100") != std::string::npos);
+  CHECK(look5.find("NRUICorrection=2") != std::string::npos);
+  CHECK(look5.find("DirectNeuralRenderingAutoMask=1") != std::string::npos);
+  CHECK(look5.find("DirectNeuralRenderingIntensity=1") != std::string::npos);
+  CHECK(look5.find("DirectNeuralRenderingLocalStructureStrength=1") != std::string::npos);
+  CHECK(look5.find("DirectNeuralRenderingSkinStructureStrength=1") != std::string::npos);
+  CHECK(look5.find("NRLocalStructure=1") != std::string::npos);
+  CHECK(look5.find("DirectNeuralRenderingPassCount=2") != std::string::npos);
+  CHECK(reshade_look_is_2x_optimized(look5));
+  CHECK_FALSE(reshade_look_is_2x_optimized(look2));
+
+  {
+    std::string infer = "AddonPath=.\\addons-multipass\n" + look5;
+    infer = apply_reshade_look_for_current_stack(std::move(infer), 0);
+    CHECK(reshade_look_is_2x_optimized(infer));
+    CHECK(parse_reshade_nr_pass_count(infer) == 2);
+    CHECK(infer_multipass_ui_pass_count(infer) == 5);
+  }
+  {
+    std::string infer = "AddonPath=.\\addons-multipass\n" + look2;
+    infer = apply_reshade_look_for_current_stack(std::move(infer), 0);
+    CHECK_FALSE(reshade_look_is_2x_optimized(infer));
+    CHECK(infer_multipass_ui_pass_count(infer) == 2);
+    CHECK(infer.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+    CHECK(infer.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  }
+  {
+    std::string keep5 = "AddonPath=.\\addons-multipass\nDirectNeuralRenderingPassCount=2\n";
+    keep5 = apply_reshade_look_for_current_stack(std::move(keep5), 0, 5);
+    CHECK(reshade_look_is_2x_optimized(keep5));
+  }
+
+  std::string stable = apply_reshade_stable_look_defaults("NRPreset=0\n", 0);
+  CHECK(stable.find("DirectNeuralRenderingEncoding=") == std::string::npos);
+  CHECK(stable.find("NRDiffuseWhiteNits=500") != std::string::npos);
 }
 
 TEST_CASE("fullscreen checkbox save reflects exclusive_fullscreen on Iniciar") {
@@ -2631,17 +2843,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 10));
+  CHECK(app_version_is(3, 1, 11));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.10");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.10") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.10");
+  CHECK(std::string(kAppVersion) == "3.1.11");
+  CHECK(std::strstr(kAppNameWithVersion, "v3.1.11") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.11");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.10") != std::string::npos);
+  CHECK(lobby_t.find("3.1.11") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.10") != std::string::npos);
+  CHECK(sess_t.find("3.1.11") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -4226,6 +4438,108 @@ TEST_CASE("perf result popup only after this benchmark") {
   }
 }
 
+TEST_CASE("HDMI session perf popup reuses Benchmark grade and keeps titles apart") {
+  CHECK(session_perf_popup_wanted(true, false));
+  CHECK_FALSE(session_perf_popup_wanted(true, true));
+  CHECK_FALSE(session_perf_popup_wanted(false, false));
+  CHECK_FALSE(session_perf_popup_wanted(false, true));
+  CHECK(std::string(session_perf_popup_title()) == "Reportar performance ao finalizar gameplay");
+  CHECK(std::string(perf_result_popup_title(true, PerfTestGrade::Good)) == session_perf_popup_title());
+  CHECK(std::string(perf_result_popup_title(true, PerfTestGrade::Fail)) == session_perf_popup_title());
+  CHECK(std::string(perf_result_popup_title(false, PerfTestGrade::Good)) == "Bom");
+  CHECK(std::string(perf_result_popup_title(false, PerfTestGrade::Tight)) == "Apertado");
+  CHECK(std::string(perf_result_popup_title(false, PerfTestGrade::PlayableFg)) == "Jogavel com FG");
+  CHECK(std::string(perf_result_popup_title(false, PerfTestGrade::Fail)) == "Nao aguenta");
+
+  CHECK_FALSE(session_perf_result_ready(true, false, 0));
+  CHECK_FALSE(session_perf_result_ready(true, false, 179));
+  CHECK(session_perf_result_ready(true, false, 180));
+  CHECK_FALSE(session_perf_result_ready(true, true, 180));
+  CHECK_FALSE(session_perf_result_ready(false, false, 180));
+
+  AppConfig cfg;
+  cfg.perf_test = false;
+  cfg.perf_report = true;
+  cfg.width = 2560;
+  cfg.height = 1440;
+  cfg.fps = 60;
+  cfg.scale_percent = 100;
+  cfg.nr_pass_count = 5;
+  cfg.fg_auto_start = true;
+  cfg.fg_multiplier = 2;
+
+  PerfScoreAcc short_acc;
+  for (int i = 0; i < 179; ++i) short_acc.push(16.667, 4.0, false);
+  PerfTestResult no_popup;
+  CHECK_FALSE(fill_perf_test_session_result(cfg, &short_acc, nullptr, no_popup));
+  CHECK_FALSE(no_popup.valid);
+
+  PerfScoreAcc acc;
+  for (int i = 0; i < 180; ++i) acc.push(16.667, 4.0, false);
+
+  AppConfig bench = cfg;
+  bench.perf_test = true;
+  bench.perf_report = false;
+  PerfTestResult br;
+  CHECK(fill_perf_test_session_result(bench, &acc, nullptr, br));
+  CHECK(br.valid);
+  CHECK(br.popup);
+  CHECK_FALSE(br.hdmi_session);
+  CHECK(br.grade == grade_perf_test(br.sample));
+  CHECK(br.summary == format_perf_test_card(br.plan, br.sample, br.grade));
+  CHECK(std::string(perf_result_popup_title(br.hdmi_session, br.grade)) == perf_test_grade_label(br.grade));
+  CHECK(std::string(perf_result_popup_title(br.hdmi_session, br.grade)) != session_perf_popup_title());
+
+  PerfTestResult hr;
+  CHECK(fill_perf_test_session_result(cfg, &acc, nullptr, hr));
+  CHECK(hr.valid);
+  CHECK(hr.popup);
+  CHECK(hr.hdmi_session);
+  CHECK(hr.grade == br.grade);
+  CHECK(hr.summary == br.summary);
+  CHECK(hr.sample.fps == doctest::Approx(br.sample.fps));
+  CHECK(std::string(perf_result_popup_title(hr.hdmi_session, hr.grade)) == session_perf_popup_title());
+
+  std::string stripped;
+  {
+    std::istringstream in(serialize_perf_test_result(br));
+    std::string line;
+    while (std::getline(in, line)) {
+      if (line.rfind("hdmi_session=", 0) == 0) continue;
+      stripped += line;
+      stripped += '\n';
+    }
+  }
+  PerfTestResult legacy;
+  CHECK(parse_perf_test_result(stripped, legacy));
+  CHECK_FALSE(legacy.hdmi_session);
+  CHECK(std::string(perf_result_popup_title(legacy.hdmi_session, legacy.grade)) ==
+        perf_test_grade_label(legacy.grade));
+
+  PerfTestResult hdmi_round;
+  CHECK(parse_perf_test_result(serialize_perf_test_result(hr), hdmi_round));
+  CHECK(hdmi_round.hdmi_session);
+  CHECK(hdmi_round.grade == hr.grade);
+  CHECK(hdmi_round.summary == hr.summary);
+
+  PerfTestResult failr;
+  CHECK(fill_perf_test_session_result(bench, nullptr, "Pipeline timeout", failr));
+  CHECK(failr.grade == PerfTestGrade::Fail);
+  CHECK(failr.summary == "Pipeline timeout");
+  CHECK_FALSE(failr.hdmi_session);
+
+  CHECK(fill_perf_test_session_result(bench, &short_acc, nullptr, failr));
+  CHECK(failr.summary.find("amostras suficientes") != std::string::npos);
+  CHECK_FALSE(failr.hdmi_session);
+
+  CHECK_FALSE(fill_perf_test_session_result(cfg, nullptr, "Pipeline timeout", failr));
+
+  AppConfig off;
+  off.perf_test = false;
+  off.perf_report = false;
+  CHECK_FALSE(fill_perf_test_session_result(off, &acc, nullptr, failr));
+}
+
 TEST_CASE("perf test lobby says Benchmark") {
   CHECK(std::string(perf_test_lobby_title()) == "Benchmark");
   CHECK(std::string(perf_test_lobby_button()) == "Benchmark");
@@ -4276,7 +4590,7 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   // Toast na sessao diz de onde pra onde, igual a troca de motor.
   const std::string toast = session_notice_nr_pass_count_apply(4, 2);
   CHECK(toast.find("1,5x") != std::string::npos);
-  CHECK(toast.find("2x multipass") != std::string::npos);
+  CHECK(toast.find("2x default") != std::string::npos);
   CHECK(toast.find("Pass Count") != std::string::npos);
   CHECK(toast.find("pipeline") != std::string::npos);
   // Os dois prometem a volta para a sessao, nunca para o lobby.
@@ -4297,7 +4611,10 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(std::string(nr_pass_count_15x_hint()).find("exclusivo") != std::string::npos);
   CHECK(std::string(nr_pass_count_15x_hint()).find("2x") != std::string::npos);
   CHECK(std::string(nr_pass_count_15x_hint()).find("desempenho") != std::string::npos);
-  CHECK(std::string(nr_pass_count_23x_hint()).find("2x/3x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_23x_hint()).find("2x default") != std::string::npos);
+  CHECK(std::string(nr_pass_count_23x_hint()).find("3x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_2x_opt_hint()).find("exclusivo") != std::string::npos);
+  CHECK(std::string(nr_pass_count_2x_opt_hint()).find("1,7") == std::string::npos);
 }
 
 TEST_CASE("hdmi console card is blocked on every NexusCap manual relaunch") {
@@ -5181,7 +5498,7 @@ TEST_CASE("benchmark Esc/X/timer restore suite") {
 
   CHECK(fg_frametime_trace_count(false, 2) == 1);
   CHECK(fg_frametime_trace_count(false, 4) == 1);
-  CHECK(fg_frametime_trace_count(true, 4) == 4);
+  CHECK(fg_frametime_trace_count(true, 4) == 2);
 
   const int scales[] = {50, 75, 100};
   const int passes[] = {1, 3, 4};

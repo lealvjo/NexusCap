@@ -421,7 +421,7 @@ bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_pres
     if (in) {
       std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
       in.close();
-      text = apply_reshade_look_for_current_stack(std::move(text), v);
+      text = apply_reshade_look_for_current_stack(std::move(text), v, p);
       std::ofstream out(reshade_path, std::ios::trunc);
       if (out) {
         out << text;

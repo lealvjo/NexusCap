@@ -36,23 +36,20 @@ using Microsoft::WRL::ComPtr;
 namespace nexuscap {
 namespace {
 
-// MSI: 0 ms no fundo, hitch sobe. FG empilha um pouco acima da linha base.
+// Cap em baixo, FG em cima (FPS maior no topo).
 int frametime_y(int gy, int gh, double ms, double ceil_ms) {
-  const double t = (std::max)(0.0, (std::min)(1.0, ms / (std::max)(ceil_ms, 1.0)));
-  return gy + gh - 2 - static_cast<int>(t * (gh - 4));
+  return fg_frametime_plot_y(gy, gh, ms, 1, ceil_ms);
 }
 
 int frametime_y_trace(int gy, int gh, double cap_ms, int k, double ceil_ms) {
-  const int y_cap = frametime_y(gy, gh, cap_ms, ceil_ms);
-  if (k <= 1) return y_cap;
-  const int y_fg = frametime_y(gy, gh, fg_frametime_trace_ms(cap_ms, k), ceil_ms);
-  const int y = y_cap - fg_frametime_stack_lift_px(y_fg - y_cap, k);
+  const int y = fg_frametime_plot_y(gy, gh, cap_ms, k, ceil_ms);
   const int top = gy + 2;
   const int bot = gy + gh - 2;
   return y < top ? top : (y > bot ? bot : y);
 }
 
-void paint_frametime_traces(HDC hdc, int gx, int gy, int gw, int gh, const OverlayState& o, int pen_w) {
+void paint_frametime_traces(HDC hdc, int gx, int gy, int gw, int gh, const OverlayState& o, int pen_w,
+                           int left_pad = 0) {
   if (!hdc || o.ft_hist.size() < 2 || gw < 8) return;
   const double target_ms = o.target_fps > 0 ? 1000.0 / o.target_fps : (1000.0 / 60.0);
   double ceil_ms = (std::max)(target_ms * 2.5, 40.0);
@@ -60,15 +57,20 @@ void paint_frametime_traces(HDC hdc, int gx, int gy, int gw, int gh, const Overl
   ceil_ms = (std::min)(ceil_ms, 80.0);
   const size_t hn = o.ft_hist.size();
   const int traces = fg_frametime_trace_count(o.fg_on, o.fg_multiplier);
-  const int w = (std::max)(1, pen_w);
-  for (int k = 1; k <= traces; ++k) {
+  const int base_w = (std::max)(1, pen_w);
+  const int px = gx + (left_pad > 0 ? left_pad : 0);
+  const int pw = gw - (left_pad > 0 ? left_pad : 0);
+  if (pw < 8) return;
+  for (int i = 1; i <= traces; ++i) {
+    const int k = fg_frametime_trace_k(i, o.fg_multiplier);
     const FgFtRgb rgb = fg_frametime_trace_rgb(k, o.ft_stable);
+    const int w = k >= 2 ? (std::max)(2, base_w + 1) : base_w;
     HPEN pen = CreatePen(PS_SOLID, w, RGB(rgb.r, rgb.g, rgb.b));
     HGDIOBJ old = SelectObject(hdc, pen);
-    for (size_t i = 0; i < hn; ++i) {
-      const int x = gx + 2 + static_cast<int>((gw - 4) * static_cast<int>(i) / static_cast<int>(hn - 1));
-      const int y = frametime_y_trace(gy, gh, o.ft_hist[i], k, ceil_ms);
-      if (i == 0)
+    for (size_t s = 0; s < hn; ++s) {
+      const int x = px + 2 + static_cast<int>((pw - 4) * static_cast<int>(s) / static_cast<int>(hn - 1));
+      const int y = frametime_y_trace(gy, gh, o.ft_hist[s], k, ceil_ms);
+      if (s == 0)
         MoveToEx(hdc, x, y, nullptr);
       else
         LineTo(hdc, x, y);
@@ -96,37 +98,50 @@ void paint_frametime_graph(HDC hdc, int gx, int gy, int gw, int gh, const Overla
   for (double v : o.ft_hist) ceil_ms = (std::max)(ceil_ms, v * 1.05);
   ceil_ms = (std::min)(ceil_ms, 80.0);
   auto y_for = [&](double ms) -> int { return frametime_y(gy, gh, ms, ceil_ms); };
+  const int gutter = fg_frametime_fps_gutter_px();
   HPEN target_pen = CreatePen(PS_DOT, 1, RGB(70, 160, 90));
   SelectObject(hdc, target_pen);
   const int y_tgt = y_for(target_ms);
-  MoveToEx(hdc, gx + 1, y_tgt, nullptr);
+  MoveToEx(hdc, gx + gutter, y_tgt, nullptr);
   LineTo(hdc, gx + gw - 1, y_tgt);
   DeleteObject(target_pen);
 
-  paint_frametime_traces(hdc, gx, gy, gw, gh, o, pen_w);
+  paint_frametime_traces(hdc, gx, gy, gw, gh, o, pen_w, gutter);
 
   const int traces = fg_frametime_trace_count(o.fg_on, o.fg_multiplier);
+  HFONT lf = CreateFontW(13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                         CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HGDIOBJ oldf = SelectObject(hdc, lf);
+  SetBkMode(hdc, TRANSPARENT);
+  const double last_ms = !o.ft_hist.empty() ? o.ft_hist.back() : o.frame_ms;
+  for (int i = 1; i <= traces; ++i) {
+    const int k = fg_frametime_trace_k(i, o.fg_multiplier);
+    const FgFtRgb rgb = fg_frametime_trace_rgb(k, o.ft_stable);
+    wchar_t fpsw[16]{};
+    swprintf(fpsw, 16, L"%d", fg_frametime_fps(last_ms, k));
+    const int ly = frametime_y_trace(gy, gh, last_ms, k, ceil_ms) - 8;
+    SetTextColor(hdc, RGB(rgb.r, rgb.g, rgb.b));
+    TextOutW(hdc, gx + 3, ly, fpsw, static_cast<int>(wcslen(fpsw)));
+  }
   if (traces >= 2) {
-    HFONT lf = CreateFontW(13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    HGDIOBJ oldf = SelectObject(hdc, lf);
-    SetBkMode(hdc, TRANSPARENT);
     const wchar_t* names[4] = {L"cap", L"x2", L"x3", L"x4"};
-    int x = gx + 6;
+    int x = gx + gutter + 6;
     const int ly = gy + 3;
-    for (int k = 1; k <= traces && k <= 4; ++k) {
+    for (int i = 1; i <= traces && i <= 2; ++i) {
+      const int k = fg_frametime_trace_k(i, o.fg_multiplier);
+      const int name_i = k <= 1 ? 0 : (k > 4 ? 3 : k - 1);
       const FgFtRgb rgb = fg_frametime_trace_rgb(k, o.ft_stable);
       RECT sw{x, ly + 2, x + 9, ly + 12};
       HBRUSH br = CreateSolidBrush(RGB(rgb.r, rgb.g, rgb.b));
       FillRect(hdc, &sw, br);
       DeleteObject(br);
       SetTextColor(hdc, RGB(rgb.r, rgb.g, rgb.b));
-      TextOutW(hdc, x + 11, ly, names[k - 1], static_cast<int>(wcslen(names[k - 1])));
+      TextOutW(hdc, x + 11, ly, names[name_i], static_cast<int>(wcslen(names[name_i])));
       x += 36;
     }
-    SelectObject(hdc, oldf);
-    DeleteObject(lf);
   }
+  SelectObject(hdc, oldf);
+  DeleteObject(lf);
 
   SelectObject(hdc, old_brush);
   SelectObject(hdc, old_pen);
@@ -1370,8 +1385,19 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
                                 false);
     swprintf(lines[3], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
   }
-  swprintf(lines[4], 180, L"frametime  %.2f ms   avg %.2f  p95 %.2f  max %.2f  %s", o.frame_ms, o.ft_avg_ms,
-           o.ft_p95_ms, o.ft_max_ms, o.ft_stable ? L"STABLE" : L"UNSTABLE");
+  const OverlayFtStatus ft_st = overlay_ft_status(
+      o.ft_stable, o.fg_on, o.fg_multiplier, o.fps_smooth > 0 ? o.fps_smooth : o.fps, o.target_fps, o.fps_fg_est);
+  {
+    const char* hint = overlay_ft_status_hint(ft_st);
+    if (hint[0]) {
+      swprintf(lines[4], 180, L"frametime  %.2f ms   avg %.2f  p95 %.2f  max %.2f  %s  %s", o.frame_ms,
+               o.ft_avg_ms, o.ft_p95_ms, o.ft_max_ms, utf8_to_wide_hud(overlay_ft_status_label(ft_st)).c_str(),
+               utf8_to_wide_hud(hint).c_str());
+    } else {
+      swprintf(lines[4], 180, L"frametime  %.2f ms   avg %.2f  p95 %.2f  max %.2f  %s", o.frame_ms, o.ft_avg_ms,
+               o.ft_p95_ms, o.ft_max_ms, utf8_to_wide_hud(overlay_ft_status_label(ft_st)).c_str());
+    }
+  }
   swprintf(lines[5], 180, L"latencia  cap %.2f ms   present %.2f ms%s   %s", o.e2e_ms, o.present_ms,
            (o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos) ? L" (+NR/DLSS5)" : L"",
            o.sync_image ? L"VSYNC" : L"TEAR");
@@ -1428,7 +1454,10 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     if (i == 1) return RGB(200, 200, 210);
     if (i == 2) return RGB(120, 220, 255);
     if (i == 3) return RGB(120, 255, 160);
-    if (i == 4) return o.ft_stable ? RGB(120, 255, 160) : RGB(255, 120, 100);
+    if (i == 4) {
+      const FgFtRgb c = overlay_ft_status_rgb(ft_st);
+      return RGB(c.r, c.g, c.b);
+    }
     if (i == 5) return RGB(120, 255, 160);
     if (i == 6) return RGB(180, 160, 255);
     if (i == 7) return o.fg_on ? RGB(120, 255, 200) : RGB(160, 170, 180);
@@ -1450,7 +1479,7 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     TextOutW(hdc, 14, y, lines[i], static_cast<int>(wcslen(lines[i])));
   }
 
-  // MSI-style frametime line graph (spikes = hitch) + uma linha FG por xN.
+  // MSI-style frametime: cap real + FG do xN armado (Y real).
   const int gx = 14;
   const int gy = 10 + 5 * 28 + 6;
   const int gw = (std::max)(120, static_cast<int>(rc.right - rc.left) - 28);

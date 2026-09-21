@@ -75,12 +75,15 @@ inline int next_fg_multiplier(int m) {
 
 inline bool fg_wants_process(int multiplier) { return clamp_fg_multiplier(multiplier) >= 2; }
 
-// Graph traces: capture (k=1) plus one line per FG multiplier up to x4.
-// x2 → 2 lines, x3 → 3, x4 → 4. Off / x1 → only the capture line (armed xN does not count).
-// Planned xN stacks only while FG is ON — nao espera o LS confirmar, mas FG off = 1 linha.
-// Interval is capture_ms / k so 30 fps (33.3 ms) still stacks x2/x3/x4 above the base.
+// Graph traces: FG off / x1 → 1 linha (cap). FG on → cap + o xN armado (sem x2 fantasma no x3).
 inline int fg_frametime_trace_count(bool fg_on, int fg_mult) {
   if (!fg_on) return 1;
+  return clamp_fg_multiplier(fg_mult) < 2 ? 1 : 2;
+}
+
+// trace_i 1-based: 1 = cap, 2 = FG do multiplier armado.
+inline int fg_frametime_trace_k(int trace_i, int fg_mult) {
+  if (trace_i <= 1) return 1;
   const int m = clamp_fg_multiplier(fg_mult);
   return m < 2 ? 1 : m;
 }
@@ -90,13 +93,26 @@ inline double fg_frametime_trace_ms(double capture_ms, int trace_k) {
   return capture_ms / static_cast<double>(k);
 }
 
-// Empilha x2/x3/x4 um pouco acima da linha base (nao no teto do grafico).
-inline int fg_frametime_stack_lift_px(int natural_gap, int trace_k, int max_lift = 16) {
-  if (trace_k <= 1) return 0;
-  const int g = natural_gap < 0 ? -natural_gap : natural_gap;
-  const int cap = max_lift > 4 ? max_lift : 16;
-  const int lift = g * 25 / 100 + (trace_k - 1) * 4;
-  return lift < 4 ? 4 : (lift > cap ? cap : lift);
+// Y real: cap (mais ms / menos FPS) em baixo, FG (menos ms / mais FPS) em cima.
+inline int fg_frametime_plot_y(int gy, int gh, double cap_ms, int trace_k, double ceil_ms) {
+  const double ceil = ceil_ms < 1.0 ? 1.0 : ceil_ms;
+  const double ms = fg_frametime_trace_ms(cap_ms, trace_k);
+  const double t = ms < 0.0 ? 0.0 : (ms > ceil ? 1.0 : ms / ceil);
+  const int span = gh > 4 ? gh - 4 : 0;
+  return gy + 2 + static_cast<int>(t * static_cast<double>(span));
+}
+
+inline int fg_frametime_fps_gutter_px() { return 36; }
+
+inline int fg_frametime_fps(double capture_ms, int trace_k) {
+  const double ms = fg_frametime_trace_ms(capture_ms, trace_k);
+  if (ms < 0.2) return 0;
+  return static_cast<int>(1000.0 / ms + 0.5);
+}
+
+inline void format_fg_frametime_fps_label(char* out, size_t n, double capture_ms, int trace_k) {
+  if (!out || n == 0) return;
+  std::snprintf(out, n, "%d", fg_frametime_fps(capture_ms, trace_k));
 }
 
 struct FgFtRgb {
@@ -115,6 +131,51 @@ inline FgFtRgb fg_frametime_trace_rgb(int trace_k, bool stable) {
       return {80, 255, 160};  // mint x4
     default:
       return stable ? FgFtRgb{90, 220, 255} : FgFtRgb{255, 140, 90};
+  }
+}
+
+// HUD: STABLE / PLAYABLE FG / UNSTABLE. Mesma regra do grade PlayableFg (folga 0,5 + piso 20).
+enum class OverlayFtStatus { Stable, PlayableFg, Unstable };
+
+inline constexpr double kOverlayFtFpsSlop = 0.5;
+inline constexpr double kOverlayFtFgMinCapFps = 20.0;
+
+inline OverlayFtStatus overlay_ft_status(bool cap_stable, bool fg_on, int fg_mult, double fps_cap,
+                                        double target_fps, double fps_fg_est = 0) {
+  if (cap_stable) return OverlayFtStatus::Stable;
+  const int m = clamp_fg_multiplier(fg_mult);
+  if (!fg_on || m < 2) return OverlayFtStatus::Unstable;
+  if (fps_cap + 1e-9 < kOverlayFtFgMinCapFps) return OverlayFtStatus::Unstable;
+  const double tgt = target_fps > 1.0 ? target_fps : 60.0;
+  const double floor_fps = tgt - kOverlayFtFpsSlop;
+  const double fg = fps_fg_est > 0.0 ? fps_fg_est : (fps_cap * static_cast<double>(m));
+  if (fg + 1e-6 >= floor_fps) return OverlayFtStatus::PlayableFg;
+  return OverlayFtStatus::Unstable;
+}
+
+inline const char* overlay_ft_status_label(OverlayFtStatus s) {
+  switch (s) {
+    case OverlayFtStatus::Stable:
+      return "STABLE";
+    case OverlayFtStatus::PlayableFg:
+      return "PLAYABLE FG";
+    default:
+      return "UNSTABLE";
+  }
+}
+
+inline const char* overlay_ft_status_hint(OverlayFtStatus s) {
+  return s == OverlayFtStatus::PlayableFg ? "FG cobre a meta" : "";
+}
+
+inline FgFtRgb overlay_ft_status_rgb(OverlayFtStatus s) {
+  switch (s) {
+    case OverlayFtStatus::Stable:
+      return {120, 255, 160};
+    case OverlayFtStatus::PlayableFg:
+      return {255, 196, 72};
+    default:
+      return {255, 120, 100};
   }
 }
 
@@ -339,14 +400,13 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   push(cnt, 255, 180, 120);
 
   push_sep();
-  char ft_part[112]{};
+  const OverlayFtStatus ft_st =
+      overlay_ft_status(ft_stable, fg_on, fg_mult, fps_cap, target_fps, fps_fg_est);
+  const FgFtRgb ft_rgb = overlay_ft_status_rgb(ft_st);
+  char ft_part[128]{};
   std::snprintf(ft_part, sizeof(ft_part), "ft %.1f avg %.1f p95 %.1f max %.1f %s", frame_ms, ft_avg_ms,
-                ft_p95_ms, ft_max_ms, ft_stable ? "STABLE" : "UNSTABLE");
-  if (ft_stable) {
-    push(ft_part, 120, 255, 160);
-  } else {
-    push(ft_part, 255, 120, 100);
-  }
+                ft_p95_ms, ft_max_ms, overlay_ft_status_label(ft_st));
+  push(ft_part, ft_rgb.r, ft_rgb.g, ft_rgb.b);
 
   push_sep();
   char s600_part[120]{};

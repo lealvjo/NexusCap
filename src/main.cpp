@@ -79,24 +79,8 @@ constexpr int kExitBackToLobby = nexuscap::kSessionExitBackToLobby;
 
 void write_perf_test_session_result(const nexuscap::AppConfig& cfg, const nexuscap::PerfScoreAcc* acc,
                                     const char* fail_reason) {
-  if (!cfg.perf_test) return;
   nexuscap::PerfTestResult r;
-  r.valid = true;
-  r.plan = nexuscap::perf_test_plan_from_config(cfg);
-  r.sample.target_fps = r.plan.fps;
-  r.sample.fg_multiplier = r.plan.fg_multiplier;
-  if (fail_reason && *fail_reason) {
-    r.grade = nexuscap::PerfTestGrade::Fail;
-    r.summary = fail_reason;
-  } else if (acc && nexuscap::perf_test_score_ready(acc->frames())) {
-    r.sample = nexuscap::perf_test_sample_from_acc(*acc, r.plan.fps, r.plan.fg_multiplier);
-    r.grade = nexuscap::grade_perf_test(r.sample);
-    r.summary = nexuscap::format_perf_test_card(r.plan, r.sample, r.grade);
-  } else {
-    r.grade = nexuscap::PerfTestGrade::Fail;
-    r.summary = "O teste acabou sem amostras suficientes — nao usa o fps do vsync.";
-  }
-  r.popup = true;
+  if (!nexuscap::fill_perf_test_session_result(cfg, acc, fail_reason, r)) return;
   (void)nexuscap::write_perf_test_result_file(nexuscap::default_perf_test_result_path(nexuscap::app_data_dir()),
                                               r);
 }
@@ -1716,8 +1700,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
     }
 
-    const bool is_stall =
-        cfg.perf_test ? perf_test_is_stall(interval, cfg.fps, cfg.hitch_threshold_ms) : (interval >= hitch_ms);
+    const bool hdmi_perf = session_perf_popup_wanted(cfg.perf_report, cfg.perf_test);
+    const bool is_stall = (cfg.perf_test || hdmi_perf)
+                              ? perf_test_is_stall(interval, cfg.fps, cfg.hitch_threshold_ms)
+                              : (interval >= hitch_ms);
     if (cfg.perf_test && perf_scoring) {
       if (perf_score_skip > 0) {
         --perf_score_skip;
@@ -1736,6 +1722,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                     static_cast<unsigned long long>(kStatsWarmupFrames), max_boot_interval_ms);
       append_log(cfg.log_dir, wbuf);
       std::printf("%s\n", wbuf);
+    }
+    if (hdmi_perf && past_warmup) {
+      perf_acc.push(interval, present_ms, is_stall);
     }
 
     if (is_stall) {
@@ -1941,6 +1930,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   }
 
   if (g_return_to_lobby.load()) {
+    if (session_perf_popup_wanted(cfg.perf_report, cfg.perf_test) && !perf_result_written) {
+      write_perf_test_session_result(cfg, &perf_acc, nullptr);
+    }
     // Strip session scale from ReShade feed before lobby Present (menu must stay sharp).
     {
       wchar_t exe_path[MAX_PATH]{};

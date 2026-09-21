@@ -1463,6 +1463,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::TextDisabled(settings.ui.bug_report ? "  -> modo diagnostico (report/*.txt)"
                                                : "  -> off (sem overhead)");
     ImGui::Checkbox("Reportar performance", &settings.ui.perf_report);
+    ImGui::TextDisabled(settings.ui.perf_report ? "  -> no fim da captura abre a analise (mesmo modelo do Benchmark)"
+                                                : "  -> off (sem analise no fim)");
     ImGui::EndChild();
 
     // Footer sits directly under body; natural ItemSpacing.y is the only gap (already reserved).
@@ -1541,12 +1543,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     // Non-modal side panel — preview stays visible so you see adjustments live.
     if (g_open_gear) {
       const ImGuiViewport* mvp = ImGui::GetMainViewport();
-      // Mesma regra do CFG da captura: largura acompanha a janela, senão as notas ficam cortadas.
-      const float gear_w = (std::max)(420.f, (std::min)(mvp->WorkSize.x * 0.32f, 860.f));
+      // Largura minima cabe label + tecla + checkbox Ctrl.
+      const float gear_w = (std::max)(540.f, (std::min)(mvp->WorkSize.x * 0.36f, 860.f));
       const float gear_h = (std::max)(240.f, mvp->WorkSize.y - 120.f);
+      ImGui::SetNextWindowSizeConstraints(ImVec2(540.f, 240.f), ImVec2(FLT_MAX, FLT_MAX));
       ImGui::SetNextWindowPos(ImVec2(mvp->WorkPos.x + mvp->WorkSize.x - gear_w - 40.f, mvp->WorkPos.y + 80.f),
                               ImGuiCond_Appearing);
-      ImGui::SetNextWindowSize(ImVec2(gear_w, gear_h), ImGuiCond_Appearing);
+      ImGui::SetNextWindowSize(ImVec2(gear_w, gear_h), ImGuiCond_Always);
       if (ImGui::Begin("Configuracoes (CFG)", &g_open_gear, ImGuiWindowFlags_NoCollapse)) {
         ImGui::TextColored(nexuscap_accent_color(), "Ajuste e veja no preview ao vivo");
         ImGui::PushTextWrapPos(0.f);  // notas longas quebram linha em vez de sumir na borda
@@ -1708,7 +1711,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::SameLine();
         if (ImGui::RadioButton("1,5x##nrpass", pass_i == 4)) pass_i = 4;
         ImGui::SameLine();
-        if (ImGui::RadioButton("2x##nrpass", pass_i == 2)) pass_i = 2;
+        if (ImGui::RadioButton("2x default##nrpass", pass_i == 2)) pass_i = 2;
+        if (ImGui::RadioButton("2x otimizado##nrpass", pass_i == 5)) pass_i = 5;
         ImGui::SameLine();
         if (ImGui::RadioButton("3x##nrpass", pass_i == 3)) pass_i = 3;
         settings.nr_pass_count = clamp_nr_pass_count(pass_i);
@@ -1752,70 +1756,52 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           }
         }
         ImGui::TextDisabled("%s", nr_pass_count_15x_hint());
+        ImGui::TextDisabled("%s", nr_pass_count_2x_opt_hint());
         ImGui::TextDisabled("%s", nr_pass_count_23x_hint());
         ImGui::TextDisabled("Escala do Feed e manual se quiseres menos carga.");
         ImGui::TextDisabled("Delete ou Ctrl+M liga/desliga o NR na captura (reinicia e volta).");
         ImGui::EndDisabled();
 
         ImGui::Separator();
-        ImGui::TextUnformatted("Atalhos (estilo X2)");
-        auto hotkey_row = [&](const char* label, int* vk) {
-          ImGui::Text("%s", label);
-          ImGui::SameLine(200);
-          char buf[64];
-          std::snprintf(buf, sizeof(buf), "%s##%s", vk_display_name(*vk), label);
+        ImGui::TextUnformatted("Atalhos");
+        ImGui::TextDisabled("Clica a tecla para gravar outra.");
+        // Wrap global come o texto da tabela e esconde o Ctrl na borda.
+        ImGui::PopTextWrapPos();
+        const float label_w = 168.f;
+        const float key_w = 148.f;
+        auto bind_key = [&](const char* id, int* vk, bool with_ctrl) {
+          char buf[80];
           if (g_capture_vk_target == vk) {
-            ImGui::Button("Pressione tecla...", ImVec2(160, 0));
-          } else if (ImGui::Button(buf, ImVec2(160, 0))) {
-            g_capture_vk_target = vk;
+            std::snprintf(buf, sizeof(buf), "tecla...##%s", id);
+          } else if (with_ctrl) {
+            std::snprintf(buf, sizeof(buf), "Ctrl+%s##%s", vk_display_name(*vk), id);
+          } else {
+            std::snprintf(buf, sizeof(buf), "%s##%s", vk_display_name(*vk), id);
+          }
+          if (ImGui::Button(buf, ImVec2(key_w, 0))) g_capture_vk_target = vk;
+        };
+        auto hk_row = [&](const char* label, const char* id, int* vk, bool* ctrl) {
+          ImGui::AlignTextToFramePadding();
+          ImGui::TextUnformatted(label);
+          ImGui::SameLine(label_w);
+          bind_key(id, vk, ctrl && *ctrl);
+          if (ctrl) {
+            ImGui::SameLine(0.f, 10.f);
+            ImGui::Checkbox((std::string("Ctrl##") + id).c_str(), ctrl);
           }
         };
-        hotkey_row("CFG no lobby", &settings.hotkeys.vk_gear);
-        ImGui::TextDisabled("  default F12 — abre este painel sem clicar no botao CFG");
-        hotkey_row("Frame Gen on/off", &settings.hotkeys.vk_fg_toggle);
-        hotkey_row("Ciclo FG x2/x3/x4", &settings.hotkeys.vk_fg_cycle);
-        {
-          ImGui::AlignTextToFramePadding();
-          ImGui::TextUnformatted("Overlay HUD");
-          ImGui::SameLine(220);
-          char buf[64];
-          if (settings.hotkeys.hud_ctrl) {
-            std::snprintf(buf, sizeof(buf), "Ctrl+%s##hud", vk_display_name(settings.hotkeys.vk_hud));
-          } else {
-            std::snprintf(buf, sizeof(buf), "%s##hud", vk_display_name(settings.hotkeys.vk_hud));
-          }
-          if (g_capture_vk_target == &settings.hotkeys.vk_hud) {
-            ImGui::Button("... pressione tecla ...", ImVec2(200, 0));
-          } else if (ImGui::Button(buf, ImVec2(200, 0))) {
-            g_capture_vk_target = &settings.hotkeys.vk_hud;
-          }
-          ImGui::SameLine();
-          ImGui::Checkbox("Ctrl##hud_ctrl", &settings.hotkeys.hud_ctrl);
-        }
-        ImGui::TextDisabled("  cicla Compact / Mini / Advanced / Live; no fim desliga e recomeça");
-        {
-          ImGui::AlignTextToFramePadding();
-          ImGui::TextUnformatted("Menu na captura");
-          ImGui::SameLine(220);
-          char buf[64];
-          if (settings.hotkeys.cfg_ctrl) {
-            std::snprintf(buf, sizeof(buf), "Ctrl+%s##cfgkey", vk_display_name(settings.hotkeys.vk_cfg));
-          } else {
-            std::snprintf(buf, sizeof(buf), "%s##cfgkey", vk_display_name(settings.hotkeys.vk_cfg));
-          }
-          if (g_capture_vk_target == &settings.hotkeys.vk_cfg) {
-            ImGui::Button("... pressione tecla ...", ImVec2(200, 0));
-          } else if (ImGui::Button(buf, ImVec2(200, 0))) {
-            g_capture_vk_target = &settings.hotkeys.vk_cfg;
-          }
-          ImGui::SameLine();
-          ImGui::Checkbox("Ctrl##cfg_ctrl", &settings.hotkeys.cfg_ctrl);
-          ImGui::TextDisabled("  abre este CFG por cima do jogo, sem sair da captura");
-        }
-        hotkey_row("Analyze", &settings.hotkeys.vk_analyze);
-        hotkey_row("RenoDX", &settings.hotkeys.vk_renodx);
-        hotkey_row("Neural Rendering on/off", &settings.hotkeys.vk_nr_toggle);
-        hotkey_row("Tela cheia", &settings.hotkeys.vk_fullscreen);
+        ImGui::TextDisabled("Lobby");
+        hk_row("Abrir este CFG", "gear", &settings.hotkeys.vk_gear, nullptr);
+        ImGui::TextDisabled("Captura");
+        hk_row("Overlay HUD", "hud", &settings.hotkeys.vk_hud, &settings.hotkeys.hud_ctrl);
+        hk_row("CFG no jogo", "cfgkey", &settings.hotkeys.vk_cfg, &settings.hotkeys.cfg_ctrl);
+        hk_row("Frame Gen", "fg", &settings.hotkeys.vk_fg_toggle, nullptr);
+        hk_row("Ciclo Frame Gen", "fgcycle", &settings.hotkeys.vk_fg_cycle, nullptr);
+        hk_row("Neural Rendering", "nr", &settings.hotkeys.vk_nr_toggle, nullptr);
+        hk_row("Tela cheia", "fs", &settings.hotkeys.vk_fullscreen, nullptr);
+        hk_row("Analise", "analyze", &settings.hotkeys.vk_analyze, nullptr);
+        hk_row("Preset visual", "renodx", &settings.hotkeys.vk_renodx, nullptr);
+        ImGui::PushTextWrapPos(0.f);
 
         ImGui::Spacing();
         auto persist_gear = [&]() {
@@ -1867,10 +1853,12 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::SameLine();
         if (ImGui::RadioButton("1,5x##perfpass", pass_i == 4)) pass_i = 4;
         ImGui::SameLine();
-        if (ImGui::RadioButton("2x##perfpass", pass_i == 2)) pass_i = 2;
+        if (ImGui::RadioButton("2x default##perfpass", pass_i == 2)) pass_i = 2;
+        if (ImGui::RadioButton("2x otimizado##perfpass", pass_i == 5)) pass_i = 5;
         ImGui::SameLine();
         if (ImGui::RadioButton("3x##perfpass", pass_i == 3)) pass_i = 3;
         g_perf_plan.nr_pass_count = clamp_nr_pass_count(pass_i);
+        ImGui::TextDisabled("%s", nr_pass_count_2x_opt_hint());
 
         ImGui::Separator();
         ImGui::TextUnformatted("Resolucao do sinal");
@@ -2007,7 +1995,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       if (ImGui::Begin("##perf_result", &g_show_perf_result,
                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize |
                            ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::TextColored(grade_col, "%s", perf_test_grade_label(g_perf_result.grade));
+        ImGui::TextColored(grade_col, "%s",
+                           perf_result_popup_title(g_perf_result.hdmi_session, g_perf_result.grade));
         ImGui::Spacing();
         ImGui::PushTextWrapPos(ImGui::GetFontSize() * 36.f);
         ImGui::TextUnformatted(g_perf_result.summary.c_str());

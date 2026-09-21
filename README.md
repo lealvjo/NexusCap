@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `3.1.10` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `3.1.11` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -60,6 +60,12 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 7. **Reportar bug / Reportar performance** (checkboxes abaixo do VSYNC, off por padrão): geram `.txt` leves em `report/` e `performance/` ao lado do exe — úteis para suporte / colar numa IA.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
+
+### Novidades 3.1.11
+
+- **2x otimizado** exclusivo NexusCap: os mesmos dois evaluates do 2x default, com gancho de cor/UI mais estável — menos flicker e ghost, melhor imagem. O 2x default fica como estava. 1x, 1,5x e 3x sem mudança.
+- **Reportar performance** no HDMI: no Esc/X abre o mesmo cartão do Benchmark (nota + conselho). Título: *Reportar performance ao finalizar gameplay*. O Benchmark (clipe 40 s, hold, relançar) não muda.
+- **Frametime com FG:** duas linhas (cap em baixo, FG em cima) com o FPS à esquerda. Overlay **STABLE** / **PLAYABLE FG** / **UNSTABLE** — dourado quando o FG cobre a meta 30/60.
 
 ### Novidades 3.1.10
 

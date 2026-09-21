@@ -127,6 +127,15 @@ inline bool perf_test_should_popup_result(bool just_finished_benchmark, bool res
   return result_valid && (just_finished_benchmark || file_popup);
 }
 
+// HDMI: checkbox SESSÃO "Reportar performance". Nunca no caminho do Benchmark.
+inline bool session_perf_popup_wanted(bool perf_report, bool perf_test) {
+  return perf_report && !perf_test;
+}
+
+inline const char* session_perf_popup_title() {
+  return "Reportar performance ao finalizar gameplay";
+}
+
 struct PerfTestPlan {
   int width = 1920;
   int height = 1080;
@@ -173,6 +182,10 @@ inline bool perf_test_score_ready(uint64_t frames, uint64_t min_n = kPerfTestMin
   return frames >= min_n;
 }
 
+inline bool session_perf_result_ready(bool perf_report, bool perf_test, uint64_t frames) {
+  return session_perf_popup_wanted(perf_report, perf_test) && perf_test_score_ready(frames);
+}
+
 inline double perf_test_p95(std::vector<double> v) {
   if (v.empty()) return 0;
   std::sort(v.begin(), v.end());
@@ -204,6 +217,7 @@ struct PerfTestResult {
   std::string summary;
   bool valid = false;
   bool popup = false;  // 1 = mostrar no lobby; sobrevive ao relaunch da escala
+  bool hdmi_session = false;  // titulo HDMI; o Benchmark continua com a nota
 };
 
 inline double clamp_perf_test_fps(double fps) { return fps < 45.0 ? 30.0 : 60.0; }
@@ -381,6 +395,10 @@ inline const char* perf_test_grade_label(PerfTestGrade g) {
   }
 }
 
+inline const char* perf_result_popup_title(bool hdmi_session, PerfTestGrade grade) {
+  return hdmi_session ? session_perf_popup_title() : perf_test_grade_label(grade);
+}
+
 inline const char* perf_test_fg_label(int fg_mult) {
   const int m = clamp_fg_multiplier(fg_mult);
   if (m < 2) return "FG off";
@@ -429,6 +447,7 @@ inline double perf_test_pass_work(int nr_pass_count) {
     case 4:
       return 1.5;
     case 2:
+    case 5:
       return 2.0;
     case 3:
       return 3.0;
@@ -774,6 +793,7 @@ inline std::string serialize_perf_test_result(const PerfTestResult& r) {
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
   o << "video=" << p.video << "\n";
   o << "popup=" << (r.popup ? 1 : 0) << "\n";
+  o << "hdmi_session=" << (r.hdmi_session ? 1 : 0) << "\n";
   o << "summary=" << r.summary << "\n";
   return o.str();
 }
@@ -803,6 +823,7 @@ inline bool parse_perf_test_result(const std::string& text, PerfTestResult& out)
     else if (k == "fg_multiplier") out.plan.fg_multiplier = std::atoi(v.c_str());
     else if (k == "video") out.plan.video = v;
     else if (k == "popup") out.popup = (v == "1" || v == "true");
+    else if (k == "hdmi_session") out.hdmi_session = (v == "1" || v == "true");
     else if (k == "summary") out.summary = v;
   }
   out.plan = clamp_perf_test_plan(out.plan);
@@ -884,6 +905,34 @@ inline PerfTestPlan perf_test_plan_from_config(const AppConfig& cfg) {
   p.audio = cfg.perf_test_audio;
   p.video = cfg.video_path;
   return clamp_perf_test_plan(p);
+}
+
+// Benchmark: sempre escreve (inclui falha / poucas amostras). HDMI: so com ≥180 frames.
+inline bool fill_perf_test_session_result(const AppConfig& cfg, const PerfScoreAcc* acc, const char* fail_reason,
+                                         PerfTestResult& out) {
+  const bool hdmi = session_perf_popup_wanted(cfg.perf_report, cfg.perf_test);
+  if (!cfg.perf_test && !hdmi) return false;
+  if (hdmi && (!acc || !perf_test_score_ready(acc->frames()))) return false;
+
+  out = PerfTestResult{};
+  out.valid = true;
+  out.hdmi_session = hdmi;
+  out.plan = perf_test_plan_from_config(cfg);
+  out.sample.target_fps = out.plan.fps;
+  out.sample.fg_multiplier = out.plan.fg_multiplier;
+  if (!hdmi && fail_reason && *fail_reason) {
+    out.grade = PerfTestGrade::Fail;
+    out.summary = fail_reason;
+  } else if (acc && perf_test_score_ready(acc->frames())) {
+    out.sample = perf_test_sample_from_acc(*acc, out.plan.fps, out.plan.fg_multiplier);
+    out.grade = grade_perf_test(out.sample);
+    out.summary = format_perf_test_card(out.plan, out.sample, out.grade);
+  } else {
+    out.grade = PerfTestGrade::Fail;
+    out.summary = "O teste acabou sem amostras suficientes — nao usa o fps do vsync.";
+  }
+  out.popup = true;
+  return true;
 }
 
 }  // namespace nexuscap

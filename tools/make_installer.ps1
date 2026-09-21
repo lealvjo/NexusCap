@@ -1,9 +1,9 @@
-# NexusCap - gera instalador Inno Setup (sem Lossless Scaling).
+# NexusCap - gera instalador Inno Setup e zip portable (sem Lossless Scaling).
 # Uso:
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "4.1.1",
+  [string]$Version = "4.1.2",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -283,5 +283,24 @@ if (-not (Test-Path -LiteralPath $Setup)) {
 
 $sizeMb = [math]::Round((Get-Item $Setup).Length / 1MB, 1)
 Write-Host "`nOK -> $Setup ($sizeMb MB)" -ForegroundColor Green
+
+Write-Host "`n-- Zip portable --" -ForegroundColor Cyan
+# Nao fica no stage do Inno: o setup continua sem portable.txt.
+$sentinel = Join-Path $Stage "portable.txt"
+Set-Content -Path $sentinel -Value "" -Encoding ASCII
+$Zip = Join-Path $Dist "NexusCap-Portable-$Version.zip"
+if (Test-Path -LiteralPath $Zip) { Remove-Item -LiteralPath $Zip -Force }
+try {
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::CreateFromDirectory($Stage, $Zip)
+} finally {
+  Remove-Item -LiteralPath $sentinel -Force -ErrorAction SilentlyContinue
+}
+if (-not (Test-Path -LiteralPath $Zip)) {
+  throw "Zip portable nao gerado: $Zip"
+}
+$zipMb = [math]::Round((Get-Item $Zip).Length / 1MB, 1)
+Write-Host "OK -> $Zip ($zipMb MB)" -ForegroundColor Green
 Write-Host "Lossless Scaling NAO incluso (Frame Gen opcional via Steam)."
-Write-Host "Settings do usuario: %LOCALAPPDATA%\NexusCap\"
+Write-Host "Setup: settings em %LOCALAPPDATA%\NexusCap\"
+Write-Host "Portable: settings/presets/logs na pasta do zip (portable.txt)."

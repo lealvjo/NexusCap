@@ -1,6 +1,6 @@
 # BDD NexusCap (ponta a ponta)
 
-Cenarios Gherkin em portugues (release **4.1.1**). Correr **na mao** no HDMI; o `ctest` so cobre o que esta marcado `@auto`.
+Cenarios Gherkin em portugues (release **4.1.2**). Correr **na mao** no HDMI; o `ctest` so cobre o que esta marcado `@auto`.
 
 `run_e2e.ps1` e um atalho HDMI (F12, Ctrl+M, Pass Count, FG). Nao substitui olhar Cinema vs Default no ecran.
 
@@ -11,7 +11,7 @@ Cenarios Gherkin em portugues (release **4.1.1**). Correr **na mao** no HDMI; o 
 3. CFG do menu principal (nao e Ctrl+M): [`lobby_cfg.feature`](lobby_cfg.feature) — F12, RenoDX no preview, cenas, Pass Count, Salvar.
 4. Sessao Ctrl+M em cada x: [`sessao_cfg.feature`](sessao_cfg.feature) — NR, Default/Natural/Cinematic, Pass Count, FG, escala.
 5. Atalhos: [`atalhos.feature`](atalhos.feature) — defaults, bloqueio com menu aberto, rebind.
-6. Distribuicao: [`distribuicao.feature`](distribuicao.feature) — instalador, HDMI, reports.
+6. Distribuicao: [`distribuicao.feature`](distribuicao.feature) — instalador, zip portable, HDMI, reports.
 
 So publica se todos os `@critico` dessa volta estiverem OK.
 

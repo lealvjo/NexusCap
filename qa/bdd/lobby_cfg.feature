@@ -177,6 +177,12 @@ Funcionalidade: CFG do menu principal
     E o Iniciar abre nesse jeito
     E Importar nao aplica sozinho
 
+  @auto
+  Cenario: CFG do lobby avisa modo portable
+    Dado que portable.txt ou --portable esta ativo
+    Entao o CFG mostra que settings, presets e logs ficam na pasta do exe
+    E Abrir logs abre essa pasta
+
   @critico @hdmi
   Cenario: Renomear no lobby e a mesma lista do Ctrl+M
     Dado que estou no CFG do lobby (F12)

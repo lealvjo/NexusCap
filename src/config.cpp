@@ -27,6 +27,8 @@ AppConfig parse_args(int argc, char** argv) {
       c.show_lobby = false;
     } else if (a == "--autostart") {
       c.autostart = true;  // lobby settings still seed cfg; first lobby pass is skipped
+    } else if (a == "--portable") {
+      c.portable = true;  // same as portable.txt beside the exe
     } else if (a.rfind("--hud=", 0) == 0) {
       OverlayHudStep step = OverlayHudStep::Compact;
       if (parse_overlay_hud_step(a.c_str() + 6, step)) {

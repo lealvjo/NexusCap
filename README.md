@@ -8,27 +8,30 @@
 
 | | |
 |---|---|
-| **Versão** | `4.1.1` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `4.1.2` · instalador + zip portable via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
-| **Settings / install** | `%LOCALAPPDATA%\NexusCap` (não use Program Files) |
+| **Settings / install** | Setup: `%LOCALAPPDATA%\NexusCap` · Portable: pasta do zip (`portable.txt`) |
 
 ---
 
 ## Para a comunidade (download)
 
-Distribua **só** o instalador — sem pasta manual, sem código:
+Distribua o **instalador** ou o **zip portable** — sem pasta manual, sem código:
 
-**[NexusCap-Setup-4.1.1.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-4.1.2.exe](https://github.com/lealvjo/NexusCap/releases)** — instala na conta, sem admin.
 
-O setup **não fica no git**; sobe na **Release** do GitHub.
+**[NexusCap-Portable-4.1.2.zip](https://github.com/lealvjo/NexusCap/releases)** — extrai e roda. Settings e presets viajam com a pasta.
+
+O setup e o zip **não ficam no git**; sobem na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-4.1.1.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+1. **Setup:** instalar `NexusCap-Setup-4.1.2.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+   **Portable:** extrair `NexusCap-Portable-4.1.2.zip` numa pasta gravável (SSD; não use Program Files).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
-3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
+3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup nem no zip). Page Down no CFG.
 
 Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
@@ -37,7 +40,7 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 | Precisa | Detalhe |
 |---------|---------|
 | **Placa de captura** | HDMI via DirectShow (ex.: VEDO / Elgato / similar) |
-| **GPU NVIDIA** | Para RenoDX / Neural Rendering (já embutido no setup) |
+| **GPU NVIDIA** | Para RenoDX / Neural Rendering (já embutido no setup e no zip) |
 | **Windows 64-bit** | Build nativo |
 | **Frame Gen (opcional)** | [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam — **única** instalação extra |
 
@@ -51,8 +54,8 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-4.1.1.exe` na Release do GitHub.
-2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap`, sem admin — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
+1. Baixe `NexusCap-Setup-4.1.2.exe` **ou** `NexusCap-Portable-4.1.2.zip` na Release do GitHub.
+2. Setup: execute (instala em `%LOCALAPPDATA%\NexusCap`, sem admin). Portable: extraia numa pasta gravável e abra `NexusCap.exe` — o `portable.txt` faz settings/presets/logs ficarem nessa pasta.
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
 5. **Frame Gen (opcional):** instale Lossless Scaling na Steam; no CFG, Page Down liga/desliga. Se o exe não for achado, use **Pasta** e aponte `LosslessScaling.exe`.
@@ -69,6 +72,10 @@ Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que a
 
 O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
 
+### Novidades 4.1.2
+
+- **Setup e zip no mesmo release.** Instala na conta, ou extrai e leva a pasta. Presets e settings viajam com o `portable.txt`. Frame Gen continua nesta maquina.
+
 ### Novidades 4.1.1
 
 - **Presets na pratica:** Renomear, nome ate 50, lista em duas linhas (cena + Pass + FG). Compartilha e importa `.nexuscap-preset`.
@@ -76,7 +83,7 @@ O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você q
 
 ### Novidades 4.1.0
 
-- **Presets de sessao:** o snapshot do Ctrl+M (escala, FG, NR, look, Pass, HUD/console) grava com nome de 1 a 50 caracteres em `%LOCALAPPDATA%\NexusCap\presets`. O mesmo bloco aparece no CFG do lobby (F12), nao na coluna SESSAO.
+- **Presets de sessao:** o snapshot do Ctrl+M (escala, FG, NR, look, Pass, HUD/console) grava com nome de 1 a 50 caracteres em `%LOCALAPPDATA%\NexusCap\presets` (instalado) ou `presets\` ao lado do exe (portable). O mesmo bloco aparece no CFG do lobby (F12), nao na coluna SESSAO.
 - **Aplicar / compartilhar / importar:** nome unico (case-insensitive, overwrite). Arquivo `.nexuscap-preset`. Importar nao aplica sozinho. Benchmark nao le nem grava preset.
 - **Reportar performance no HDMI:** Esc com escala/NR relanca o lobby e ainda abre a analise (mesmo cartao do Benchmark).
 - Traz o 4.0.1/4.0.2: overlay FG ON real, instalador sem video duplicado e sem NGX na raiz (~693 MB).
@@ -454,16 +461,16 @@ Ou `build.bat`. POST_BUILD copia DLLs NVIDIA (`nvngx` / Streamline legado) + `as
 
 ## Instalador (Inno Setup)
 
-Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Frame Gen continua opcional via Steam).
+Gera `dist\NexusCap-Setup-<versão>.exe` e `dist\NexusCap-Portable-<versão>.zip`. **Não inclui Lossless Scaling** (Frame Gen continua opcional via Steam).
 
 **Requisitos extras:** [Inno Setup 6+](https://jrsoftware.org/isinfo.php) (o script pode instalar via winget) e, para embutir RenoDX, a pasta X2 (`C:\Program Files\DLSS5 MGF X2`).
 
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.1.1
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.1.2
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.1.1
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.1.2
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (`PrivilegesRequired=lowest` no Inno — **sem UAC / sem admin**). É menos invasivo de propósito: o setup não mexe no sistema. **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.
@@ -473,9 +480,11 @@ Instala por padrão em `%LOCALAPPDATA%\NexusCap` (`PrivilegesRequired=lowest` no
 | Script Inno | `packaging/NexusCap.iss` |
 | Stage limpo | `dist/stage/` |
 | Aviso LS | `packaging/NOTICE.txt` (wizard + pasta do app) |
-| Saída | `dist/NexusCap-Setup-*.exe` |
+| Saída | `dist/NexusCap-Setup-*.exe` e `dist/NexusCap-Portable-*.zip` |
 
-Desinstalação remove o app; **não** apaga `%LOCALAPPDATA%\NexusCap\settings.ini`.
+Desinstalação remove o app; **não** apaga `%LOCALAPPDATA%\NexusCap\settings.ini`. O zip portable não tem desinstalador — apague a pasta.
+
+O `portable.txt` **não** entra no setup. Só no zip. Copiar a pasta instalada sem esse arquivo continua gravando no AppData deste Windows.
 
 ---
 
@@ -502,6 +511,7 @@ build\Release\NexusCap.exe --selftest-fg --fake-capture
 | `--scale 25–100` | Trabalho GPU |
 | `--device <nome>` | Filtro dispositivo |
 | `--windowed` | Janela |
+| `--portable` | Settings/presets/logs na pasta do exe (o zip já traz `portable.txt`) |
 | `--smoke` / `--frames N` / `--fake-capture` | Testes |
 | `--selftest-cap` / `--selftest-dlss` / `--selftest-fg` / `--selftest-cfg` | Selftests |
 
@@ -525,9 +535,9 @@ build\Release\NexusCap.exe --selftest-fg --fake-capture
 
 ## Persistência e logs
 
-- Settings: `%LOCALAPPDATA%\NexusCap\settings.ini`
-- FG mira-lock: `%LOCALAPPDATA%\Lossless Scaling\Settings.xml`
-- Logs: `logs\` (`nexuscap.log`, summary, JSONL do analyze)
+- Settings: `%LOCALAPPDATA%\NexusCap\settings.ini` (instalado) ou `settings.ini` ao lado do exe (portable)
+- FG mira-lock: `%LOCALAPPDATA%\Lossless Scaling\Settings.xml` (sempre desta máquina — não viaja no zip)
+- Logs: `logs\` em AppData (instalado) ou ao lado do exe (portable)
 
 ---
 

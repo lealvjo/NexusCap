@@ -31,6 +31,7 @@ struct AppConfig {
   bool frames_limited = false;  // true when --frames was passed (auto-quit)
   bool show_lobby = true;       // false with --no-lobby / --smoke / selftests
   bool autostart = false;       // --autostart: seed from settings, skip lobby once (feed scale relaunch)
+  bool portable = false;        // --portable: settings/presets/logs beside the exe (zip / USB)
   bool open_lobby_cfg = false;  // --lobby-cfg: reopen lobby CFG after a motor/Pass Count restart
   int overlay_hud_restore = -1; // --hud=: session overlay after OUR restart (not lobby checks)
   bool advanced_metrics = false;

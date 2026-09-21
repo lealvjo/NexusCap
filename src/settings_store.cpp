@@ -51,17 +51,59 @@ std::wstring utf8_to_wide(const std::string& s) {
   return out;
 }
 
-}  // namespace
+bool file_exists_utf8(const std::string& path) {
+  const std::wstring w = utf8_to_wide(path);
+  const DWORD a = GetFileAttributesW(w.c_str());
+  return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
 
-std::string app_data_dir() {
+std::string local_appdata_env() {
   wchar_t* buf = nullptr;
   size_t len = 0;
   if (_wdupenv_s(&buf, &len, L"LOCALAPPDATA") != 0 || !buf) return {};
   std::wstring dir(buf);
   free(buf);
-  dir += L"\\NexusCap";
-  CreateDirectoryW(dir.c_str(), nullptr);
   return wide_to_utf8(dir);
+}
+
+std::string module_dir() {
+  wchar_t exe[MAX_PATH]{};
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH) || !exe[0]) return {};
+  std::wstring p(exe);
+  const auto slash = p.find_last_of(L"\\/");
+  if (slash == std::wstring::npos) return {};
+  return wide_to_utf8(p.substr(0, slash));
+}
+
+bool g_portable_cli = false;
+bool g_paths_ready = false;
+bool g_portable = false;
+std::string g_data_dir;
+
+}  // namespace
+
+void init_app_paths(bool portable_cli) {
+  g_portable_cli = portable_cli;
+  g_paths_ready = false;
+  g_portable = false;
+  g_data_dir.clear();
+}
+
+bool app_is_portable() {
+  (void)app_data_dir();
+  return g_portable;
+}
+
+std::string app_data_dir() {
+  if (g_paths_ready) return g_data_dir;
+  const std::string exe_dir = module_dir();
+  const std::string sentinel =
+      exe_dir.empty() ? std::string{} : exe_dir + "\\" + kPortableSentinelName;
+  g_portable = want_portable_mode(!sentinel.empty() && file_exists_utf8(sentinel), g_portable_cli);
+  g_data_dir = resolve_app_data_dir(exe_dir, local_appdata_env(), g_portable);
+  if (!g_data_dir.empty()) CreateDirectoryW(utf8_to_wide(g_data_dir).c_str(), nullptr);
+  g_paths_ready = true;
+  return g_data_dir;
 }
 
 std::string settings_default_path() {
@@ -104,12 +146,6 @@ bool directory_is_writable(const std::string& dir) {
   CloseHandle(h);
   DeleteFileW(probe.c_str());
   return true;
-}
-
-static bool file_exists_utf8(const std::string& path) {
-  const std::wstring w = utf8_to_wide(path);
-  const DWORD a = GetFileAttributesW(w.c_str());
-  return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
 RuntimeHealth check_runtime_health(const std::string& exe_dir) {
@@ -472,9 +508,10 @@ bool relaunch_current_process(const char* extra_args) {
   std::wstring cmd = L"\"";
   cmd += exe;
   cmd += L"\"";
-  if (extra_args && *extra_args) {
+  const std::string extra = portable_relaunch_args(extra_args, app_is_portable());
+  if (!extra.empty()) {
     cmd += L' ';
-    for (const char* p = extra_args; *p; ++p) cmd += static_cast<wchar_t>(*p);  // ASCII flags only
+    for (const char* p = extra.c_str(); *p; ++p) cmd += static_cast<wchar_t>(*p);  // ASCII flags only
   }
   std::vector<wchar_t> buf(cmd.begin(), cmd.end());
   buf.push_back(L'\0');

@@ -3063,17 +3063,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 1, 1));
+  CHECK(app_version_is(4, 1, 2));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.1.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.1.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.1");
+  CHECK(std::string(kAppVersion) == "4.1.2");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.1.2") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.2");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.1.1") != std::string::npos);
+  CHECK(lobby_t.find("4.1.2") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.1.1") != std::string::npos);
+  CHECK(sess_t.find("4.1.2") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -3279,6 +3279,40 @@ TEST_CASE("renodx runtime dirs prefer writable AppData cache") {
   ini = apply_keyed_value(std::move(ini), "IntermediateCachePath=", cache);
   CHECK(ini.find(cache) != std::string::npos);
   CHECK(ini.find(".\\reshade-cache") == std::string::npos);
+}
+
+TEST_CASE("portable mode: exe folder vs AppData") {
+  CHECK_FALSE(want_portable_mode(false, false));
+  CHECK(want_portable_mode(true, false));
+  CHECK(want_portable_mode(false, true));
+  CHECK(want_portable_mode(true, true));
+  CHECK(std::string(kPortableSentinelName) == "portable.txt");
+
+  CHECK(resolve_app_data_dir("E:\\usb\\NexusCap", "C:\\Users\\u\\AppData\\Local", false) ==
+        "C:\\Users\\u\\AppData\\Local\\NexusCap");
+  CHECK(resolve_app_data_dir("E:\\usb\\NexusCap", "C:\\Users\\u\\AppData\\Local", true) == "E:\\usb\\NexusCap");
+  CHECK(resolve_app_data_dir("", "C:\\Users\\u\\AppData\\Local", true) == "C:\\Users\\u\\AppData\\Local\\NexusCap");
+  CHECK(resolve_app_data_dir("E:\\usb", "", false).empty());
+  CHECK(resolve_app_data_dir("E:\\usb", "", true) == "E:\\usb");
+
+  CHECK(portable_relaunch_args("--autostart", false) == "--autostart");
+  CHECK(portable_relaunch_args("--autostart", true) == "--portable --autostart");
+  CHECK(portable_relaunch_args(nullptr, true) == "--portable");
+  CHECK(portable_relaunch_args(nullptr, false).empty());
+  CHECK(portable_relaunch_args("--lobby-cfg", true) == "--portable --lobby-cfg");
+  CHECK(portable_relaunch_args("--show-perf-result", true) == "--portable --show-perf-result");
+
+  const char* argv_on[] = {"NexusCap.exe", "--portable", "--autostart"};
+  const AppConfig on = parse_args(3, const_cast<char**>(argv_on));
+  CHECK(on.portable);
+  CHECK(on.autostart);
+
+  const char* argv_off[] = {"NexusCap.exe", "--autostart"};
+  CHECK_FALSE(parse_args(2, const_cast<char**>(argv_off)).portable);
+
+  CHECK(std::strstr(portable_data_dir_hint(), "portable") != nullptr);
+  CHECK(std::strstr(portable_data_dir_hint(), "exe") != nullptr);
+  CHECK_FALSE(app_is_portable());  // unit exe has no portable.txt and no init_app_paths(true)
 }
 
 TEST_CASE("lobby RenoDX preview: toggle and presets apply on Present") {

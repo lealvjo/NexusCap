@@ -1110,7 +1110,37 @@ inline bool feed_leaks_session_scale_into_lobby(const std::string& feed_text) {
 HotkeyConfig default_hotkeys();
 PersistedSettings default_settings();
 
-// %LOCALAPPDATA%\NexusCap (created if missing). Empty if LOCALAPPDATA unavailable.
+inline constexpr const char kPortableSentinelName[] = "portable.txt";
+
+inline bool want_portable_mode(bool sentinel_present, bool portable_cli) {
+  return sentinel_present || portable_cli;
+}
+
+// Installed: localappdata\NexusCap. Portable: exe_dir (empty exe_dir falls back).
+inline std::string resolve_app_data_dir(const std::string& exe_dir, const std::string& localappdata,
+                                        bool portable) {
+  if (portable && !exe_dir.empty()) return exe_dir;
+  if (localappdata.empty()) return {};
+  return localappdata + "\\NexusCap";
+}
+
+// Relaunch must keep --portable when the zip/CLI opted in (sentinel file is enough on its own).
+inline std::string portable_relaunch_args(const char* extra, bool portable) {
+  const char* e = extra ? extra : "";
+  if (!portable) return std::string(e);
+  if (!e[0]) return std::string("--portable");
+  return std::string("--portable ") + e;
+}
+
+inline const char* portable_data_dir_hint() {
+  return "Modo portable: settings, presets e logs nesta pasta (ao lado do exe).";
+}
+
+// Call once after parse_args so --portable wins before the first settings/log write.
+void init_app_paths(bool portable_cli);
+bool app_is_portable();
+
+// Installed: %LOCALAPPDATA%\NexusCap. Portable: pasta do exe. Created if missing.
 std::string app_data_dir();
 std::string settings_default_path();  // app_data_dir()\settings.ini
 std::string app_logs_dir();          // app_data_dir()\logs

@@ -44,6 +44,24 @@ Funcionalidade: Distribuicao e caminhos criticos
     Entao passam unit, smoke, smoke_fg_off, smoke_no_lobby, selftest_fg e selftest_cfg
     Mas os cenarios @hdmi desta pasta ainda precisam de ser corridos na mao
 
+  @auto
+  Cenario: Instalador e zip portable no mesmo build
+    Dado o resolver de app_data_dir
+    Entao sem portable.txt o destino e %LOCALAPPDATA%\NexusCap
+    E com portable.txt ou --portable o destino e a pasta do exe
+    E o relaunch de escala/CFG leva --portable se o modo estiver ativo
+    E o make_installer gera NexusCap-Setup e NexusCap-Portable do mesmo stage
+    E o Frame Gen continua a ser o Lossless Scaling desta maquina
+
+  @importante @hdmi
+  Cenario: Zip portable extrai e grava ao lado do exe
+    Dado que eu extraio NexusCap-Portable numa pasta gravavel
+    Quando eu abro NexusCap.exe
+    Entao o CFG do lobby diz que settings presets e logs ficam nesta pasta
+    E Abrir logs abre a pasta do zip
+    E um preset salvo aparece em presets\ ao lado do exe
+    E o AppData desta conta nao recebe settings.ini novo deste processo
+
   @critico @hdmi
   Cenario: Checklist minima para publicar
     Dado que a suite automatica passou

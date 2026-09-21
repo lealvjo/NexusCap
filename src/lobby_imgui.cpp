@@ -1789,6 +1789,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           ImGui::TextDisabled("Sinal %dx%d  ·  pixels RGB ~%d%%  ·  min %d%%", settings.width, settings.height,
                               pct_pix, kMinScalePercent);
         }
+        if (app_is_portable()) ImGui::TextDisabled("%s", portable_data_dir_hint());
         if (ImGui::Button("Abrir logs")) {
           if (!open_app_logs_folder()) push_lobby_toast("Nao foi possivel abrir a pasta de logs.");
         }

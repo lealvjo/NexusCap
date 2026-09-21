@@ -2073,10 +2073,11 @@ int main(int argc, char** argv) {
 #endif
 
   auto cfg = nexuscap::parse_args(argc, argv);
+  nexuscap::init_app_paths(cfg.portable);
   wchar_t exe_path[MAX_PATH];
   GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
   fs::path base = fs::path(exe_path).parent_path();
-  // Logs always in AppData — Program Files is not writable after install.
+  // Logs: AppData no setup; pasta do exe no portable.
   cfg.log_dir = nexuscap::app_logs_dir();
   // Reinício pedido pelo CFG: o aviso reaparece aqui e só sai no primeiro frame da sessão.
   if (cfg.perf_test) {

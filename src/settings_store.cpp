@@ -86,6 +86,14 @@ std::string app_reshade_cache_dir() {
   return base + "\\reshade-cache";
 }
 
+std::string app_presets_dir() {
+  const std::string base = app_data_dir();
+  if (base.empty()) return "presets";
+  const std::wstring w = utf8_to_wide(base + "\\presets");
+  CreateDirectoryW(w.c_str(), nullptr);
+  return base + "\\presets";
+}
+
 bool directory_is_writable(const std::string& dir) {
   if (dir.empty()) return false;
   const std::wstring wdir = utf8_to_wide(dir);

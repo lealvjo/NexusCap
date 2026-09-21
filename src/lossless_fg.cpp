@@ -107,6 +107,34 @@ BOOL CALLBACK enum_hide_ls(HWND hwnd, LPARAM) {
   return TRUE;
 }
 
+struct LsGenScan {
+  RECT target{};
+  bool require_cover = false;
+  bool found = false;
+};
+
+BOOL CALLBACK enum_ls_generating(HWND hwnd, LPARAM lp) {
+  auto* s = reinterpret_cast<LsGenScan*>(lp);
+  if (!s || !IsWindowVisible(hwnd)) return TRUE;
+  wchar_t title[256]{};
+  GetWindowTextW(hwnd, title, 256);
+  wchar_t cls[128]{};
+  GetClassNameW(hwnd, cls, 128);
+  const unsigned ex = static_cast<unsigned>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+  RECT rc{};
+  GetWindowRect(hwnd, &rc);
+  const int w = rc.right - rc.left;
+  const int h = rc.bottom - rc.top;
+  if (!ls_is_generating_output(title, cls, ex, w, h)) return TRUE;
+  if (s->require_cover) {
+    const int tw = s->target.right - s->target.left;
+    const int th = s->target.bottom - s->target.top;
+    if (!ls_output_covers_target(rc.left, rc.top, w, h, s->target.left, s->target.top, tw, th)) return TRUE;
+  }
+  s->found = true;
+  return FALSE;
+}
+
 }  // namespace
 
 std::string default_steam_lossless_exe() {
@@ -918,9 +946,26 @@ bool LosslessFgController::owned_process_alive() const {
   return code == STILL_ACTIVE;
 }
 
-bool LosslessFgController::overlay_reads_on() const {
+bool LosslessFgController::output_generating_on(HWND target) const {
+  static bool cached = false;
+  static DWORD last_tick = 0;
+  static HWND last_hwnd = nullptr;
+  const DWORD now = GetTickCount();
+  if (last_tick != 0 && last_hwnd == target && (now - last_tick) < 200) return cached;
+  last_tick = now;
+  last_hwnd = target;
+  LsGenScan scan{};
+  // Sem exigencia de cobertura: DPI 100/200 desalinha GetWindowRect e mentia FG off.
+  (void)target;
+  EnumWindows(enum_ls_generating, reinterpret_cast<LPARAM>(&scan));
+  cached = scan.found;
+  return cached;
+}
+
+bool LosslessFgController::overlay_reads_on(HWND target) const {
   return fg_overlay_reads_on(state_.active, state_.multiplier, owned_process_alive(),
-                             count_running_lossless_processes(true), confirmed_on_);
+                             count_running_lossless_processes(true), confirmed_on_,
+                             output_generating_on(target));
 }
 
 void LosslessFgController::reconcile_process() {

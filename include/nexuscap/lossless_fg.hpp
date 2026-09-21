@@ -594,18 +594,47 @@ inline bool ls_ini_fps_counter_hidden(const std::string& ini) {
   return ini.find("scale = 0", sec) != std::string::npos && ini.find("show_captured = 0", sec) != std::string::npos;
 }
 
-// Hide the LS settings UI and the small DrawFps chip. Keep the big FG output
-// (topmost/layered, capture-sized) or Present cai para 40 Hz com o medidor por cima.
+// Hide the LS settings UI and the small DrawFps chip. Never hide a large surface
+// (LS output pode vir sem TOPMOST/LAYERED; esconder ela mata o FG na tela).
 inline bool ls_should_hide_window(const wchar_t* title, const wchar_t* cls, unsigned ex_style, int w = 0,
                                   int h = 0) {
   if (!title) title = L"";
   if (!cls) cls = L"";
   const bool named = wcsstr(title, L"Lossless Scaling") != nullptr || wcsstr(cls, L"Lossless") != nullptr;
   if (!named) return false;
+  if (wcsstr(cls, L"HwndWrapper") != nullptr) return true;
+  if (w >= 640 && h >= 360) return false;
   if ((ex_style & WS_EX_TOPMOST) || (ex_style & WS_EX_LAYERED)) {
     return w > 0 && h > 0 && w <= 420 && h <= 220;
   }
   return true;
+}
+
+// Superficie grande do LS. Chip DrawFps e a janela WPF de settings nao contam.
+inline bool ls_is_generating_output(const wchar_t* title, const wchar_t* cls, unsigned ex_style, int w,
+                                    int h) {
+  if (!title) title = L"";
+  if (!cls) cls = L"";
+  if (wcsstr(cls, L"HwndWrapper") != nullptr) return false;
+  const bool named = wcsstr(title, L"Lossless Scaling") != nullptr || wcsstr(cls, L"Lossless") != nullptr ||
+                     wcsstr(cls, L"LSFG") != nullptr || wcsstr(cls, L"Overlay") != nullptr;
+  if (!named) return false;
+  if (w < 640 || h < 360) return false;
+  (void)ex_style;
+  return true;
+}
+
+// Pelo menos 40% da janela alvo coberta pela saida do LS.
+inline bool ls_output_covers_target(int ox, int oy, int ow, int oh, int tx, int ty, int tw, int th) {
+  if (ow < 640 || oh < 360 || tw < 1 || th < 1) return false;
+  const int x0 = ox > tx ? ox : tx;
+  const int y0 = oy > ty ? oy : ty;
+  const int x1 = (ox + ow) < (tx + tw) ? (ox + ow) : (tx + tw);
+  const int y1 = (oy + oh) < (ty + th) ? (oy + oh) : (ty + th);
+  if (x1 <= x0 || y1 <= y0) return false;
+  const long long inter = static_cast<long long>(x1 - x0) * static_cast<long long>(y1 - y0);
+  const long long area = static_cast<long long>(tw) * static_cast<long long>(th);
+  return inter * 5 >= area * 2;
 }
 inline bool mira_lock_ini_ok(const std::string& ini) {
   return ini.find("flow_scale = 100") != std::string::npos && ini.find("ui_detection_rate = 2") != std::string::npos;
@@ -638,12 +667,13 @@ inline bool ls_exe_is_lossless(const wchar_t* exe) {
   return wcsstr(exe, L"LosslessScaling") != nullptr || wcsstr(exe, L"Lossless Scaling") != nullptr;
 }
 
-// HUD ON se o xN esta armado E (confirmou, OU o processo owned vive, OU o Toolhelp achou LS).
-// active sozinho basta — exigir processo depois do confirm mentia "FG off" com LS a interpolar.
+// HUD ON: superficie grande do LS, ou F24 confirmado nesta sessao com o processo vivo.
+// Superficie sozinha nao existia (LS gera sem janela nomeada) e o overlay mentia OFF.
 inline bool fg_overlay_reads_on(bool state_active, int mult, bool owned_alive, unsigned running_ls,
-                               bool confirmed = false) {
+                               bool confirmed = false, bool generating = false) {
   if (clamp_fg_multiplier(mult) < 2) return false;
-  return state_active || confirmed || owned_alive || running_ls > 0;
+  if (generating) return true;
+  return confirmed && (state_active || owned_alive || running_ls > 0);
 }
 
 // Overlay xN only after disk confirms the same multiplier (no memory-only hope).
@@ -719,7 +749,8 @@ public:
   static unsigned count_running_lossless_processes(bool force = false, bool* snapshot_ok = nullptr);
 
   bool owned_process_alive() const;
-  bool overlay_reads_on() const;
+  bool output_generating_on(HWND target) const;
+  bool overlay_reads_on(HWND target = nullptr) const;
 
   // If active but LS process gone → clear active (HUD never stays ON as false positive).
   void reconcile_process();

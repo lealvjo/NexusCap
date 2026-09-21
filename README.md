@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `4.0.0` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `4.1.0` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-4.0.0.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-4.1.0.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-4.0.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+1. Instalar `NexusCap-Setup-4.1.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -51,7 +51,7 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-4.0.0.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-4.1.0.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap`, sem admin — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -60,6 +60,22 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 7. **Reportar bug / Reportar performance** (checkboxes abaixo do VSYNC, off por padrão): geram `.txt` leves em `report/` e `performance/` ao lado do exe — úteis para suporte / colar numa IA.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
+
+### Novidades 4.1.0
+
+- **Presets de sessao:** o snapshot do Ctrl+M (escala, FG, NR, look, Pass, HUD/console) grava com nome de 1 a 60 caracteres em `%LOCALAPPDATA%\NexusCap\presets`. O mesmo bloco aparece no CFG do lobby (F12), nao na coluna SESSAO.
+- **Aplicar / compartilhar / importar:** nome unico (case-insensitive, overwrite). Arquivo `.nexuscap-preset`. Importar nao aplica sozinho. Benchmark nao le nem grava preset.
+- **Reportar performance no HDMI:** Esc com escala/NR relanca o lobby e ainda abre a analise (mesmo cartao do Benchmark).
+- Traz o 4.0.1/4.0.2: overlay FG ON real, instalador sem video duplicado e sem NGX na raiz (~693 MB).
+
+### Novidades 4.0.2
+
+- **Instalador sem NGX na raiz:** `nvngx_dlss*.dll` fica so em `addons-stable` e `addons-multipass` (o Feed le a pasta do addon). Setup ~693 MB. 1x, 1,5x, 2x, 2x otimizado e 3x validados com a raiz vazia.
+
+### Novidades 4.0.1
+
+- **Overlay FG ON de verdade:** o HUD e o Benchmark marcam Frame Gen ligado quando o F24 confirma e o Lossless Scaling ainda esta vivo. A janela grande de geracao continua valendo, mas nao e mais obrigatoria (DPI e estilos TOPMOST/LAYERED nao escondem o ON).
+- **Instalador mais leve:** sai o `perf_test.mp4` duplicado (era o mesmo clipe 1440). Ficam 1080 / 1440 / 4K + audio. Setup ~827 MB.
 
 ### Novidades 4.0.0
 
@@ -369,7 +385,7 @@ O caminho do produto é **RenoDX** — ReShade + addons DLSS 5 no Present, NR vi
 | **Off** | RenoDX desmarcado | Passthrough + FG se quiser. |
 | **Streamline** | só CLI legado | Não usar no HDMI. |
 
-Setup: `tools\setup_renodx.ps1` copia `dxgi.dll`, addons, `nvngx_dlss*.dll`, shaders/preset para ao lado do exe. O `nvngx_dlss.dll` é da NVIDIA para o **RenoDX/DLSS 5**, não é o Streamline.
+Setup: `tools\setup_renodx.ps1` copia `dxgi.dll`, addons, shaders/preset. O `nvngx_dlss*.dll` da NVIDIA (RenoDX/DLSS 5, não Streamline) fica só em `addons-stable` e `addons-multipass` — o Feed lê a pasta do addon, não a raiz do exe.
 
 ---
 
@@ -432,9 +448,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.0.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.1.0
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.0.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.1.0
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (`PrivilegesRequired=lowest` no Inno — **sem UAC / sem admin**). É menos invasivo de propósito: o setup não mexe no sistema. **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

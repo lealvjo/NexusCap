@@ -57,7 +57,7 @@ target_include_directories(nexuscap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/incl
 target_compile_definitions(nexuscap_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_link_libraries(nexuscap_core PUBLIC
   nexuscap_imgui
-  d3d11 dxgi d3dcompiler strmiids ole32 oleaut32 user32 gdi32 winmm uuid avrt advapi32 pdh comdlg32 windowscodecs
+  d3d11 dxgi d3dcompiler strmiids ole32 oleaut32 user32 gdi32 winmm uuid avrt advapi32 pdh comdlg32 shell32 windowscodecs
   mfplat mfreadwrite mfuuid
 )
 
@@ -122,7 +122,6 @@ if(NEXUSCAP_HAVE_STREAMLINE)
     sl.common.dll
     sl.dlss.dll
     sl.pcl.dll
-    nvngx_dlss.dll
   )
   foreach(_dll ${_sl_dlls})
     add_custom_command(TARGET NexusCap POST_BUILD

@@ -6,6 +6,7 @@
 #include <d3d11.h>
 
 #include <string>
+#include <vector>
 
 #include "nexuscap/config.hpp"
 
@@ -49,6 +50,17 @@ struct SessionCfgActions {
   bool scale_apply = false;
   int scale_before = 100;
   bool close_requested = false;
+  bool apply_user_preset = false;  // persist + apply snapshot (fill-safe)
+  bool apply_hud = true;
+  bool apply_overlay_no_bg = false;
+  bool apply_overlay_console = false;
+  int apply_live_console = 0;
+  bool apply_nr_on = true;
+  int apply_renodx_preset = 0;
+  int apply_nr_pass_count = 1;
+  bool apply_fg_on = false;
+  int apply_fg_multiplier = 2;
+  int apply_scale_percent = 100;
 };
 
 // ImGui desenhado no swapchain da sessão (mesmo caminho do mini overlay). Janela separada
@@ -73,6 +85,8 @@ public:
   void clear_restart_hold();
 
   SessionCfgState state;
+  bool fg_can_enable = true;
+  bool presets_locked = false;  // Benchmark / --perf-test
   SessionCfgActions take_actions();
 
   // Vértices do último desenho — usado pelo --selftest-cfg.
@@ -85,6 +99,13 @@ private:
   void draw();
   void draw_panel();
   void draw_restart_hold();
+  void draw_presets();
+  void reload_presets();
+  void commit_save_preset();
+  void commit_apply_preset();
+  void commit_delete_preset();
+  bool browse_share_preset(const std::string& name, const std::string& text, std::string& out_path);
+  bool browse_import_preset(std::string& text);
 
   bool ready_ = false;
   bool open_ = false;
@@ -100,6 +121,15 @@ private:
   std::string hold_title_;
   std::string hold_line_;
   double hold_seconds_ = 0;
+  std::vector<std::string> preset_names_;
+  std::vector<std::string> preset_summaries_;
+  int selected_preset_ = -1;
+  char save_name_[64]{};
+  bool save_name_open_ = false;
+  bool confirm_overwrite_ = false;
+  bool confirm_delete_ = false;
+  bool confirm_import_ow_ = false;
+  std::string pending_import_text_;
 };
 
 }  // namespace nexuscap

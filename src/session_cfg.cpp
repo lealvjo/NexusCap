@@ -4,15 +4,26 @@
 #include "nexuscap/imgui_theme.hpp"
 #include "nexuscap/live_mode.hpp"
 #include "nexuscap/settings_store.hpp"
+#include "nexuscap/user_preset.hpp"
 #include "nexuscap/version.hpp"
 
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_win32.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <commdlg.h>
+#include <shellapi.h>
+#include <shlobj.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -103,6 +114,11 @@ void SessionCfgOverlay::set_open(bool open) {
     scale_slider_ = static_cast<float>(clamp_scale_percent(state.scale_percent));
     actions_ = SessionCfgActions{};
     force_pos_ = true;
+    save_name_open_ = false;
+    confirm_overwrite_ = false;
+    confirm_delete_ = false;
+    confirm_import_ow_ = false;
+    reload_presets();
   }
 }
 
@@ -314,6 +330,9 @@ void SessionCfgOverlay::draw_panel() {
     ImGui::EndDisabled();
 
     ImGui::Separator();
+    draw_presets();
+
+    ImGui::Separator();
     ImGui::TextDisabled("Esc fecha o menu | Esc de novo volta ao lobby");
     if (ImGui::Button("Fechar", ImVec2(140, 0))) actions_.close_requested = true;
     ImGui::PopTextWrapPos();
@@ -343,6 +362,338 @@ void SessionCfgOverlay::draw_restart_hold() {
   ImGui::End();
   ImGui::PopStyleVar();
   ImGui::PopStyleColor(2);
+}
+
+void SessionCfgOverlay::reload_presets() {
+  std::string keep;
+  if (selected_preset_ >= 0 && selected_preset_ < static_cast<int>(preset_names_.size())) {
+    keep = preset_names_[static_cast<size_t>(selected_preset_)];
+  }
+  preset_names_.clear();
+  preset_summaries_.clear();
+  if (presets_locked) {
+    selected_preset_ = -1;
+    return;
+  }
+  std::vector<UserPreset> have;
+  list_user_presets_in(default_user_presets_path(), have);
+  for (const auto& p : have) {
+    preset_names_.push_back(p.name);
+    preset_summaries_.push_back(user_preset_list_summary(p));
+  }
+  selected_preset_ = keep.empty() ? -1 : find_user_preset_index(have, keep);
+}
+
+void SessionCfgOverlay::commit_save_preset() {
+  if (presets_locked || !user_preset_io_allowed(presets_locked)) return;
+  std::string name;
+  const UserPresetNameStatus st = normalize_user_preset_name(save_name_, name);
+  if (st != UserPresetNameStatus::Ok) {
+    state.status = user_preset_name_status_toast(st);
+    return;
+  }
+  state.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_slider_)));
+  UserPreset snap = user_preset_from_session(name, state);
+  bool replaced = false;
+  std::string err;
+  if (!upsert_user_preset_in(default_user_presets_path(), snap, replaced, err)) {
+    state.status = err.empty() ? "Nao deu para salvar o preset" : err;
+    return;
+  }
+  save_name_open_ = false;
+  confirm_overwrite_ = false;
+  reload_presets();
+  std::vector<UserPreset> have;
+  list_user_presets_in(default_user_presets_path(), have);
+  selected_preset_ = find_user_preset_index(have, name);
+  state.status = replaced ? ("Preset substituido: " + name) : ("Preset salvo: " + name);
+}
+
+void SessionCfgOverlay::commit_apply_preset() {
+  if (presets_locked || selected_preset_ < 0 || selected_preset_ >= static_cast<int>(preset_names_.size()))
+    return;
+  std::vector<UserPreset> have;
+  list_user_presets_in(default_user_presets_path(), have);
+  const int idx = find_user_preset_index(have, preset_names_[static_cast<size_t>(selected_preset_)]);
+  if (idx < 0) return;
+  const UserPreset& p = have[static_cast<size_t>(idx)];
+  const SessionCfgActions planned = plan_user_preset_apply(state, p, fg_can_enable);
+  actions_.toggle_nr = planned.toggle_nr;
+  actions_.preset_changed = planned.preset_changed;
+  actions_.pass_count_changed = planned.pass_count_changed;
+  actions_.pass_count_before = planned.pass_count_before;
+  actions_.toggle_fg = planned.toggle_fg;
+  actions_.fg_multiplier_changed = planned.fg_multiplier_changed;
+  actions_.hud_changed = planned.hud_changed;
+  actions_.overlay_no_bg_changed = planned.overlay_no_bg_changed;
+  actions_.console_changed = planned.console_changed;
+  actions_.scale_apply = planned.scale_apply;
+  actions_.scale_before = planned.scale_before;
+  actions_.apply_user_preset = true;
+  actions_.apply_hud = planned.apply_hud;
+  actions_.apply_overlay_no_bg = planned.apply_overlay_no_bg;
+  actions_.apply_overlay_console = planned.apply_overlay_console;
+  actions_.apply_live_console = planned.apply_live_console;
+  actions_.apply_nr_on = planned.apply_nr_on;
+  actions_.apply_renodx_preset = planned.apply_renodx_preset;
+  actions_.apply_nr_pass_count = planned.apply_nr_pass_count;
+  actions_.apply_fg_on = planned.apply_fg_on;
+  actions_.apply_fg_multiplier = planned.apply_fg_multiplier;
+  actions_.apply_scale_percent = planned.apply_scale_percent;
+  stamp_session_from_user_preset(state, p, fg_can_enable);
+  scale_slider_ = static_cast<float>(state.scale_percent);
+  if (p.fg_enabled && !fg_can_enable) {
+    state.status = session_notice_fg_missing();
+  } else {
+    state.status = "Preset aplicado: " + p.name;
+  }
+}
+
+void SessionCfgOverlay::commit_delete_preset() {
+  if (presets_locked || selected_preset_ < 0 || selected_preset_ >= static_cast<int>(preset_names_.size()))
+    return;
+  std::string err;
+  const std::string name = preset_names_[static_cast<size_t>(selected_preset_)];
+  if (!delete_user_preset_in(default_user_presets_path(), name, err)) {
+    state.status = err.empty() ? "Nao deu para apagar" : err;
+    return;
+  }
+  selected_preset_ = -1;
+  reload_presets();
+  state.status = "Preset apagado: " + name;
+}
+
+bool browse_share_user_preset(HWND owner, const std::string& name, const std::string& text,
+                             std::string& out_path) {
+  wchar_t file[MAX_PATH]{};
+  std::string suggest = name + kUserPresetExtShare;
+  MultiByteToWideChar(CP_UTF8, 0, suggest.c_str(), -1, file, MAX_PATH);
+  wchar_t desk[MAX_PATH]{};
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = owner;
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFilter = L"Preset NexusCap\0*.nexuscap-preset\0Todos\0*.*\0";
+  ofn.nFilterIndex = 1;
+  ofn.lpstrDefExt = L"nexuscap-preset";
+  ofn.lpstrTitle = L"Compartilhar preset";
+  ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOPDIRECTORY, nullptr, 0, desk))) {
+    ofn.lpstrInitialDir = desk;
+  }
+  if (!GetSaveFileNameW(&ofn)) return false;
+  char narrow[MAX_PATH * 4]{};
+  WideCharToMultiByte(CP_UTF8, 0, file, -1, narrow, static_cast<int>(sizeof(narrow)), nullptr, nullptr);
+  out_path = narrow;
+  if (out_path.empty()) return false;
+  {
+    std::ofstream out(std::filesystem::u8path(out_path), std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out << text;
+  }
+  std::wstring sel = L"/select,\"";
+  sel += file;
+  sel += L"\"";
+  ShellExecuteW(nullptr, L"open", L"explorer.exe", sel.c_str(), nullptr, SW_SHOWNORMAL);
+  return true;
+}
+
+bool browse_import_user_preset(HWND owner, std::string& text) {
+  wchar_t file[MAX_PATH]{};
+  OPENFILENAMEW ofn{};
+  ofn.lStructSize = sizeof(ofn);
+  ofn.hwndOwner = owner;
+  ofn.lpstrFile = file;
+  ofn.nMaxFile = MAX_PATH;
+  ofn.lpstrFilter = L"Preset NexusCap\0*.nexuscap-preset\0Todos\0*.*\0";
+  ofn.nFilterIndex = 1;
+  ofn.lpstrTitle = L"Importar preset";
+  ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  if (!GetOpenFileNameW(&ofn)) return false;
+  std::ifstream in(file, std::ios::binary);
+  if (!in) return false;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  text = ss.str();
+  return !text.empty();
+}
+
+bool SessionCfgOverlay::browse_share_preset(const std::string& name, const std::string& text,
+                                            std::string& out_path) {
+  return browse_share_user_preset(hwnd_, name, text, out_path);
+}
+
+bool SessionCfgOverlay::browse_import_preset(std::string& text) {
+  return browse_import_user_preset(hwnd_, text);
+}
+
+void SessionCfgOverlay::draw_presets() {
+  ImGui::TextUnformatted("Presets");
+  if (presets_locked) {
+    ImGui::TextDisabled("Benchmark nao grava preset.");
+    return;
+  }
+
+  if (ImGui::BeginChild("##preset_list", ImVec2(0.f, 132.f), true)) {
+    if (preset_names_.empty()) {
+      ImGui::TextDisabled("Nenhum preset. Salve o look deste jogo.");
+    }
+    for (int i = 0; i < static_cast<int>(preset_names_.size()); ++i) {
+      char line[160]{};
+      std::snprintf(line, sizeof(line), "%s    %s", preset_names_[static_cast<size_t>(i)].c_str(),
+                    preset_summaries_[static_cast<size_t>(i)].c_str());
+      if (ImGui::Selectable(line, selected_preset_ == i)) selected_preset_ = i;
+    }
+  }
+  ImGui::EndChild();
+
+  const bool have_sel = selected_preset_ >= 0 && selected_preset_ < static_cast<int>(preset_names_.size());
+  if (ImGui::Button("Salvar preset")) {
+    save_name_open_ = true;
+    save_name_[0] = 0;
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!have_sel);
+  if (ImGui::Button("Aplicar")) commit_apply_preset();
+  ImGui::SameLine();
+  if (ImGui::Button("Apagar")) confirm_delete_ = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Compartilhar") && have_sel) {
+    std::vector<UserPreset> have;
+    list_user_presets_in(default_user_presets_path(), have);
+    const int idx = find_user_preset_index(have, preset_names_[static_cast<size_t>(selected_preset_)]);
+    if (idx >= 0) {
+      std::string path;
+      if (browse_share_preset(have[static_cast<size_t>(idx)].name, serialize_user_preset(have[static_cast<size_t>(idx)]),
+                             path)) {
+        state.status = "Arquivo pronto: " + std::filesystem::u8path(path).filename().string();
+      }
+    }
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Importar")) {
+    std::string text;
+    if (browse_import_preset(text)) {
+      UserPreset p;
+      if (!parse_user_preset(text, p)) {
+        state.status = "Arquivo invalido";
+      } else {
+        std::vector<UserPreset> have;
+        list_user_presets_in(default_user_presets_path(), have);
+        if (find_user_preset_index(have, p.name) >= 0) {
+          pending_import_text_ = text;
+          confirm_import_ow_ = true;
+        } else {
+          bool replaced = false;
+          std::string err;
+          if (import_user_preset_in(default_user_presets_path(), text, p, replaced, err)) {
+            reload_presets();
+            selected_preset_ = find_user_preset_index(have, p.name);
+            std::vector<UserPreset> now;
+            list_user_presets_in(default_user_presets_path(), now);
+            selected_preset_ = find_user_preset_index(now, p.name);
+            state.status = "Preset importado: " + p.name;
+          } else {
+            state.status = err.empty() ? "Import falhou" : err;
+          }
+        }
+      }
+    }
+  }
+  ImGui::TextDisabled("Compartilhar gera um arquivo. Importar le o arquivo do amigo. Aplicar liga na sessao.");
+
+  if (save_name_open_) {
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::InputText("##preset_name", save_name_, sizeof(save_name_), ImGuiInputTextFlags_CallbackCharFilter,
+                     [](ImGuiInputTextCallbackData* data) -> int {
+                       if (data->EventChar > 127) return 0;
+                       return user_preset_char_forbidden(static_cast<unsigned char>(data->EventChar)) ? 1 : 0;
+                     });
+    ImGui::TextDisabled("%s", user_preset_name_field_hint());
+    if (ImGui::Button("Salvar##go")) {
+      std::string name;
+      const UserPresetNameStatus st = normalize_user_preset_name(save_name_, name);
+      if (st != UserPresetNameStatus::Ok) {
+        state.status = user_preset_name_status_toast(st);
+      } else {
+        std::vector<UserPreset> have;
+        list_user_presets_in(default_user_presets_path(), have);
+        if (find_user_preset_index(have, name) >= 0) {
+          confirm_overwrite_ = true;
+        } else {
+          commit_save_preset();
+        }
+      }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancelar##save")) save_name_open_ = false;
+  }
+
+  if (confirm_overwrite_) {
+    ImGui::OpenPopup("##ow_preset");
+    confirm_overwrite_ = false;
+  }
+  if (ImGui::BeginPopupModal("##ow_preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    std::string name;
+    normalize_user_preset_name(save_name_, name);
+    ImGui::Text("Substituir %s?", name.empty() ? save_name_ : name.c_str());
+    if (ImGui::Button("Substituir")) {
+      commit_save_preset();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancelar##ow")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+
+  if (confirm_delete_) {
+    ImGui::OpenPopup("##del_preset");
+    confirm_delete_ = false;
+  }
+  if (ImGui::BeginPopupModal("##del_preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const char* n = have_sel ? preset_names_[static_cast<size_t>(selected_preset_)].c_str() : "";
+    ImGui::Text("Apagar %s?", n);
+    if (ImGui::Button("Apagar##go")) {
+      commit_delete_preset();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancelar##del")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+
+  if (confirm_import_ow_) {
+    ImGui::OpenPopup("##imp_ow");
+    confirm_import_ow_ = false;
+  }
+  if (ImGui::BeginPopupModal("##imp_ow", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    UserPreset p;
+    parse_user_preset(pending_import_text_, p);
+    ImGui::Text("Substituir %s?", p.name.c_str());
+    if (ImGui::Button("Substituir##imp")) {
+      bool replaced = false;
+      std::string err;
+      if (import_user_preset_in(default_user_presets_path(), pending_import_text_, p, replaced, err)) {
+        reload_presets();
+        std::vector<UserPreset> now;
+        list_user_presets_in(default_user_presets_path(), now);
+        selected_preset_ = find_user_preset_index(now, p.name);
+        state.status = "Preset importado: " + p.name;
+      } else {
+        state.status = err.empty() ? "Import falhou" : err;
+      }
+      pending_import_text_.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancelar##imp")) {
+      pending_import_text_.clear();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
 }
 
 }  // namespace nexuscap

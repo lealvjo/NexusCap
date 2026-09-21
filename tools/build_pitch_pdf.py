@@ -188,7 +188,7 @@ def main() -> None:
     )
     title(c, bold, "Instalação", y=H - 160)
     steps = [
-        "1.  NexusCap-Setup-4.0.0.exe na Release do GitHub.",
+        "1.  NexusCap-Setup-4.1.0.exe na Release do GitHub.",
         "2.  Instala em %LOCALAPPDATA%\\NexusCap, pasta da sua conta, sem administrador.",
         "3.  Abre, escolhe a placa, RenoDX se quiser NR. Pass Count: 1,5x recomendado.",
         "4.  Frame Gen: se o Lossless Scaling estiver na Steam, o NexusCap liga até 4x sozinho.",
@@ -633,7 +633,7 @@ def main() -> None:
     c.drawString(36, 96, "Usa o 1,5x. Se pesar: escala do Feed ou modo HDMI, na mão.")
     c.setFillColorRGB(*MUTED)
     c.setFont(regular, 9)
-    c.drawString(36, 28, "Sessão real · HDMI de console (aqui PS5) · VSYNC · FG off · escala 100%.  Nexus Cap v4.0.0")
+    c.drawString(36, 28, "Sessão real · HDMI de console (aqui PS5) · VSYNC · FG off · escala 100%.  Nexus Cap v4.1.0")
     c.showPage()
 
     # 2x default vs 2x otimizado

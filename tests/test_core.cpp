@@ -15,8 +15,10 @@
 #include "nexuscap/live_mode.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/perf_test.hpp"
+#include "nexuscap/session_cfg.hpp"
 #include "nexuscap/session_report.hpp"
 #include "nexuscap/settings_store.hpp"
+#include "nexuscap/user_preset.hpp"
 #include "nexuscap/stats_window.hpp"
 #include "nexuscap/system_metrics.hpp"
 #include "nexuscap/capture_format.hpp"
@@ -1345,11 +1347,22 @@ TEST_CASE("mira settings xml never writes Flow 70") {
 
 TEST_CASE("ls hide only settings ui not fg output overlay") {
   CHECK(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", 0));
-  CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", WS_EX_TOPMOST));
+  CHECK(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", WS_EX_TOPMOST));
   CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED));
   CHECK(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 180, 48));
   CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 2560, 1440));
   CHECK_FALSE(ls_should_hide_window(L"NexusCap", L"NexusCapWnd", 0));
+  CHECK(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", 0, 1150, 650));
+  CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", 0, 2560, 1440));
+  CHECK_FALSE(ls_is_generating_output(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", 0, 2560, 1440));
+  CHECK_FALSE(ls_is_generating_output(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 180, 48));
+  CHECK(ls_is_generating_output(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 2560, 1440));
+  CHECK(ls_is_generating_output(L"Lossless Scaling", L"LosslessOverlay", WS_EX_TOPMOST, 1920, 1080));
+  CHECK_FALSE(ls_is_generating_output(L"NexusCap", L"NexusCapWnd", WS_EX_TOPMOST, 2560, 1440));
+  CHECK(ls_output_covers_target(0, 0, 2560, 1440, 0, 0, 2560, 1440));
+  CHECK(ls_output_covers_target(0, 0, 2560, 1440, 100, 80, 1920, 1080));
+  CHECK_FALSE(ls_output_covers_target(0, 0, 800, 600, 2000, 0, 2560, 1440));
+  CHECK_FALSE(ls_output_covers_target(0, 0, 180, 48, 0, 0, 2560, 1440));
 }
 
 TEST_CASE("patch_lsfg_ini mira lock") {
@@ -3050,17 +3063,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 0, 0));
+  CHECK(app_version_is(4, 1, 0));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.0.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.0.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.0.0");
+  CHECK(std::string(kAppVersion) == "4.1.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.1.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.0.0") != std::string::npos);
+  CHECK(lobby_t.find("4.1.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.0.0") != std::string::npos);
+  CHECK(sess_t.find("4.1.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -3474,15 +3487,14 @@ TEST_CASE("neural rendering Bridge plan: enable/disable cannot desync") {
     CHECK_FALSE(fg_overlay_on_confirmed(true, 0));  // no LS process → never FG ON
     CHECK(fg_overlay_on_confirmed(false, 0));
     CHECK_FALSE(fg_overlay_on_confirmed(false, 2));  // leftover LS → OFF not confirmed
-    CHECK(fg_overlay_reads_on(true, 2, true, 0));   // handle vivo, Toolhelp falhou
-    CHECK(fg_overlay_reads_on(true, 4, false, 1));
-    CHECK(fg_overlay_reads_on(true, 2, false, 0));  // confirm sozinho — LS a interpolar
-    CHECK(fg_overlay_reads_on(false, 2, true, 1));  // adopt sem confirm
-    CHECK(fg_overlay_reads_on(false, 4, true, 0));
-    CHECK(fg_overlay_reads_on(false, 2, false, 0, true));  // latch do F24 — Toolhelp 0 no x2
+    CHECK_FALSE(fg_overlay_reads_on(true, 2, true, 0));  // processo sem F24
+    CHECK_FALSE(fg_overlay_reads_on(true, 4, false, 1));
+    CHECK_FALSE(fg_overlay_reads_on(true, 2, false, 0));
+    CHECK(fg_overlay_reads_on(true, 2, true, 1, true, false));  // F24 confirmado nesta sessao
+    CHECK(fg_overlay_reads_on(false, 2, false, 0, false, true));  // superficie grande
+    CHECK_FALSE(fg_overlay_reads_on(false, 2, false, 0, true));  // confirm sem processo
     CHECK_FALSE(fg_overlay_reads_on(false, 4, false, 0));
-    CHECK_FALSE(fg_overlay_reads_on(false, 2, false, 0, false));
-    CHECK_FALSE(fg_overlay_reads_on(true, 1, true, 1));
+    CHECK_FALSE(fg_overlay_reads_on(true, 1, true, 1, true, true));
     CHECK(ls_exe_is_lossless(L"LosslessScaling.exe"));
     CHECK(ls_exe_is_lossless(L"Lossless Scaling.exe"));
     CHECK_FALSE(ls_exe_is_lossless(L"NexusCap.exe"));
@@ -4600,7 +4612,8 @@ TEST_CASE("perf test A carregar never blocks forever after NR is ready") {
   // NR ainda nao pronto: timeout do FG nao dispara o relogio (stall inicial).
   CHECK_FALSE(perf_test_should_start_clock(false, ready, true, false, false, 60000));
   CHECK_FALSE(perf_test_should_start_clock(true, 1, true, false, false, kPerfTestFgWaitMaxMs));
-  CHECK(fg_overlay_reads_on(true, 4, true, 0));
+  CHECK(fg_overlay_reads_on(true, 4, true, 0, true, true));
+  CHECK(fg_overlay_reads_on(true, 4, true, 0, true, false));
 }
 
 TEST_CASE("perf test remain_sec and timer") {
@@ -4643,6 +4656,12 @@ TEST_CASE("perf result popup only after this benchmark") {
     char* argv[] = {exe, a0};
     CHECK(parse_args(2, argv).popup_perf_result);
   }
+}
+
+TEST_CASE("lobby return relaunch keeps HDMI Reportar performance popup") {
+  CHECK(std::string(lobby_return_relaunch_args(true, false)) == "--show-perf-result");
+  CHECK(std::string(lobby_return_relaunch_args(false, true)) == "--show-perf-result");
+  CHECK(lobby_return_relaunch_args(false, false) == nullptr);
 }
 
 TEST_CASE("HDMI session perf popup reuses Benchmark grade and keeps titles apart") {
@@ -6221,6 +6240,514 @@ TEST_CASE("perf test stall uses effective hitch of the meta not a flat 25ms") {
   CHECK(s.stalls == 0);
   CHECK(grade_perf_test(s) == PerfTestGrade::Fail);
 }
+
+static std::filesystem::path make_user_preset_tmp(const char* tag) {
+  auto root = std::filesystem::temp_directory_path() / "nexuscap_preset_ut" / tag;
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::filesystem::create_directories(root, ec);
+  return root;
+}
+
+static UserPreset make_user_preset(const char* name, int pass, int look, bool fg, int fgx, int scale) {
+  UserPreset p;
+  p.name = name;
+  p.hud_visible = true;
+  p.overlay_no_bg = false;
+  p.overlay_console = true;
+  p.live_console = 0;
+  p.neural_rendering = true;
+  p.renodx_preset = look;
+  p.nr_pass_count = pass;
+  p.fg_enabled = fg;
+  p.fg_multiplier = fgx;
+  p.scale_percent = scale;
+  clamp_user_preset(p);
+  return p;
+}
+
+static SessionCfgState make_preset_session(int pass, int look, bool fg, int fgx, int scale) {
+  SessionCfgState s;
+  s.renodx_stack = true;
+  s.nr_on = true;
+  s.renodx_preset = look;
+  s.nr_pass_count = pass;
+  s.scale_percent = scale;
+  s.fg_on = fg;
+  s.fg_multiplier = fgx;
+  s.hud_visible = true;
+  s.overlay_no_bg = false;
+  s.overlay_console = false;
+  s.live_console = 0;
+  return s;
+}
+
+static void require_preset_equal(const UserPreset& a, const UserPreset& b) {
+  CHECK(a.name == b.name);
+  CHECK(a.hud_visible == b.hud_visible);
+  CHECK(a.overlay_no_bg == b.overlay_no_bg);
+  CHECK(a.overlay_console == b.overlay_console);
+  CHECK(a.live_console == b.live_console);
+  CHECK(a.neural_rendering == b.neural_rendering);
+  CHECK(a.renodx_preset == b.renodx_preset);
+  CHECK(a.nr_pass_count == b.nr_pass_count);
+  CHECK(a.fg_enabled == b.fg_enabled);
+  CHECK(a.fg_multiplier == b.fg_multiplier);
+  CHECK(a.scale_percent == b.scale_percent);
+}
+
+TEST_CASE("user preset name trim empty too long and forbidden chars") {
+  std::string out;
+  CHECK(normalize_user_preset_name("", out) == UserPresetNameStatus::Empty);
+  CHECK(normalize_user_preset_name("   ", out) == UserPresetNameStatus::Empty);
+  CHECK(normalize_user_preset_name("  TLOU  ", out) == UserPresetNameStatus::Ok);
+  CHECK(out == "TLOU");
+  CHECK(normalize_user_preset_name(std::string(kUserPresetNameMax, 'x'), out) == UserPresetNameStatus::Ok);
+  CHECK(out.size() == static_cast<size_t>(kUserPresetNameMax));
+  CHECK(normalize_user_preset_name(std::string(kUserPresetNameMax + 1, 'x'), out) ==
+        UserPresetNameStatus::TooLong);
+  CHECK(out.empty());
+  CHECK(normalize_user_preset_name("TLOU/2x", out) == UserPresetNameStatus::Forbidden);
+  CHECK(out.empty());
+  CHECK(user_preset_name_has_forbidden("TLOU:2x"));
+  CHECK(user_preset_char_forbidden(static_cast<unsigned char>('*')));
+  CHECK_FALSE(user_preset_char_forbidden(static_cast<unsigned char>('a')));
+  CHECK(std::string(user_preset_name_status_toast(UserPresetNameStatus::Forbidden)).find('\\') !=
+        std::string::npos);
+  CHECK(user_preset_names_equal("TLOU", "tlou"));
+  CHECK(user_preset_names_equal("TLOU 2x", "tlou 2x"));
+  CHECK_FALSE(user_preset_names_equal("TLOU", "GoW"));
+  CHECK(normalize_user_preset_name("TLOU cafe", out) == UserPresetNameStatus::Ok);
+}
+
+TEST_CASE("user preset list refuses the 33rd without dropping the others") {
+  const auto dir = make_user_preset_tmp("full32");
+  bool replaced = false;
+  std::string err;
+  for (int i = 0; i < kUserPresetMaxCount; ++i) {
+    char name[16]{};
+    std::snprintf(name, sizeof(name), "Slot %02d", i);
+    UserPreset p = make_user_preset(name, 1, 0, false, 2, 100);
+    REQUIRE(upsert_user_preset_in(dir, p, replaced, err));
+    CHECK_FALSE(replaced);
+  }
+  std::vector<UserPreset> have;
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == static_cast<size_t>(kUserPresetMaxCount));
+  UserPreset extra = make_user_preset("Slot extra", 2, 1, true, 3, 80);
+  CHECK_FALSE(upsert_user_preset_in(dir, extra, replaced, err));
+  CHECK(err == "lista cheia");
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == static_cast<size_t>(kUserPresetMaxCount));
+  CHECK(find_user_preset_index(have, "Slot extra") < 0);
+  UserPreset overwrite = make_user_preset("Slot 00", 5, 2, true, 3, 100);
+  REQUIRE(upsert_user_preset_in(dir, overwrite, replaced, err));
+  CHECK(replaced);
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == static_cast<size_t>(kUserPresetMaxCount));
+}
+
+TEST_CASE("user preset snapshot is the whole Ctrl+M and roundtrips") {
+  UserPreset a;
+  a.name = "TLOU 2x";
+  a.hud_visible = false;
+  a.overlay_no_bg = true;
+  a.overlay_console = true;
+  a.live_console = 1;
+  a.neural_rendering = false;
+  a.renodx_preset = 2;
+  a.nr_pass_count = 5;
+  a.fg_enabled = true;
+  a.fg_multiplier = 3;
+  a.scale_percent = 80;
+  UserPreset b;
+  REQUIRE(parse_user_preset(serialize_user_preset(a), b));
+  require_preset_equal(a, b);
+
+  const int passes[] = {1, 4, 2, 5, 3};
+  const int looks[] = {0, 1, 2};
+  const int fgs[] = {0, 2, 3, 4};
+  for (int pass : passes) {
+    for (int look : looks) {
+      for (int fgx : fgs) {
+        const bool fg = fgx >= 2;
+        UserPreset cell = make_user_preset("cell", pass, look, fg, fg == false ? 2 : fgx, 100);
+        UserPreset got;
+        REQUIRE(parse_user_preset(serialize_user_preset(cell), got));
+        CHECK(got.nr_pass_count == pass);
+        CHECK(got.renodx_preset == look);
+        CHECK(got.fg_enabled == fg);
+        if (fg) CHECK(got.fg_multiplier == fgx);
+      }
+    }
+  }
+
+  UserPreset tlou = make_user_preset("TLOU 2x", 5, 2, true, 3, 100);
+  UserPreset tlou2;
+  REQUIRE(parse_user_preset(serialize_user_preset(tlou), tlou2));
+  CHECK(tlou2.nr_pass_count == 5);
+  CHECK(tlou2.renodx_preset == 2);
+  CHECK(tlou2.fg_enabled);
+  CHECK(tlou2.fg_multiplier == 3);
+  CHECK(tlou2.scale_percent == 100);
+
+  UserPreset one_fg4 = make_user_preset("1x FGx4", 1, 0, true, 4, 100);
+  UserPreset three_off = make_user_preset("3x off", 3, 1, false, 2, 75);
+  UserPreset a1, a3;
+  REQUIRE(parse_user_preset(serialize_user_preset(one_fg4), a1));
+  REQUIRE(parse_user_preset(serialize_user_preset(three_off), a3));
+  CHECK(a1.nr_pass_count == 1);
+  CHECK(a1.fg_enabled);
+  CHECK(a1.fg_multiplier == 4);
+  CHECK(a3.nr_pass_count == 3);
+  CHECK_FALSE(a3.fg_enabled);
+  CHECK(a3.scale_percent == 75);
+
+  CHECK(std::string(renodx_visual_preset_name(2, 1)) == "Cinematic");
+  CHECK(std::string(renodx_visual_preset_name(2, 5)) == "Model C");
+  CHECK(tlou2.renodx_preset == 2);
+  CHECK(tlou2.nr_pass_count == 5);
+}
+
+TEST_CASE("user preset list summary is Pass short plus FG") {
+  CHECK(user_preset_list_summary(make_user_preset("a", 5, 2, true, 3, 100)) == "2x+  FG x3  100%");
+  CHECK(user_preset_list_summary(make_user_preset("b", 1, 0, false, 2, 100)) == "1x  FG off  100%");
+  CHECK(user_preset_list_summary(make_user_preset("c", 4, 1, true, 2, 100)) == "1.5x  FG x2  100%");
+  CHECK(user_preset_list_summary(make_user_preset("d", 2, 0, true, 4, 100)) == "2x  FG x4  100%");
+  CHECK(user_preset_list_summary(make_user_preset("e", 3, 2, false, 3, 80)) == "3x  FG off  80%");
+}
+
+TEST_CASE("user preset FG and scale survive session persist after apply restart") {
+  const UserPreset p = make_user_preset("TLOU 2x", 5, 2, true, 3, 80);
+  PersistedSettings disk = default_settings();
+  disk.fg_enabled = false;
+  disk.fg_multiplier = 2;
+  disk.scale_percent = 100;
+  apply_user_preset_to_persisted(disk, p, true);
+  CHECK(disk.fg_enabled);
+  CHECK(disk.fg_multiplier == 3);
+  CHECK(disk.scale_percent == 80);
+
+  AppConfig stale{};
+  stale.fg_auto_start = false;
+  stale.fg_multiplier = 2;
+  stale.scale_percent = 100;
+  apply_session_cfg_to_persisted(stale, disk);
+  CHECK_FALSE(disk.fg_enabled);
+  CHECK(disk.scale_percent == 100);
+
+  apply_user_preset_to_persisted(disk, p, true);
+  AppConfig stamped{};
+  apply_session_fg_to_config(p.fg_enabled, p.fg_multiplier, stamped);
+  stamped.scale_percent = p.scale_percent;
+  stamped.renodx_preset = p.renodx_preset;
+  stamped.nr_pass_count = p.nr_pass_count;
+  stamped.neural_rendering = p.neural_rendering;
+  apply_session_cfg_to_persisted(stamped, disk);
+  CHECK(disk.fg_enabled);
+  CHECK(disk.fg_multiplier == 3);
+  CHECK(disk.scale_percent == 80);
+  CHECK(disk.nr_pass_count == 5);
+}
+
+TEST_CASE("user preset lobby snapshot and apply plan") {
+  PersistedSettings s = default_settings();
+  s.device_name = "Elgato 4K X";
+  s.fg_path = "C:\\LS\\LosslessScaling.exe";
+  s.width = 2560;
+  s.height = 1440;
+  s.ui.show_fps = false;
+  s.ui.overlay_no_bg = true;
+  s.ui.overlay_console = true;
+  s.ui.live_console = "switch2";
+  s.neural_rendering = true;
+  s.enhance_renodx = true;
+  s.renodx_preset = 2;
+  s.nr_pass_count = 5;
+  s.fg_enabled = true;
+  s.fg_multiplier = 3;
+  s.scale_percent = 80;
+  const UserPreset snap = user_preset_from_persisted("TLOU 2x", s);
+  CHECK(snap.hud_visible == false);
+  CHECK(snap.overlay_no_bg);
+  CHECK(snap.overlay_console);
+  CHECK(snap.nr_pass_count == 5);
+  CHECK(snap.renodx_preset == 2);
+  CHECK(snap.fg_enabled);
+  CHECK(snap.fg_multiplier == 3);
+  CHECK(snap.scale_percent == 80);
+
+  PersistedSettings other = default_settings();
+  other.device_name = s.device_name;
+  other.fg_path = s.fg_path;
+  other.width = s.width;
+  other.height = s.height;
+  other.nr_pass_count = 1;
+  other.renodx_preset = 0;
+  other.fg_enabled = false;
+  other.scale_percent = 100;
+  other.enhance_renodx = false;
+  other.neural_rendering = false;
+  const LobbyUserPresetPlan plan = plan_lobby_user_preset_apply(other, snap, true);
+  CHECK(plan.pass_relaunch);
+  CHECK(plan.motor_relaunch);
+  CHECK(plan.look_changed);
+  CHECK_FALSE(plan.fg_missing);
+  apply_user_preset_to_persisted(other, snap, true);
+  CHECK(persisted_untouched_by_user_preset(s, other));
+  CHECK(other.nr_pass_count == 5);
+  CHECK(other.scale_percent == 80);
+  CHECK(other.fg_enabled);
+  CHECK(other.fg_multiplier == 3);
+  CHECK(other.enhance_renodx);
+  CHECK(other.ui.show_fps == false);
+
+  const LobbyUserPresetPlan miss = plan_lobby_user_preset_apply(other, snap, false);
+  CHECK(miss.fg_missing);
+  PersistedSettings no_ls = other;
+  apply_user_preset_to_persisted(no_ls, snap, false);
+  CHECK_FALSE(no_ls.fg_enabled);
+  CHECK(no_ls.nr_pass_count == 5);
+  CHECK_FALSE(plan_lobby_user_preset_apply(s, snap, true).pass_relaunch);
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 5));
+  CHECK(plan_lobby_user_preset_apply(other, make_user_preset("opt", 5, 2, false, 2, 80), true).motor_relaunch ==
+        nr_pass_count_change_needs_relaunch(other.nr_pass_count, 5));
+}
+
+TEST_CASE("user preset snapshot takes the Ctrl+M scale not the default 100") {
+  SessionCfgState s = make_preset_session(5, 2, true, 3, 67);
+  const UserPreset p = user_preset_from_session("TLOU 2x", s);
+  CHECK(p.scale_percent == 67);
+  UserPreset got;
+  REQUIRE(parse_user_preset(serialize_user_preset(p), got));
+  CHECK(got.scale_percent == 67);
+  const SessionCfgActions a = plan_user_preset_apply(make_preset_session(5, 2, true, 3, 100), p, true);
+  CHECK(a.scale_apply);
+  CHECK(a.apply_scale_percent == 67);
+  PersistedSettings disk = default_settings();
+  disk.scale_percent = 100;
+  apply_user_preset_to_persisted(disk, p, true);
+  AppConfig cfg{};
+  cfg.scale_percent = 67;
+  apply_session_cfg_to_persisted(cfg, disk);
+  CHECK(disk.scale_percent == 67);
+}
+
+TEST_CASE("user preset upsert overwrite delete and A-Z list") {
+  const auto dir = make_user_preset_tmp("upsert");
+  bool replaced = false;
+  std::string err;
+  UserPreset first = make_user_preset("TLOU 2x", 5, 2, true, 3, 100);
+  REQUIRE(upsert_user_preset_in(dir, first, replaced, err));
+  CHECK_FALSE(replaced);
+  UserPreset second = make_user_preset("tlou 2x", 1, 0, false, 2, 50);
+  REQUIRE(upsert_user_preset_in(dir, second, replaced, err));
+  CHECK(replaced);
+  std::vector<UserPreset> have;
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 1);
+  CHECK(have[0].nr_pass_count == 1);
+  CHECK_FALSE(have[0].fg_enabled);
+  CHECK(have[0].scale_percent == 50);
+
+  UserPreset gow = make_user_preset("GoW", 2, 1, true, 2, 100);
+  UserPreset zelda = make_user_preset("Zelda", 4, 0, false, 2, 100);
+  REQUIRE(upsert_user_preset_in(dir, zelda, replaced, err));
+  REQUIRE(upsert_user_preset_in(dir, gow, replaced, err));
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 3);
+  CHECK(have[0].name == "GoW");
+  CHECK(have[1].name == "tlou 2x");
+  CHECK(have[2].name == "Zelda");
+
+  REQUIRE(delete_user_preset_in(dir, "Zelda", err));
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 2);
+  CHECK(find_user_preset_index(have, "Zelda") < 0);
+  CHECK_FALSE(std::filesystem::exists(user_preset_store_path(dir, "Zelda")));
+}
+
+TEST_CASE("user preset import export extra field junk and clamp") {
+  const auto dir = make_user_preset_tmp("impexp");
+  UserPreset src = make_user_preset("TLOU 2x", 5, 2, true, 3, 100);
+  src.hud_visible = false;
+  src.overlay_no_bg = true;
+  const std::string text = serialize_user_preset(src);
+  UserPreset got;
+  bool replaced = false;
+  std::string err;
+  REQUIRE(import_user_preset_in(dir, text, got, replaced, err));
+  CHECK_FALSE(replaced);
+  require_preset_equal(src, got);
+
+  std::string future = text;
+  future += "future_knob=99\nversion_note=keep\n";
+  UserPreset fut;
+  REQUIRE(parse_user_preset(future, fut));
+  CHECK(fut.name == "TLOU 2x");
+  CHECK(fut.nr_pass_count == 5);
+  CHECK(fut.fg_multiplier == 3);
+
+  std::vector<UserPreset> have;
+  REQUIRE(list_user_presets_in(dir, have));
+  const size_t before = have.size();
+  CHECK_FALSE(parse_user_preset("", got));
+  CHECK_FALSE(parse_user_preset("lixo sem cabecalho\nname=Bad\n", got));
+  CHECK_FALSE(parse_user_preset("name=TLOU\nhud_visible=1\n", got));
+  UserPreset bad;
+  CHECK_FALSE(import_user_preset_in(dir, "", bad, replaced, err));
+  CHECK(err == "arquivo invalido");
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == before);
+
+  UserPreset wild;
+  REQUIRE(parse_user_preset(
+      "nexuscap-preset=1\nname=ClampMe\nhud_visible=1\noverlay_no_bg=0\noverlay_console=0\n"
+      "live_console=0\nneural_rendering=1\nrenodx_preset=9\nnr_pass_count=99\nfg_enabled=1\n"
+      "fg_multiplier=7\nscale_percent=3\n",
+      wild));
+  CHECK(wild.nr_pass_count == clamp_nr_pass_count(99));
+  CHECK(wild.nr_pass_count == 5);
+  CHECK(wild.scale_percent == clamp_scale_percent(3));
+  CHECK(wild.scale_percent == 25);
+  CHECK(wild.fg_multiplier == clamp_fg_multiplier(7));
+  CHECK(wild.fg_multiplier == 4);
+  CHECK(wild.renodx_preset == clamp_renodx_visual_preset(9));
+
+  UserPreset again = make_user_preset("TLOU 2x", 1, 0, false, 2, 100);
+  REQUIRE(import_user_preset_in(dir, serialize_user_preset(again), got, replaced, err));
+  CHECK(replaced);
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 1);
+}
+
+TEST_CASE("user preset apply plan matches Ctrl+M actions and is fill-safe") {
+  const SessionCfgState cur = make_preset_session(1, 0, false, 2, 100);
+  const UserPreset tlou = make_user_preset("TLOU 2x", 5, 2, true, 3, 80);
+  const SessionCfgActions a = plan_user_preset_apply(cur, tlou, true);
+  CHECK(a.apply_user_preset);
+  CHECK(a.pass_count_changed);
+  CHECK(a.pass_count_before == 1);
+  CHECK(a.preset_changed);
+  CHECK(a.toggle_fg);
+  CHECK(a.fg_multiplier_changed);
+  CHECK(a.scale_apply);
+  CHECK(a.scale_before == 100);
+  CHECK_FALSE(a.hud_changed);
+  CHECK_FALSE(a.toggle_nr);
+  CHECK(a.apply_nr_pass_count == 5);
+  CHECK(a.apply_renodx_preset == 2);
+  CHECK(a.apply_fg_on);
+  CHECK(a.apply_fg_multiplier == 3);
+  CHECK(a.apply_scale_percent == 80);
+  CHECK(nr_pass_count_change_needs_relaunch(a.pass_count_before, a.apply_nr_pass_count));
+  CHECK(plan_session_cfg_apply(true, a.pass_count_before, a.apply_nr_pass_count, 100, 80) ==
+        SessionCfgApply::RelaunchMotor);
+
+  const SessionCfgActions same_motor = plan_user_preset_apply(make_preset_session(2, 0, false, 2, 100),
+                                                             make_user_preset("opt", 5, 0, false, 2, 100), true);
+  CHECK(same_motor.pass_count_changed);
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 5));
+  CHECK(plan_session_cfg_apply(true, 2, 5, 100, 100) == SessionCfgApply::RelaunchPassCount);
+
+  const SessionCfgActions cinema = plan_user_preset_apply(make_preset_session(1, 0, false, 2, 100),
+                                                         make_user_preset("cin", 1, 2, false, 2, 100), true);
+  CHECK(cinema.preset_changed);
+  CHECK_FALSE(cinema.pass_count_changed);
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 1));
+
+  const SessionCfgActions miss = plan_user_preset_apply(cur, tlou, false);
+  CHECK(miss.apply_user_preset);
+  CHECK(miss.pass_count_changed);
+  CHECK(miss.preset_changed);
+  CHECK(miss.scale_apply);
+  CHECK_FALSE(miss.apply_fg_on);
+  CHECK_FALSE(miss.toggle_fg);
+  CHECK_FALSE(miss.fg_multiplier_changed);
+
+  const SessionCfgActions drop_fg =
+      plan_user_preset_apply(make_preset_session(5, 2, true, 3, 100), tlou, false);
+  CHECK_FALSE(drop_fg.apply_fg_on);
+  CHECK(drop_fg.toggle_fg);
+}
+
+TEST_CASE("user preset persist skips machine fields and Benchmark refuses IO") {
+  CHECK(user_preset_io_allowed(false));
+  CHECK_FALSE(user_preset_io_allowed(true));
+
+  PersistedSettings before = default_settings();
+  before.device_name = "Elgato 4K X";
+  before.fg_path = "C:\\Games\\Lossless Scaling\\LosslessScaling.exe";
+  before.width = 2560;
+  before.height = 1440;
+  before.hotkeys.vk_quit = 0x1B;
+  PersistedSettings after = before;
+  apply_user_preset_to_persisted(after, make_user_preset("TLOU 2x", 5, 2, true, 3, 80), true);
+  CHECK(persisted_untouched_by_user_preset(before, after));
+  CHECK(after.device_name == "Elgato 4K X");
+  CHECK(after.fg_path == before.fg_path);
+  CHECK(after.hotkeys.vk_quit == before.hotkeys.vk_quit);
+  CHECK(after.nr_pass_count == 5);
+  CHECK(after.renodx_preset == 2);
+  CHECK(after.fg_enabled);
+  CHECK(after.fg_multiplier == 3);
+  CHECK(after.scale_percent == 80);
+
+  PersistedSettings no_ls = before;
+  apply_user_preset_to_persisted(no_ls, make_user_preset("TLOU 2x", 5, 2, true, 3, 80), false);
+  CHECK(persisted_untouched_by_user_preset(before, no_ls));
+  CHECK_FALSE(no_ls.fg_enabled);
+  CHECK(no_ls.nr_pass_count == 5);
+}
+
+TEST_CASE("user preset disk keeps UTF-8 name") {
+  const auto dir = make_user_preset_tmp("utf8");
+  bool replaced = false;
+  std::string err;
+  const std::string nome = "TLOU a\xC3\xA7\xC3\xA3o";
+  UserPreset p = make_user_preset("tmp", 5, 2, true, 3, 80);
+  p.name = nome;
+  REQUIRE(upsert_user_preset_in(dir, p, replaced, err));
+  std::vector<UserPreset> have;
+  REQUIRE(list_user_presets_in(dir, have));
+  REQUIRE(have.size() == 1);
+  CHECK(have[0].name == nome);
+  CHECK(std::filesystem::exists(user_preset_store_path(dir, nome)));
+}
+
+TEST_CASE("user preset disk overwrite is one file and load sorts A-Z") {
+  const auto dir = make_user_preset_tmp("disk");
+  bool replaced = false;
+  std::string err;
+  REQUIRE(upsert_user_preset_in(dir, make_user_preset("Beta", 1, 0, false, 2, 100), replaced, err));
+  REQUIRE(upsert_user_preset_in(dir, make_user_preset("Alpha", 2, 1, true, 2, 100), replaced, err));
+  REQUIRE(upsert_user_preset_in(dir, make_user_preset("beta", 3, 2, false, 2, 90), replaced, err));
+  CHECK(replaced);
+  int files = 0;
+  for (const auto& e : std::filesystem::directory_iterator(dir)) {
+    if (e.is_regular_file()) ++files;
+  }
+  CHECK(files == 2);
+  std::vector<UserPreset> have;
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 2);
+  CHECK(have[0].name == "Alpha");
+  CHECK(have[1].name == "beta");
+  CHECK(have[1].nr_pass_count == 3);
+  REQUIRE(delete_user_preset_in(dir, "Alpha", err));
+  files = 0;
+  for (const auto& e : std::filesystem::directory_iterator(dir)) {
+    if (e.is_regular_file()) ++files;
+  }
+  CHECK(files == 1);
+}
+
 
 
 

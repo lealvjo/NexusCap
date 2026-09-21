@@ -14,6 +14,7 @@
 #include "nexuscap/perf_test.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/system_metrics.hpp"
+#include "nexuscap/user_preset.hpp"
 #include "nexuscap/version.hpp"
 
 #include "imgui.h"
@@ -852,7 +853,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       nr_runtime_on = false;
       cfg.nr_runtime_on = false;
     }
-    if (strip_same_process && relaunch_current_process(nullptr)) {
+    if (strip_same_process &&
+        relaunch_current_process(lobby_return_relaunch_args(false, g_show_perf_result))) {
       ExitProcess(0);
     }
   }
@@ -1014,6 +1016,81 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     if (msg.empty()) return;
     lobby_toast = std::move(msg);
     lobby_toast_until = ImGui::GetTime() + (kSessionNoticeTtlMs / 1000.0);
+  };
+
+  std::vector<std::string> lobby_preset_names;
+  std::vector<std::string> lobby_preset_summaries;
+  int lobby_preset_sel = -1;
+  char lobby_preset_save_name[64]{};
+  bool lobby_preset_save_open = false;
+  bool lobby_preset_ow = false;
+  bool lobby_preset_del = false;
+  bool lobby_preset_imp_ow = false;
+  std::string lobby_preset_imp_text;
+  auto reload_lobby_presets = [&]() {
+    std::string keep;
+    if (lobby_preset_sel >= 0 && lobby_preset_sel < static_cast<int>(lobby_preset_names.size())) {
+      keep = lobby_preset_names[static_cast<size_t>(lobby_preset_sel)];
+    }
+    lobby_preset_names.clear();
+    lobby_preset_summaries.clear();
+    std::vector<UserPreset> have;
+    list_user_presets_in(default_user_presets_path(), have);
+    for (const auto& p : have) {
+      lobby_preset_names.push_back(p.name);
+      lobby_preset_summaries.push_back(user_preset_list_summary(p));
+    }
+    lobby_preset_sel = keep.empty() ? -1 : find_user_preset_index(have, keep);
+  };
+  reload_lobby_presets();
+  auto apply_lobby_named_preset = [&](const UserPreset& p) {
+    const bool fg_ok = lobby_fg_can_enable(settings.fg_path);
+    const LobbyUserPresetPlan plan = plan_lobby_user_preset_apply(settings, p, fg_ok);
+    apply_user_preset_to_persisted(settings, p, fg_ok);
+    scale_f = static_cast<float>(clamp_scale_percent(settings.scale_percent));
+    wchar_t exe_path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+    std::string serr;
+    save_settings(settings, settings_default_path(), serr);
+    const bool live = lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
+    const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
+    if (plan.pass_relaunch && live) {
+      (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
+      (void)sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count);
+      (void)sync_feed_work_resolution_in_dir(exe_dir, feed_work_resolution_for_session(settings.scale_percent));
+      motor_swap_title = lobby_pipeline_hold_title();
+      motor_swap_line = std::string(nr_pass_count_label(plan.pass_before)) + "  \xE2\x86\x92  " +
+                        nr_pass_count_label(plan.pass_after);
+      motor_swap_args = g_open_gear ? lobby_cfg_relaunch_args() : "";
+      motor_swap_pending = true;
+      motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+    } else if (live) {
+      preview.set_visual_preview(settings.renodx_preset, want);
+      if (plan.look_changed) {
+        apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on,
+                                       settings.nr_pass_count);
+      } else {
+        (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
+        (void)sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count);
+      }
+      sync_lobby_preview_pipeline_files(exe_dir, settings);
+      if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
+                                        feed_pipeline_on_for_renodx(settings.enhance_renodx)) &&
+          want && !dlss5_bridge_ready_for_nr()) {
+        nr_boot_retries = 120;
+      }
+      cfg.nr_runtime_on = nr_runtime_on;
+    } else {
+      sync_lobby_preview_pipeline_files(exe_dir, settings);
+      (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
+      (void)sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count);
+    }
+    if (plan.fg_missing) {
+      push_lobby_toast(session_notice_fg_missing());
+    } else {
+      push_lobby_toast(std::string("Preset aplicado: ") + p.name + (live ? "" : " — no Iniciar"));
+    }
   };
   if (!renodx_dir_ok) {
     push_lobby_toast(renodx_write_denied_notice());
@@ -1522,7 +1599,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::Checkbox("Reportar bug", &settings.ui.bug_report);
     ImGui::TextDisabled(settings.ui.bug_report ? "  -> modo diagnostico (report/*.txt)"
                                                : "  -> off (sem overhead)");
-    ImGui::Checkbox("Reportar performance", &settings.ui.perf_report);
+    if (ImGui::Checkbox("Reportar performance", &settings.ui.perf_report)) {
+      std::string serr;
+      save_settings(settings, settings_default_path(), serr);
+    }
     ImGui::TextDisabled(settings.ui.perf_report ? "  -> no fim da captura abre a analise (mesmo modelo do Benchmark)"
                                                 : "  -> off (sem analise no fim)");
     ImGui::PopTextWrapPos();
@@ -1608,6 +1688,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     if (g_open_gear && !gear_was_open) {
       scale_f = static_cast<float>(clamp_scale_percent(settings.scale_percent));
+      reload_lobby_presets();
     }
     gear_was_open = g_open_gear;
 
@@ -1850,6 +1931,205 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextDisabled("Escala do Feed e manual se quiseres menos carga.");
         ImGui::TextDisabled("Delete ou Ctrl+M liga/desliga o NR na captura (reinicia e volta).");
         ImGui::EndDisabled();
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Presets");
+        if (ImGui::BeginChild("##cfg_preset_list", ImVec2(0.f, 132.f), true)) {
+          if (lobby_preset_names.empty()) {
+            ImGui::TextDisabled("Nenhum preset. Salve o look deste jogo.");
+          }
+          for (int i = 0; i < static_cast<int>(lobby_preset_names.size()); ++i) {
+            char line[160]{};
+            std::snprintf(line, sizeof(line), "%s    %s", lobby_preset_names[static_cast<size_t>(i)].c_str(),
+                          lobby_preset_summaries[static_cast<size_t>(i)].c_str());
+            if (ImGui::Selectable(line, lobby_preset_sel == i)) lobby_preset_sel = i;
+          }
+        }
+        ImGui::EndChild();
+        const bool cfg_have_preset =
+            lobby_preset_sel >= 0 && lobby_preset_sel < static_cast<int>(lobby_preset_names.size());
+        if (ImGui::Button("Salvar preset")) {
+          lobby_preset_save_open = true;
+          lobby_preset_save_name[0] = 0;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!cfg_have_preset);
+        if (ImGui::Button("Aplicar") && cfg_have_preset) {
+          std::vector<UserPreset> have;
+          list_user_presets_in(default_user_presets_path(), have);
+          const int idx = find_user_preset_index(have, lobby_preset_names[static_cast<size_t>(lobby_preset_sel)]);
+          if (idx >= 0) apply_lobby_named_preset(have[static_cast<size_t>(idx)]);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Apagar")) lobby_preset_del = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Compartilhar") && cfg_have_preset) {
+          std::vector<UserPreset> have;
+          list_user_presets_in(default_user_presets_path(), have);
+          const int idx = find_user_preset_index(have, lobby_preset_names[static_cast<size_t>(lobby_preset_sel)]);
+          if (idx >= 0) {
+            std::string path;
+            if (browse_share_user_preset(g_hwnd, have[static_cast<size_t>(idx)].name,
+                                         serialize_user_preset(have[static_cast<size_t>(idx)]), path)) {
+              push_lobby_toast("Arquivo pronto: " + std::filesystem::u8path(path).filename().string());
+            }
+          }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Importar")) {
+          std::string text;
+          if (browse_import_user_preset(g_hwnd, text)) {
+            UserPreset p;
+            if (!parse_user_preset(text, p)) {
+              push_lobby_toast("Arquivo invalido");
+            } else {
+              std::vector<UserPreset> have;
+              list_user_presets_in(default_user_presets_path(), have);
+              if (find_user_preset_index(have, p.name) >= 0) {
+                lobby_preset_imp_text = text;
+                lobby_preset_imp_ow = true;
+              } else {
+                bool replaced = false;
+                std::string err;
+                if (import_user_preset_in(default_user_presets_path(), text, p, replaced, err)) {
+                  reload_lobby_presets();
+                  std::vector<UserPreset> now;
+                  list_user_presets_in(default_user_presets_path(), now);
+                  lobby_preset_sel = find_user_preset_index(now, p.name);
+                  push_lobby_toast("Preset importado: " + p.name);
+                } else {
+                  push_lobby_toast(err.empty() ? "Import falhou" : err);
+                }
+              }
+            }
+          }
+        }
+        ImGui::TextDisabled("Mesma lista do Ctrl+M. Aplicar grava para o Iniciar.");
+
+        if (lobby_preset_save_open) {
+          ImGui::SetNextItemWidth(-1.f);
+          ImGui::InputText("##lobby_preset_name", lobby_preset_save_name, sizeof(lobby_preset_save_name),
+                           ImGuiInputTextFlags_CallbackCharFilter, [](ImGuiInputTextCallbackData* data) -> int {
+                             if (data->EventChar > 127) return 0;
+                             return user_preset_char_forbidden(static_cast<unsigned char>(data->EventChar)) ? 1
+                                                                                                           : 0;
+                           });
+          ImGui::TextDisabled("%s", user_preset_name_field_hint());
+          if (ImGui::Button("Salvar##lobbygo")) {
+            std::string name;
+            const UserPresetNameStatus st = normalize_user_preset_name(lobby_preset_save_name, name);
+            if (st != UserPresetNameStatus::Ok) {
+              push_lobby_toast(user_preset_name_status_toast(st));
+            } else {
+              std::vector<UserPreset> have;
+              list_user_presets_in(default_user_presets_path(), have);
+              if (find_user_preset_index(have, name) >= 0) {
+                lobby_preset_ow = true;
+              } else {
+                settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
+                UserPreset snap = user_preset_from_persisted(name, settings);
+                bool replaced = false;
+                std::string err;
+                if (upsert_user_preset_in(default_user_presets_path(), snap, replaced, err)) {
+                  lobby_preset_save_open = false;
+                  reload_lobby_presets();
+                  std::vector<UserPreset> now;
+                  list_user_presets_in(default_user_presets_path(), now);
+                  lobby_preset_sel = find_user_preset_index(now, name);
+                  push_lobby_toast(replaced ? ("Preset substituido: " + name) : ("Preset salvo: " + name));
+                } else {
+                  push_lobby_toast(err.empty() ? "Nao deu para salvar o preset" : err);
+                }
+              }
+            }
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancelar##lobbysave")) lobby_preset_save_open = false;
+        }
+        if (lobby_preset_ow) {
+          ImGui::OpenPopup("##lobby_ow_preset");
+          lobby_preset_ow = false;
+        }
+        if (ImGui::BeginPopupModal("##lobby_ow_preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+          std::string name;
+          normalize_user_preset_name(lobby_preset_save_name, name);
+          ImGui::Text("Substituir %s?", name.empty() ? lobby_preset_save_name : name.c_str());
+          if (ImGui::Button("Substituir")) {
+            settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
+            UserPreset snap = user_preset_from_persisted(name.empty() ? lobby_preset_save_name : name, settings);
+            bool replaced = false;
+            std::string err;
+            if (upsert_user_preset_in(default_user_presets_path(), snap, replaced, err)) {
+              lobby_preset_save_open = false;
+              reload_lobby_presets();
+              std::vector<UserPreset> now;
+              list_user_presets_in(default_user_presets_path(), now);
+              lobby_preset_sel = find_user_preset_index(now, snap.name);
+              push_lobby_toast("Preset substituido: " + snap.name);
+            } else {
+              push_lobby_toast(err.empty() ? "Nao deu para salvar o preset" : err);
+            }
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancelar##lobbyow")) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
+        if (lobby_preset_del) {
+          ImGui::OpenPopup("##lobby_del_preset");
+          lobby_preset_del = false;
+        }
+        if (ImGui::BeginPopupModal("##lobby_del_preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+          const char* n = cfg_have_preset ? lobby_preset_names[static_cast<size_t>(lobby_preset_sel)].c_str() : "";
+          ImGui::Text("Apagar %s?", n);
+          if (ImGui::Button("Apagar##lobbygo")) {
+            std::string err;
+            if (cfg_have_preset &&
+                delete_user_preset_in(default_user_presets_path(),
+                                      lobby_preset_names[static_cast<size_t>(lobby_preset_sel)], err)) {
+              push_lobby_toast(std::string("Preset apagado: ") + n);
+              lobby_preset_sel = -1;
+              reload_lobby_presets();
+            } else {
+              push_lobby_toast(err.empty() ? "Nao deu para apagar" : err);
+            }
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancelar##lobbydel")) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
+        if (lobby_preset_imp_ow) {
+          ImGui::OpenPopup("##lobby_imp_ow");
+          lobby_preset_imp_ow = false;
+        }
+        if (ImGui::BeginPopupModal("##lobby_imp_ow", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+          UserPreset p;
+          parse_user_preset(lobby_preset_imp_text, p);
+          ImGui::Text("Substituir %s?", p.name.c_str());
+          if (ImGui::Button("Substituir##lobbyimp")) {
+            bool replaced = false;
+            std::string err;
+            if (import_user_preset_in(default_user_presets_path(), lobby_preset_imp_text, p, replaced, err)) {
+              reload_lobby_presets();
+              std::vector<UserPreset> now;
+              list_user_presets_in(default_user_presets_path(), now);
+              lobby_preset_sel = find_user_preset_index(now, p.name);
+              push_lobby_toast("Preset importado: " + p.name);
+            } else {
+              push_lobby_toast(err.empty() ? "Import falhou" : err);
+            }
+            lobby_preset_imp_text.clear();
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancelar##lobbyimp")) {
+            lobby_preset_imp_text.clear();
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::EndPopup();
+        }
 
         ImGui::Separator();
         ImGui::TextUnformatted("Atalhos");

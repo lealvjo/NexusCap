@@ -72,13 +72,15 @@ if (-not (Test-Path -LiteralPath $multipassAddon)) { throw "Faltando multipass: 
 Copy-Item -LiteralPath $multipassAddon -Destination (Join-Path $multiDir "renodx-dlss5.addon64") -Force
 Write-Host "addons-multipass: multipass $($multipassAddon)"
 
-# Never leave renodx next to the exe — only the active AddonPath folder may expose it.
+# Never leave renodx or NGX next to the exe — Feed loads nvngx from AddonPath only.
 foreach ($leak in @(
   "renodx-dlss5.addon64",
   "renodx-dlss5.stable.addon64",
   "renodx-dlss5.multipass.addon64",
   "renodx-dlss5.stable.sidecar",
-  "renodx-dlss5.multipass.sidecar"
+  "renodx-dlss5.multipass.sidecar",
+  "nvngx_dlss.dll",
+  "nvngx_dlssnr.dll"
 )) {
   $p = Join-Path $DestDir $leak
   if (Test-Path -LiteralPath $p) {

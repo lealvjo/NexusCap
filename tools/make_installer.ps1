@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "4.0.0",
+  [string]$Version = "4.1.0",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -107,12 +107,26 @@ if (Test-Path $logoIco) {
   Copy-Item -LiteralPath $logoIco -Destination (Join-Path $logoDst "logo.ico") -Force
 }
 
+$clipNames = @(
+  "perf_test_1080.mp4",
+  "perf_test_1440.mp4",
+  "perf_test_4k.mp4",
+  "perf_test.m4a"
+)
+foreach ($clip in $clipNames) {
+  $src = Join-Path $Root "assets\$clip"
+  if (Test-Path -LiteralPath $src) {
+    Copy-Item -LiteralPath $src -Destination (Join-Path $logoDst $clip) -Force
+    Write-Host "stage clip $clip"
+  } else {
+    Write-Warning "Falta assets\$clip - Benchmark no setup nao acha o video."
+  }
+}
+
 $runtimeFiles = @(
   "dxgi.dll",
   "dlss5-feed.addon64",
   "dlss5-bridge.addon64",
-  "nvngx_dlss.dll",
-  "nvngx_dlssnr.dll",
   "DLSS5MGF.ini",
   "ReShade.ini",
   "sl.interposer.dll",
@@ -151,11 +165,15 @@ foreach ($stack in @("addons-stable", "addons-multipass")) {
         }
       }
     }
-    # Full copy NGX into each stack so motors never share/conflict on the same files.
+    # NGX lives only inside each stack (Feed loads the add-on folder, not exe root).
     foreach ($ngx in @("nvngx_dlss.dll", "nvngx_dlssnr.dll")) {
-      $src = Join-Path $Stage $ngx
+      $src = Join-Path $srcDir $ngx
+      if (-not (Test-Path -LiteralPath $src)) { $src = Join-Path $Release $ngx }
       $dst = Join-Path $dstDir $ngx
-      if (-not (Test-Path -LiteralPath $src)) { continue }
+      if (-not (Test-Path -LiteralPath $src)) {
+        $missingCritical += "$stack\$ngx"
+        continue
+      }
       Copy-Item -LiteralPath $src -Destination $dst -Force
     }
   } else {
@@ -174,8 +192,19 @@ foreach ($leak in @(
   if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
 }
 
+foreach ($ngx in @("nvngx_dlss.dll", "nvngx_dlssnr.dll")) {
+  if (Test-Path -LiteralPath (Join-Path $Stage $ngx)) {
+    throw "Stage nao pode ter $ngx na raiz. Feed le so addons-stable / addons-multipass."
+  }
+  foreach ($stack in @("addons-stable", "addons-multipass")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage "$stack\$ngx"))) {
+      $missingCritical += "$stack\$ngx"
+    }
+  }
+}
+
 if ($missingCritical.Count -gt 0) {
-  Write-Warning ("RenoDX incompleto no stage (faltando: {0}). Instalador sai sem enhance completo." -f ($missingCritical -join ", "))
+  throw ("RenoDX incompleto no stage (faltando: {0})." -f ($missingCritical -join ", "))
 }
 
 function Write-MotorsStock([string]$Root) {

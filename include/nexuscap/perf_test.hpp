@@ -861,6 +861,13 @@ inline std::string default_perf_test_result_path(const std::string& data_dir) {
 // Processo novo depois do Benchmark (Esc / X / timer). O lobby nao herda Pass/tom/NR/Feed/LS.
 inline const char* perf_test_return_relaunch_args() { return "--show-perf-result"; }
 
+// Esc da sessao HDMI com escala/NR pode relancar o lobby. Sem esta flag o popup
+// do Reportar performance e consumido e o processo novo abre sem a analise.
+inline const char* lobby_return_relaunch_args(bool was_perf_test, bool hdmi_perf_popup_pending) {
+  if (was_perf_test || hdmi_perf_popup_pending) return perf_test_return_relaunch_args();
+  return nullptr;
+}
+
 // Lobby CFG live OFF esvazia Techniques=. O Iniciar regrava antes do relaunch; o Benchmark
 // tem de fazer o mesmo — senão o RenoDX arranca sem cadeia e o relógio morre em evals=0.
 inline PersistedSettings persisted_from_perf_test_plan(const PerfTestPlan& raw) {

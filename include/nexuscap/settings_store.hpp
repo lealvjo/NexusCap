@@ -1115,6 +1115,7 @@ std::string app_data_dir();
 std::string settings_default_path();  // app_data_dir()\settings.ini
 std::string app_logs_dir();          // app_data_dir()\logs
 std::string app_reshade_cache_dir(); // app_data_dir()\reshade-cache
+std::string app_presets_dir();       // app_data_dir()\presets
 
 // True when we can create/overwrite a probe file in dir (Program Files fails without admin).
 bool directory_is_writable(const std::string& dir);

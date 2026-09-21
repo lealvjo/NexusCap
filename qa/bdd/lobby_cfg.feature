@@ -154,3 +154,34 @@ Funcionalidade: CFG do menu principal
     Quando eu inicio e abro Ctrl+M
     E mudo cena ou NR ou Pass Count
     Entao a sessao reinicia e volta para a captura
+
+  @critico @auto
+  Cenario: Contrato lobby dos presets sem janela
+    # ctest -R unit — from_persisted, apply-plan, FG missing, sem tocar placa
+    Dado um snapshot do CFG do lobby (HUD, Pass, look, FG, escala)
+    Entao user_preset_from_persisted redonda os mesmos campos do Ctrl+M
+    E aplicar no PersistedSettings nao escreve device_name, hotkeys nem fg_path
+    E 1x para 2x otimizado pede relaunch de motor no lobby
+    E FG no preset sem Lossless aplica o resto e deixa FG off
+
+  @critico @hdmi
+  Cenario: Presets no lobby usam a mesma lista do Ctrl+M
+    Dado que estou no lobby
+    Entao a coluna SESSAO nao mostra presets
+    Quando eu abro o CFG (F12)
+    Entao o bloco Presets tem Salvar, Aplicar, Apagar, Compartilhar e Importar
+    E a lista e a mesma pasta %LOCALAPPDATA%\NexusCap\presets
+    Quando eu aplico TLOU 2x no lobby
+    Entao FG, Pass, look e escala do CFG mudam
+    E o settings.ini grava
+    E o Iniciar abre nesse jeito
+    E Importar nao aplica sozinho
+
+  @importante @hdmi
+  Cenario: Aplicar preset no lobby com troca de motor reinicia o menu
+    Dado que o preview CFG ao vivo esta ligado
+    E o Pass atual e 1x
+    Quando eu aplico um preset 2x otimizado
+    Entao aparece o hold do pipeline
+    E o lobby volta com o CFG se estava aberto
+    E a sessao ainda nao comecou

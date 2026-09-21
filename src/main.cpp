@@ -19,6 +19,7 @@
 #include "nexuscap/session_cfg.hpp"
 #include "nexuscap/session_report.hpp"
 #include "nexuscap/settings_store.hpp"
+#include "nexuscap/user_preset.hpp"
 #include "nexuscap/stats_window.hpp"
 #include "nexuscap/system_metrics.hpp"
 
@@ -1350,7 +1351,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.fake_capture = cfg.fake_capture;
     overlay.device = info.device;
     fg.reconcile_process();
-    overlay.fg_on = fg.overlay_reads_on();
+    overlay.fg_on = fg.overlay_reads_on(hwnd);
     overlay.fg_multiplier = fg.state().multiplier;
     overlay.fg_status = fg_status_name(fg.state().status);
     overlay.fg_backend = fg.state().backend;
@@ -1398,6 +1399,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.vk_cfg = g_hotkeys.vk_cfg;
       ui.cfg_ctrl = g_hotkeys.cfg_ctrl;
       ui.status = overlay.session_notice;
+      cfg_ui.fg_can_enable = lobby_fg_can_enable(cfg.fg_path);
+      cfg_ui.presets_locked = cfg.perf_test;
       if (cfg_restart_pending) {
         cfg_ui.set_restart_hold(session_restart_notice_title(),
                                 session_restart_notice_detail(cfg_restart_kind),
@@ -1439,6 +1442,29 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (cfg_ui_ready && !cfg_restart_pending) {
       const SessionCfgActions act = cfg_ui.take_actions();
       SessionCfgState& ui = cfg_ui.state;
+      if (act.apply_user_preset) {
+        ui.hud_visible = act.apply_hud;
+        ui.overlay_no_bg = act.apply_overlay_no_bg;
+        ui.overlay_console = act.apply_overlay_console;
+        ui.live_console = act.apply_live_console;
+        ui.nr_on = act.apply_nr_on;
+        ui.renodx_preset = act.apply_renodx_preset;
+        ui.nr_pass_count = act.apply_nr_pass_count;
+        ui.scale_percent = act.apply_scale_percent;
+        ui.fg_on = act.apply_fg_on;
+        ui.fg_multiplier = act.apply_fg_multiplier;
+        // Restart do Pass/look grava cfg no settings.ini. Sem isto, escala/FG/NR
+        // do preset perdem para o valor antigo da sessao.
+        cfg.scale_percent = clamp_scale_percent(act.apply_scale_percent);
+        apply_session_fg_to_config(act.apply_fg_on, act.apply_fg_multiplier, cfg);
+        cfg.neural_rendering = act.apply_nr_on;
+        cfg.renodx_preset = clamp_renodx_visual_preset(act.apply_renodx_preset);
+        cfg.nr_pass_count = clamp_nr_pass_count(act.apply_nr_pass_count);
+        cfg.overlay_no_bg = act.apply_overlay_no_bg;
+        cfg.overlay_console = act.apply_overlay_console;
+        cfg.live_console = static_cast<int>(clamp_live_console(act.apply_live_console));
+        cfg.show_overlay = act.apply_hud;
+      }
       if (act.close_requested) {
         cfg_ui.set_open(false);
         g_cfg_open = false;
@@ -1514,7 +1540,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       const SessionCfgApply plan =
           act.pass_count_changed
               ? plan_session_cfg_apply(renodx_now, act.pass_count_before, ui.nr_pass_count,
-                                       feed_locked_scale, clamp_scale_percent(cfg.scale_percent))
+                                       feed_locked_scale, clamp_scale_percent(ui.scale_percent))
               : (act.scale_apply
                      ? plan_session_cfg_apply(renodx_now, cfg.nr_pass_count, cfg.nr_pass_count,
                                                feed_locked_scale,
@@ -1556,9 +1582,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         ui.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
       }
 
-      if (act.scale_apply && !cfg_restart_pending) {
+      if (act.scale_apply) {
         const int want_scale = clamp_scale_percent(ui.scale_percent);
-        if (plan == SessionCfgApply::RelaunchFeedScale) {
+        cfg.scale_percent = want_scale;
+        if (cfg_restart_pending) {
+          (void)sync_feed_work_resolution_in_dir(exe_dir_cfg,
+                                                 feed_work_resolution_for_session(want_scale));
+          append_log(cfg.log_dir, "cfg feed scale (com restart) → " + std::to_string(want_scale) + "%");
+        } else if (plan == SessionCfgApply::RelaunchFeedScale) {
           cfg.scale_percent = want_scale;
           cfg_restart_kind = SessionCfgApply::RelaunchFeedScale;
           cfg_restart_pending = true;
@@ -1577,6 +1608,29 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                               now);
           append_log(cfg.log_dir, "cfg scale → " + std::to_string(want_scale) + "% (ao vivo)");
         }
+      }
+
+      if (act.apply_user_preset && !cfg.perf_test) {
+        PersistedSettings ps = default_settings();
+        std::string serr;
+        load_settings(ps, settings_default_path(), serr);
+        UserPreset snap;
+        snap.name = "applied";
+        snap.hud_visible = act.apply_hud;
+        snap.overlay_no_bg = act.apply_overlay_no_bg;
+        snap.overlay_console = act.apply_overlay_console;
+        snap.live_console = act.apply_live_console;
+        snap.neural_rendering = act.apply_nr_on;
+        snap.renodx_preset = act.apply_renodx_preset;
+        snap.nr_pass_count = act.apply_nr_pass_count;
+        snap.fg_enabled = act.apply_fg_on;
+        snap.fg_multiplier = act.apply_fg_multiplier;
+        snap.scale_percent = act.apply_scale_percent;
+        apply_user_preset_to_persisted(ps, snap, cfg_ui.fg_can_enable);
+        save_settings(ps, settings_default_path(), serr);
+        cfg.show_overlay = act.apply_hud;
+        cfg.neural_rendering = act.apply_nr_on;
+        append_log(cfg.log_dir, "cfg user preset applied");
       }
 
       if (cfg_restart_pending) {
@@ -1885,7 +1939,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   renderer.present_black();
   // Esc/timer do Benchmark: mata FG+LS ANTES de esconder a janela (WM_CLOSE so vai ao tray).
   if (cfg.perf_test) {
-    if (overlay.fg_on || fg.overlay_reads_on() || fg.state().active) fg.pulse_fg_hotkey();
+    if (overlay.fg_on || fg.overlay_reads_on(hwnd) || fg.state().active) fg.pulse_fg_hotkey();
     const bool dead = fg.kill_all_lossless_and_wait();
     append_log(cfg.log_dir, dead ? "perf-test teardown: LS morto (terminate)"
                                  : "perf-test teardown: LS ainda vivo apos terminate");
@@ -2245,9 +2299,14 @@ int main(int argc, char** argv) {
     if (nexuscap::perf_test_return_needs_fresh_process(was_perf_test) ||
         nexuscap::feed_scale_change_needs_relaunch(session_renodx, session_scale,
                                                    nexuscap::kLobbyFeedWorkResolution)) {
+      nexuscap::PerfTestResult last_perf{};
+      const bool hdmi_popup =
+          !was_perf_test &&
+          nexuscap::read_perf_test_result_file(nexuscap::default_perf_test_result_path(nexuscap::app_data_dir()),
+                                               last_perf) &&
+          last_perf.valid && last_perf.hdmi_session && last_perf.popup;
       std::printf("back to lobby: restarting so lobby boots HDMI (not the test pipeline)\n");
-      if (nexuscap::relaunch_current_process(was_perf_test ? nexuscap::perf_test_return_relaunch_args()
-                                                            : nullptr))
+      if (nexuscap::relaunch_current_process(nexuscap::lobby_return_relaunch_args(was_perf_test, hdmi_popup)))
         return 0;
     }
     // Drop leftover Esc from "back to lobby" before the menu sees it.

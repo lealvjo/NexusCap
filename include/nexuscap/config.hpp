@@ -312,7 +312,8 @@ inline bool lobby_hud_contains(const LobbyHudPreviewLines& h, const char* needle
   return false;
 }
 
-inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings& s, double fps_ema) {
+inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings& s, double fps_ema,
+                                                        const SystemMetricsSample* hw_live = nullptr) {
   LobbyHudPreviewLines out;
   if (!s.ui.show_fps) return out;
 
@@ -324,21 +325,8 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
 
   if (s.ui.mini_overlay) {
     const bool dlss5 = s.enhance_renodx && s.neural_rendering;
-    SystemMetricsSample hw{};
-    // Mini always reserves HW strip in preview (live session fills real SKU/%).
-    hw.cpu_name = "i5-11400F";
-    hw.gpu_name = "RTX 5070";
-    hw.cpu_ok = hw.gpu_ok = hw.cpu_temp_ok = hw.gpu_temp_ok = true;
-    hw.vram_ok = hw.ram_ok = hw.power_ok = true;
-    hw.cpu_percent = 35;
-    hw.cpu_temp_c = 55;
-    hw.gpu_percent = 40;
-    hw.gpu_temp_c = 60;
-    hw.vram_used_mb = 2048;
-    hw.vram_budget_mb = 12288;
-    hw.ram_used_mb = 16384;
-    hw.ram_total_mb = 32768;
-    hw.power_w = 90;
+    // Same sampler as the session HUD — never a fake SKU / % / temp.
+    const SystemMetricsSample hw = hw_live ? *hw_live : SystemMetricsSample{};
     char hw_compact[200]{};
     format_sys_metrics_compact(hw_compact, sizeof(hw_compact), hw);
     const LiveConsole cons = parse_live_console(s.ui.live_console);
@@ -395,11 +383,11 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     std::snprintf(out.line[n++], 128, "%s   RGB work ~%d%%", s.ui.sync_image ? "SYNC VSYNC" : "SYNC TEAR",
                   static_cast<int>(scale_pixel_ratio(scale) * 100.0 + 0.5));
     if (s.ui.hw_info) {
-      SystemMetricsSample blank;
-      char hw[kSysMetricsLineCount][64]{};
-      const int hn = format_sys_metrics_lines(hw, kSysMetricsLineCount, blank);
+      const SystemMetricsSample hw = hw_live ? *hw_live : SystemMetricsSample{};
+      char hw_lines[kSysMetricsLineCount][64]{};
+      const int hn = format_sys_metrics_lines(hw_lines, kSysMetricsLineCount, hw);
       for (int i = 0; i < hn && n < 16; ++i) {
-        std::snprintf(out.line[n++], 128, "%s", hw[i]);
+        std::snprintf(out.line[n++], 128, "%s", hw_lines[i]);
       }
     }
   } else {
@@ -435,11 +423,11 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       }
     }
     if (s.ui.hw_info) {
-      SystemMetricsSample blank;
-      char hw[kSysMetricsLineCount][64]{};
-      const int hn = format_sys_metrics_lines(hw, kSysMetricsLineCount, blank);
+      const SystemMetricsSample hw = hw_live ? *hw_live : SystemMetricsSample{};
+      char hw_lines[kSysMetricsLineCount][64]{};
+      const int hn = format_sys_metrics_lines(hw_lines, kSysMetricsLineCount, hw);
       for (int i = 0; i < hn && n < 16; ++i) {
-        std::snprintf(out.line[n++], 128, "%s", hw[i]);
+        std::snprintf(out.line[n++], 128, "%s", hw_lines[i]);
       }
     }
   }

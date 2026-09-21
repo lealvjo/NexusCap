@@ -80,6 +80,13 @@ Funcionalidade: Tela principal (lobby)
     Entao o preview e a sessao mostram so o texto, sem placa preta
     E o check permanece disponivel ao trocar de estilo
 
+  @auto
+  Cenario: Mini overlay no lobby usa CPU GPU ao vivo
+    Dado o preview do lobby com Mini overlay
+    Entao nao aparece i5-11400F nem 35%/55C de mentira
+    E o sampler preenche o SKU e a % da maquina
+    E na sessao o mesmo HUD ja era ao vivo
+
   @importante @hdmi
   Cenario: Console na captura e publico
     Dado que estou no lobby

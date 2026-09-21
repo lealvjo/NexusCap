@@ -1203,8 +1203,28 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(lobby_hud_contains(hud, "DLSS5"));
   CHECK(lobby_hud_contains(hud, "1x"));
   CHECK(lobby_hud_contains(hud, "Feed"));
-  CHECK(lobby_hud_contains(hud, "i5-11400F"));
-  CHECK(lobby_hud_contains(hud, "RTX 5070"));
+  CHECK_FALSE(lobby_hud_contains(hud, "i5-11400F"));
+  CHECK_FALSE(lobby_hud_contains(hud, "RTX 5070"));
+  CHECK_FALSE(lobby_hud_contains(hud, "35%"));
+  {
+    SystemMetricsSample live{};
+    live.cpu_name = "i5-11400F";
+    live.gpu_name = "RTX 5070";
+    live.cpu_ok = live.gpu_ok = live.cpu_temp_ok = live.gpu_temp_ok = true;
+    live.cpu_percent = 12;
+    live.cpu_temp_c = 48;
+    live.gpu_percent = 77;
+    live.gpu_temp_c = 72;
+    auto live_hud = make_lobby_hud_preview_lines(s, 60.0, &live);
+    CHECK(lobby_hud_contains(live_hud, "i5-11400F"));
+    CHECK(lobby_hud_contains(live_hud, "RTX 5070"));
+    CHECK(lobby_hud_contains(live_hud, "12%"));
+    CHECK_FALSE(lobby_hud_contains(live_hud, "35%/55C"));
+    live.cpu_percent = 88;
+    live_hud = make_lobby_hud_preview_lines(s, 60.0, &live);
+    CHECK(lobby_hud_contains(live_hud, "88%"));
+    CHECK_FALSE(lobby_hud_contains(live_hud, "12%"));
+  }
   CHECK(lobby_hud_preview_lines(true, true, false, true) == 3);
   CHECK(hud_uses_mini_overlay(true, true));
   CHECK_FALSE(hud_uses_advanced_metrics(true, true, true));
@@ -3063,17 +3083,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 1, 2));
+  CHECK(app_version_is(4, 1, 3));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.1.2");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.1.2") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.2");
+  CHECK(std::string(kAppVersion) == "4.1.3");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.1.3") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.3");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.1.2") != std::string::npos);
+  CHECK(lobby_t.find("4.1.3") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.1.2") != std::string::npos);
+  CHECK(sess_t.find("4.1.3") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 

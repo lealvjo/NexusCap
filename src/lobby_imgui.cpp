@@ -618,7 +618,10 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
   // Live overlay owns session HUD — keep lobby preview clear of mini/ADV twin.
   if (settings.ui.live_overlay) return;
 
-  LobbyHudPreviewLines hud = make_lobby_hud_preview_lines(settings, preview.fps_ema);
+  if (settings.ui.mini_overlay || settings.ui.hw_info) {
+    g_lobby_hw.sample(g_dx.device, g_lobby_hw_sample);
+  }
+  LobbyHudPreviewLines hud = make_lobby_hud_preview_lines(settings, preview.fps_ema, &g_lobby_hw_sample);
   if (hud.count <= 0) return;
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -642,22 +645,8 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
     const int fgx = settings.fg_enabled ? (settings.fg_multiplier >= 2 ? settings.fg_multiplier : 2) : 1;
     const int scale = clamp_scale_percent(settings.scale_percent);
     const bool dlss5 = settings.enhance_renodx && settings.neural_rendering;
-    SystemMetricsSample hw{};
-    hw.cpu_name = "i5-11400F";
-    hw.gpu_name = "RTX 5070";
-    hw.cpu_ok = hw.gpu_ok = hw.cpu_temp_ok = hw.gpu_temp_ok = true;
-    hw.vram_ok = hw.ram_ok = hw.power_ok = true;
-    hw.cpu_percent = 35;
-    hw.cpu_temp_c = 55;
-    hw.gpu_percent = 40;
-    hw.gpu_temp_c = 60;
-    hw.vram_used_mb = 2048;
-    hw.vram_budget_mb = 12288;
-    hw.ram_used_mb = 16384;
-    hw.ram_total_mb = 32768;
-    hw.power_w = 90;
     char hw_compact[200]{};
-    format_sys_metrics_compact(hw_compact, sizeof(hw_compact), hw);
+    format_sys_metrics_compact(hw_compact, sizeof(hw_compact), g_lobby_hw_sample);
     MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
     char line0[8]{}, line1[8]{};
     const LiveConsole cons = parse_live_console(settings.ui.live_console);
@@ -722,26 +711,12 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
     return;
   }
 
-  // HW placeholders come from make_lobby_hud_preview_lines — strip them and paint a
-  // dedicated multi-line block below (CPU / GPU / RAM / VRAM / PWR each on its own line).
+  // HW lines are always appended last — drop them here and paint the dedicated block.
   char hw_lines[kSysMetricsLineCount][64]{};
   int hw_n = 0;
   if (settings.ui.hw_info) {
-    int keep = 0;
-    for (int i = 0; i < hud.count; ++i) {
-      const char* L = hud.line[i];
-      if (std::strncmp(L, "CPU", 3) == 0 || std::strncmp(L, "GPU", 3) == 0 ||
-          std::strncmp(L, "RAM", 3) == 0 || std::strncmp(L, "VRAM", 4) == 0 ||
-          std::strncmp(L, "PWR", 3) == 0) {
-        continue;
-      }
-      if (keep != i) std::snprintf(hud.line[keep], sizeof(hud.line[0]), "%s", L);
-      ++keep;
-    }
-    hud.count = keep;
-
-    g_lobby_hw.sample(g_dx.device, g_lobby_hw_sample);
     hw_n = format_sys_metrics_lines(hw_lines, kSysMetricsLineCount, g_lobby_hw_sample);
+    if (hud.count >= hw_n) hud.count -= hw_n;
   }
 
   const float pad = 8.f;

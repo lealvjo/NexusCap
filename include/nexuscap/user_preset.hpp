@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -17,7 +19,8 @@
 
 namespace nexuscap {
 
-inline constexpr int kUserPresetNameMax = 60;
+inline constexpr int kUserPresetNameMax = 50;
+inline constexpr int kUserPresetNameBuf = kUserPresetNameMax + 1;
 inline constexpr int kUserPresetMaxCount = 32;
 inline constexpr int kUserPresetFormat = 1;
 inline constexpr const char* kUserPresetMagicKey = "nexuscap-preset";
@@ -95,10 +98,16 @@ inline UserPresetNameStatus normalize_user_preset_name(const std::string& raw, s
 
 inline const char* user_preset_name_status_toast(UserPresetNameStatus s) {
   switch (s) {
-    case UserPresetNameStatus::Empty:
-      return "Nome invalido (1 a 60 caracteres)";
-    case UserPresetNameStatus::TooLong:
-      return "Nome invalido (no maximo 60 caracteres)";
+    case UserPresetNameStatus::Empty: {
+      static char buf[72];
+      std::snprintf(buf, sizeof(buf), "Nome invalido (1 a %d caracteres)", kUserPresetNameMax);
+      return buf;
+    }
+    case UserPresetNameStatus::TooLong: {
+      static char buf[72];
+      std::snprintf(buf, sizeof(buf), "Nome invalido (no maximo %d caracteres)", kUserPresetNameMax);
+      return buf;
+    }
     case UserPresetNameStatus::Forbidden:
       return "Nome invalido (sem \\ / : * ? \" < > |)";
     default:
@@ -107,7 +116,34 @@ inline const char* user_preset_name_status_toast(UserPresetNameStatus s) {
 }
 
 inline const char* user_preset_name_field_hint() {
-  return "1 a 60 caracteres. Sem \\ / : * ? \" < > |";
+  static char buf[80];
+  std::snprintf(buf, sizeof(buf), "1 a %d caracteres. Sem \\ / : * ? \" < > |", kUserPresetNameMax);
+  return buf;
+}
+
+inline int user_preset_name_typed_len(const char* buf) {
+  return buf ? static_cast<int>(std::strlen(buf)) : 0;
+}
+
+inline int user_preset_name_filter_event(unsigned int event_char, int buf_text_len) {
+  if (event_char <= 127 && user_preset_char_forbidden(static_cast<unsigned char>(event_char))) return 1;
+  if (buf_text_len >= kUserPresetNameMax) return 1;
+  return 0;
+}
+
+inline bool user_preset_name_at_limit(const char* buf) {
+  return user_preset_name_typed_len(buf) >= kUserPresetNameMax;
+}
+
+inline std::string user_preset_name_limit_hint(const char* buf) {
+  const int n = user_preset_name_typed_len(buf);
+  char line[96]{};
+  if (n >= kUserPresetNameMax) {
+    std::snprintf(line, sizeof(line), "%d/%d  limite de caracteres", kUserPresetNameMax, kUserPresetNameMax);
+  } else {
+    std::snprintf(line, sizeof(line), "%d/%d caracteres. Sem \\ / : * ? \" < > |", n, kUserPresetNameMax);
+  }
+  return line;
 }
 
 inline void clamp_user_preset(UserPreset& p) {
@@ -121,15 +157,29 @@ inline void clamp_user_preset(UserPreset& p) {
 }
 
 inline std::string user_preset_list_summary(const UserPreset& p) {
-  char b[56]{};
+  char b[72]{};
+  const char* look = renodx_visual_preset_name(p.renodx_preset, p.nr_pass_count);
   if (p.fg_enabled) {
-    std::snprintf(b, sizeof(b), "%s  FG x%d  %d%%", nr_pass_count_short(p.nr_pass_count),
+    std::snprintf(b, sizeof(b), "%s  %s  FG x%d  %d%%", nr_pass_count_short(p.nr_pass_count), look,
                   clamp_fg_multiplier(p.fg_multiplier), clamp_scale_percent(p.scale_percent));
   } else {
-    std::snprintf(b, sizeof(b), "%s  FG off  %d%%", nr_pass_count_short(p.nr_pass_count),
+    std::snprintf(b, sizeof(b), "%s  %s  FG off  %d%%", nr_pass_count_short(p.nr_pass_count), look,
                   clamp_scale_percent(p.scale_percent));
   }
   return b;
+}
+
+inline constexpr float kUserPresetMarqueeGapPx = 36.f;
+inline constexpr float kUserPresetMarqueePxPerSec = 42.f;
+
+// 0 = nome cabe, sem rolagem. Senao offset em pixels para o loop.
+inline float user_preset_marquee_offset(float text_w, float avail, double t_sec) {
+  if (text_w <= avail + 0.5f) return 0.f;
+  const float loop = text_w + kUserPresetMarqueeGapPx;
+  if (loop < 1.f) return 0.f;
+  float x = std::fmod(static_cast<float>(t_sec) * kUserPresetMarqueePxPerSec, loop);
+  if (x < 0.f) x += loop;
+  return x;
 }
 
 inline UserPreset user_preset_from_persisted(const std::string& name, const PersistedSettings& s) {
@@ -435,6 +485,53 @@ inline bool upsert_user_preset_in(const std::filesystem::path& dir, UserPreset p
     err = "falha ao gravar";
     return false;
   }
+  return true;
+}
+
+inline bool delete_user_preset_in(const std::filesystem::path& dir, const std::string& name, std::string& err);
+
+inline void fill_user_preset_name_buf(char* buf, size_t n, const std::string& name) {
+  if (!buf || n == 0) return;
+  std::snprintf(buf, n, "%s", name.c_str());
+}
+
+// Troca so o nome. Nao puxa o look atual da sessao. overwrite=false recusa se o destino
+// ja existir (err="existe"); overwrite=true substitui o destino e apaga o antigo.
+inline bool rename_user_preset_in(const std::filesystem::path& dir, const std::string& old_raw,
+                                  const std::string& new_raw, bool overwrite, bool& replaced, std::string& err) {
+  replaced = false;
+  std::string old_n;
+  std::string new_n;
+  if (normalize_user_preset_name(old_raw, old_n) != UserPresetNameStatus::Ok) {
+    err = "nome invalido";
+    return false;
+  }
+  const UserPresetNameStatus st = normalize_user_preset_name(new_raw, new_n);
+  if (st != UserPresetNameStatus::Ok) {
+    err = "nome invalido";
+    return false;
+  }
+  std::vector<UserPreset> have;
+  list_user_presets_in(dir, have);
+  const int src = find_user_preset_index(have, old_n);
+  if (src < 0) {
+    err = "nao encontrado";
+    return false;
+  }
+  UserPreset p = have[static_cast<size_t>(src)];
+  if (p.name == new_n) return true;
+  const int dst = find_user_preset_index(have, new_n);
+  if (dst >= 0 && !user_preset_names_equal(have[static_cast<size_t>(dst)].name, old_n)) {
+    if (!overwrite) {
+      err = "existe";
+      return false;
+    }
+    replaced = true;
+  }
+  if (!delete_user_preset_in(dir, old_n, err)) return false;
+  p.name = new_n;
+  bool dummy = false;
+  if (!upsert_user_preset_in(dir, p, dummy, err)) return false;
   return true;
 }
 

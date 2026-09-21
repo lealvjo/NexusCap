@@ -151,20 +151,24 @@ Funcionalidade: CFG na captura (Ctrl+M)
   @critico @auto
   Cenario: Contrato dos presets de sessao sem janela
     # ctest -R unit — nome, snapshot Ctrl+M, upsert, import/export, apply-plan, disco temp
-    Dado o contrato user_preset (nome 1-60, lista 32, AppData presets)
+    Dado o contrato user_preset (nome 1-50, lista 32, AppData presets)
     Entao nome vazio ou so espaco nao salva
     E trim de "  TLOU  " vira TLOU
-    E 61 caracteres recusa; 60 aceita
+    E 51 caracteres recusa; 50 aceita
+    E o campo trava no 50 e mostra 50/50 limite de caracteres
+    E todo caractere de arquivo (\ / : * ? " < > | e quebra de linha) recusa
     E TLOU e tlou sao o mesmo preset
-    E caracteres de arquivo (\ / : * ? " < > |) recusam na hora de salvar
     E o 33o nome novo recusa sem apagar os outros
     E o snapshot redonda HUD, fundo, console, NR, look, Pass, FG+xN e escala
     E Pass e FG ficam independentes no parse
     E look 2 no 1x e Cinematic e no 2x e Model C — o numero gravado nao traduz sozinho
     E o segundo save com o mesmo nome substitui (count 1)
     E apagar some da lista e do disco
-    E o resumo da linha e "2x+  FG x3  100%" / "1x  FG off  100%" / "1.5x  FG x2  100%"
-    E export importado volta igual; campo extra e ignorado; lixo deixa a lista intacta
+    E renomear troca so o nome e guarda o look
+    E renomear para o mesmo nome e no-op; vazio ou caractere proibido recusa
+    E o resumo da linha e "2x+  Model C  FG x3  100%" / "1x  Default  FG off  100%" / "1.5x  Model B  FG x2  100%" / "1x  Natural  FG off  100%"
+    E o nome longo so rola se nao couber; o resumo nao entra no marquee
+    E export importado volta igual; campo extra e ignorado; lixo e nome de 51 deixam a lista intacta
     E pass 99 / scale 3 / fg 7 fazem clamp do produto
     E aplicar gera as mesmas SessionCfgActions do Ctrl+M (fill-safe)
     E 1x para 2x otimizado pede relaunch de motor; 2x default para 2x+ nao
@@ -177,7 +181,7 @@ Funcionalidade: CFG na captura (Ctrl+M)
     Dado que o CFG da sessao esta aberto
     E eu deixo 2x otimizado, look cinema/Model, Frame Gen x3 e escala 100
     Quando eu salvo o preset com o nome TLOU 2x
-    Entao a lista mostra TLOU 2x e o resumo 2x+  FG x3  100%
+    Entao a lista mostra TLOU 2x e o resumo 2x+  Model C  FG x3  100%
     Quando eu fecho o Ctrl+M
     E mudo o Pass Count para 1x
     E abro o Ctrl+M de novo
@@ -193,6 +197,29 @@ Funcionalidade: CFG na captura (Ctrl+M)
     Entao aparece a confirmacao Substituir TLOU 2x?
     E depois so existe uma linha com aquele nome
     E o conteudo e o look atual do Ctrl+M
+
+  @critico @hdmi
+  Cenario: Renomear troca o nome e guarda o look
+    Dado que a lista ja tem TLOU 2x
+    Quando eu seleciono TLOU 2x e clico Renomear
+    E ponho o nome TLOU GOW
+    Entao a lista mostra TLOU GOW com o mesmo resumo
+    E TLOU 2x some
+    E Aplicar ainda devolve o look antigo
+
+  @importante @hdmi
+  Cenario: Lista do preset tem duas linhas e o nome rola
+    Dado que a lista tem um nome que passa da largura
+    Entao a primeira linha e o nome (rola em loop se nao couber)
+    E a segunda linha mostra Pass, cena, FG e escala sem cortar
+    E Cinematic/Default/Natural no 1x e Model A/B/C no 1,5x/2x/3x
+
+  @critico @hdmi
+  Cenario: Renomear em cima de outro nome pede substituir
+    Dado que a lista tem TLOU 2x e GoW
+    Quando eu renomeio TLOU 2x para GoW
+    Entao aparece a confirmacao Substituir GoW?
+    E depois so existe GoW com o look que era do TLOU 2x
 
   @critico @hdmi
   Cenario: Compartilhar abre o Explorer no arquivo e Importar nao aplica sozinho

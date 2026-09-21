@@ -169,13 +169,22 @@ Funcionalidade: CFG do menu principal
     Dado que estou no lobby
     Entao a coluna SESSAO nao mostra presets
     Quando eu abro o CFG (F12)
-    Entao o bloco Presets tem Salvar, Aplicar, Apagar, Compartilhar e Importar
+    Entao o bloco Presets tem Salvar, Aplicar, Apagar, Renomear, Compartilhar e Importar
     E a lista e a mesma pasta %LOCALAPPDATA%\NexusCap\presets
     Quando eu aplico TLOU 2x no lobby
     Entao FG, Pass, look e escala do CFG mudam
     E o settings.ini grava
     E o Iniciar abre nesse jeito
     E Importar nao aplica sozinho
+
+  @critico @hdmi
+  Cenario: Renomear no lobby e a mesma lista do Ctrl+M
+    Dado que estou no CFG do lobby (F12)
+    E a lista tem TLOU 2x
+    Quando eu clico Renomear e ponho TLOU GOW
+    Entao a linha vira TLOU GOW com o mesmo resumo
+    E o Ctrl+M mostra a mesma linha
+    E o Iniciar ainda nao comecou
 
   @importante @hdmi
   Cenario: Aplicar preset no lobby com troca de motor reinicia o menu

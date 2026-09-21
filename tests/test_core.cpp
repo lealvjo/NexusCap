@@ -3063,17 +3063,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 1, 0));
+  CHECK(app_version_is(4, 1, 1));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.1.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.1.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.0");
+  CHECK(std::string(kAppVersion) == "4.1.1");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.1.1") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.1");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.1.0") != std::string::npos);
+  CHECK(lobby_t.find("4.1.1") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.1.0") != std::string::npos);
+  CHECK(sess_t.find("4.1.1") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -6318,6 +6318,40 @@ TEST_CASE("user preset name trim empty too long and forbidden chars") {
   CHECK(user_preset_names_equal("TLOU 2x", "tlou 2x"));
   CHECK_FALSE(user_preset_names_equal("TLOU", "GoW"));
   CHECK(normalize_user_preset_name("TLOU cafe", out) == UserPresetNameStatus::Ok);
+  CHECK(kUserPresetNameMax == 50);
+  CHECK(kUserPresetNameBuf == kUserPresetNameMax + 1);
+  CHECK(std::string(user_preset_name_status_toast(UserPresetNameStatus::Empty))
+            .find(std::to_string(kUserPresetNameMax)) != std::string::npos);
+  CHECK(std::string(user_preset_name_status_toast(UserPresetNameStatus::TooLong))
+            .find(std::to_string(kUserPresetNameMax)) != std::string::npos);
+  CHECK(std::string(user_preset_name_field_hint()).find(std::to_string(kUserPresetNameMax)) != std::string::npos);
+  const char forb[] = "\\/:*?\"<>|\n\r";
+  for (const char* c = forb; *c; ++c) {
+    CHECK(user_preset_char_forbidden(static_cast<unsigned char>(*c)));
+    CHECK(user_preset_name_filter_event(static_cast<unsigned int>(static_cast<unsigned char>(*c)), 0) == 1);
+    CHECK(normalize_user_preset_name(std::string("A") + *c + "B", out) == UserPresetNameStatus::Forbidden);
+  }
+  CHECK(user_preset_name_filter_event(static_cast<unsigned int>('a'), 0) == 0);
+  CHECK(user_preset_name_filter_event(static_cast<unsigned int>('a'), kUserPresetNameMax - 1) == 0);
+  CHECK(user_preset_name_filter_event(static_cast<unsigned int>('a'), kUserPresetNameMax) == 1);
+  CHECK(user_preset_name_filter_event(233u, 0) == 0);
+  CHECK(user_preset_name_filter_event(233u, kUserPresetNameMax) == 1);
+  CHECK(user_preset_name_limit_hint("").find("0/50") != std::string::npos);
+  CHECK(user_preset_name_limit_hint("TLOU").find("4/50") != std::string::npos);
+  CHECK(user_preset_name_at_limit(std::string(kUserPresetNameMax, 'x').c_str()));
+  CHECK_FALSE(user_preset_name_at_limit(std::string(kUserPresetNameMax - 1, 'x').c_str()));
+  CHECK(user_preset_name_limit_hint(std::string(kUserPresetNameMax, 'x').c_str()).find("limite") !=
+        std::string::npos);
+  char copied[kUserPresetNameBuf]{};
+  fill_user_preset_name_buf(copied, sizeof(copied), "TLOU 2x");
+  CHECK(std::string(copied) == "TLOU 2x");
+  char tiny[4]{};
+  fill_user_preset_name_buf(tiny, sizeof(tiny), "TLOU");
+  CHECK(std::string(tiny) == "TLO");
+  UserPreset too_long;
+  too_long.name = std::string(kUserPresetNameMax + 1, 'z');
+  too_long.nr_pass_count = 1;
+  CHECK_FALSE(parse_user_preset(serialize_user_preset(too_long), too_long));
 }
 
 TEST_CASE("user preset list refuses the 33rd without dropping the others") {
@@ -6347,6 +6381,13 @@ TEST_CASE("user preset list refuses the 33rd without dropping the others") {
   have.clear();
   REQUIRE(list_user_presets_in(dir, have));
   CHECK(have.size() == static_cast<size_t>(kUserPresetMaxCount));
+  REQUIRE(rename_user_preset_in(dir, "Slot 31", "Slot extra", false, replaced, err));
+  CHECK_FALSE(replaced);
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == static_cast<size_t>(kUserPresetMaxCount));
+  CHECK(find_user_preset_index(have, "Slot 31") < 0);
+  CHECK(find_user_preset_index(have, "Slot extra") >= 0);
 }
 
 TEST_CASE("user preset snapshot is the whole Ctrl+M and roundtrips") {
@@ -6411,12 +6452,25 @@ TEST_CASE("user preset snapshot is the whole Ctrl+M and roundtrips") {
   CHECK(tlou2.nr_pass_count == 5);
 }
 
-TEST_CASE("user preset list summary is Pass short plus FG") {
-  CHECK(user_preset_list_summary(make_user_preset("a", 5, 2, true, 3, 100)) == "2x+  FG x3  100%");
-  CHECK(user_preset_list_summary(make_user_preset("b", 1, 0, false, 2, 100)) == "1x  FG off  100%");
-  CHECK(user_preset_list_summary(make_user_preset("c", 4, 1, true, 2, 100)) == "1.5x  FG x2  100%");
-  CHECK(user_preset_list_summary(make_user_preset("d", 2, 0, true, 4, 100)) == "2x  FG x4  100%");
-  CHECK(user_preset_list_summary(make_user_preset("e", 3, 2, false, 3, 80)) == "3x  FG off  80%");
+TEST_CASE("user preset list summary is Pass look FG and scale") {
+  CHECK(user_preset_list_summary(make_user_preset("a", 5, 2, true, 3, 100)) == "2x+  Model C  FG x3  100%");
+  CHECK(user_preset_list_summary(make_user_preset("b", 1, 0, false, 2, 100)) == "1x  Default  FG off  100%");
+  CHECK(user_preset_list_summary(make_user_preset("c", 4, 1, true, 2, 100)) == "1.5x  Model B  FG x2  100%");
+  CHECK(user_preset_list_summary(make_user_preset("d", 2, 0, true, 4, 100)) == "2x  Model A  FG x4  100%");
+  CHECK(user_preset_list_summary(make_user_preset("e", 3, 2, false, 3, 80)) == "3x  Model C  FG off  80%");
+  CHECK(user_preset_list_summary(make_user_preset("f", 1, 2, true, 3, 100)) == "1x  Cinematic  FG x3  100%");
+  CHECK(user_preset_list_summary(make_user_preset("g", 1, 1, false, 2, 100)) == "1x  Natural  FG off  100%");
+  CHECK(user_preset_list_summary(make_user_preset("a", 5, 2, true, 3, 100)).find("HUD") == std::string::npos);
+  CHECK(user_preset_marquee_offset(80.f, 200.f, 12.0) == 0.f);
+  CHECK(user_preset_marquee_offset(100.f, 100.f, 9.0) == 0.f);
+  CHECK(user_preset_marquee_offset(200.f, 100.f, 0.0) == 0.f);
+  CHECK(user_preset_marquee_offset(200.f, 100.f, -1.0) >= 0.f);
+  const float loop = 200.f + kUserPresetMarqueeGapPx;
+  const float wrap = user_preset_marquee_offset(200.f, 100.f, static_cast<double>(loop / kUserPresetMarqueePxPerSec));
+  CHECK(wrap < 0.05f);
+  const float mid = user_preset_marquee_offset(200.f, 100.f, 1.0);
+  CHECK(mid > 40.f);
+  CHECK(mid < 45.f);
 }
 
 TEST_CASE("user preset FG and scale survive session persist after apply restart") {
@@ -6478,6 +6532,7 @@ TEST_CASE("user preset lobby snapshot and apply plan") {
   CHECK(snap.fg_enabled);
   CHECK(snap.fg_multiplier == 3);
   CHECK(snap.scale_percent == 80);
+  CHECK(snap.live_console == static_cast<int>(parse_live_console("switch2")));
 
   PersistedSettings other = default_settings();
   other.device_name = s.device_name;
@@ -6675,6 +6730,15 @@ TEST_CASE("user preset apply plan matches Ctrl+M actions and is fill-safe") {
       plan_user_preset_apply(make_preset_session(5, 2, true, 3, 100), tlou, false);
   CHECK_FALSE(drop_fg.apply_fg_on);
   CHECK(drop_fg.toggle_fg);
+
+  UserPreset hud = make_user_preset("hud", 1, 0, false, 2, 100);
+  hud.hud_visible = false;
+  hud.overlay_no_bg = true;
+  const SessionCfgActions hu = plan_user_preset_apply(cur, hud, true);
+  CHECK(hu.hud_changed);
+  CHECK(hu.overlay_no_bg_changed);
+  CHECK_FALSE(hu.apply_hud);
+  CHECK(hu.apply_overlay_no_bg);
 }
 
 TEST_CASE("user preset persist skips machine fields and Benchmark refuses IO") {
@@ -6746,6 +6810,73 @@ TEST_CASE("user preset disk overwrite is one file and load sorts A-Z") {
     if (e.is_regular_file()) ++files;
   }
   CHECK(files == 1);
+}
+
+TEST_CASE("user preset rename keeps knobs and can overwrite") {
+  const auto dir = make_user_preset_tmp("rename");
+  bool replaced = false;
+  std::string err;
+  UserPreset tlou = make_user_preset("TLOU 2x", 5, 2, true, 3, 80);
+  tlou.overlay_no_bg = true;
+  REQUIRE(upsert_user_preset_in(dir, tlou, replaced, err));
+  REQUIRE(upsert_user_preset_in(dir, make_user_preset("GoW", 1, 0, false, 2, 100), replaced, err));
+
+  CHECK_FALSE(rename_user_preset_in(dir, "TLOU 2x", "GoW", false, replaced, err));
+  CHECK(err == "existe");
+  std::vector<UserPreset> have;
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 2);
+
+  REQUIRE(rename_user_preset_in(dir, "TLOU 2x", "TLOU GOW", false, replaced, err));
+  CHECK_FALSE(replaced);
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 2);
+  CHECK(find_user_preset_index(have, "TLOU 2x") < 0);
+  const int idx = find_user_preset_index(have, "TLOU GOW");
+  REQUIRE(idx >= 0);
+  CHECK(have[static_cast<size_t>(idx)].nr_pass_count == 5);
+  CHECK(have[static_cast<size_t>(idx)].fg_multiplier == 3);
+  CHECK(have[static_cast<size_t>(idx)].scale_percent == 80);
+  CHECK(have[static_cast<size_t>(idx)].overlay_no_bg);
+  CHECK(std::filesystem::exists(user_preset_store_path(dir, "TLOU GOW")));
+  CHECK_FALSE(std::filesystem::exists(user_preset_store_path(dir, "TLOU 2x")));
+
+  REQUIRE(rename_user_preset_in(dir, "TLOU GOW", "tlou gow", false, replaced, err));
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 2);
+  CHECK(have[static_cast<size_t>(find_user_preset_index(have, "tlou gow"))].name == "tlou gow");
+
+  REQUIRE(rename_user_preset_in(dir, "tlou gow", "GoW", true, replaced, err));
+  CHECK(replaced);
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  CHECK(have.size() == 1);
+  CHECK(have[0].name == "GoW");
+  CHECK(have[0].nr_pass_count == 5);
+  CHECK(have[0].scale_percent == 80);
+
+  REQUIRE(rename_user_preset_in(dir, "GoW", "GoW", false, replaced, err));
+  CHECK_FALSE(replaced);
+  CHECK(std::filesystem::exists(user_preset_store_path(dir, "GoW")));
+  CHECK_FALSE(rename_user_preset_in(dir, "GoW", "   ", false, replaced, err));
+  CHECK(err == "nome invalido");
+  CHECK_FALSE(rename_user_preset_in(dir, "GoW", "GoW/bad", false, replaced, err));
+  CHECK(err == "nome invalido");
+  CHECK_FALSE(rename_user_preset_in(dir, "Missing", "Novo", false, replaced, err));
+  CHECK(err == "nao encontrado");
+
+  const std::string utf = "GoW a\xC3\xA7\xC3\xA3o";
+  REQUIRE(rename_user_preset_in(dir, "GoW", utf, false, replaced, err));
+  CHECK_FALSE(replaced);
+  have.clear();
+  REQUIRE(list_user_presets_in(dir, have));
+  REQUIRE(have.size() == 1);
+  CHECK(have[0].name == utf);
+  CHECK(have[0].nr_pass_count == 5);
+  CHECK(have[0].overlay_no_bg);
+  CHECK(std::filesystem::exists(user_preset_store_path(dir, utf)));
 }
 
 

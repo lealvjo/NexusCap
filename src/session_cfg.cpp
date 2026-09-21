@@ -55,6 +55,50 @@ std::string ascii_dashes(const std::string& in) {
 
 }  // namespace
 
+void draw_user_preset_name_field_hint(const char* buf) {
+  const std::string line = user_preset_name_limit_hint(buf);
+  if (user_preset_name_at_limit(buf))
+    ImGui::TextColored(kWarn, "%s", line.c_str());
+  else
+    ImGui::TextDisabled("%s", line.c_str());
+}
+
+bool draw_user_preset_list_row(int id, const char* name, const char* summary, bool selected) {
+  ImGui::PushID(id);
+  const float line_h = ImGui::GetTextLineHeight();
+  const float pad_y = 3.f;
+  const float row_h = line_h * 2.f + pad_y * 3.f;
+  const bool clicked = ImGui::Selectable("##row", selected, 0, ImVec2(0.f, row_h));
+  const ImVec2 rmin = ImGui::GetItemRectMin();
+  const ImVec2 rmax = ImGui::GetItemRectMax();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const float x0 = rmin.x + 6.f;
+  const float x1 = rmax.x - 6.f;
+  const float avail = (x1 > x0) ? (x1 - x0) : 0.f;
+  const char* n = name ? name : "";
+  const char* s = summary ? summary : "";
+  const ImVec2 tw = ImGui::CalcTextSize(n);
+  ImGui::PushClipRect(ImVec2(x0, rmin.y), ImVec2(x1, rmax.y), true);
+  const ImU32 col_name = ImGui::GetColorU32(ImGuiCol_Text);
+  const ImU32 col_sum = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+  const float y_name = rmin.y + pad_y;
+  if (tw.x <= avail) {
+    dl->AddText(ImVec2(x0, y_name), col_name, n);
+  } else {
+    const float off = user_preset_marquee_offset(tw.x, avail, ImGui::GetTime());
+    dl->AddText(ImVec2(x0 - off, y_name), col_name, n);
+    dl->AddText(ImVec2(x0 - off + tw.x + kUserPresetMarqueeGapPx, y_name), col_name, n);
+  }
+  dl->AddText(ImVec2(x0, y_name + line_h + 1.f), col_sum, s);
+  ImGui::PopClipRect();
+  ImGui::PopID();
+  return clicked;
+}
+
+static int preset_name_filter(ImGuiInputTextCallbackData* data) {
+  return user_preset_name_filter_event(data->EventChar, data->BufTextLen);
+}
+
 SessionCfgOverlay::~SessionCfgOverlay() { shutdown(); }
 
 bool SessionCfgOverlay::init(HWND hwnd, ID3D11Device* device, ID3D11DeviceContext* ctx) {
@@ -115,7 +159,9 @@ void SessionCfgOverlay::set_open(bool open) {
     actions_ = SessionCfgActions{};
     force_pos_ = true;
     save_name_open_ = false;
+    rename_open_ = false;
     confirm_overwrite_ = false;
+    confirm_rename_ow_ = false;
     confirm_delete_ = false;
     confirm_import_ow_ = false;
     reload_presets();
@@ -463,6 +509,35 @@ void SessionCfgOverlay::commit_delete_preset() {
   state.status = "Preset apagado: " + name;
 }
 
+void SessionCfgOverlay::commit_rename_preset(bool overwrite) {
+  if (presets_locked || selected_preset_ < 0 || selected_preset_ >= static_cast<int>(preset_names_.size()))
+    return;
+  std::string name;
+  const UserPresetNameStatus st = normalize_user_preset_name(save_name_, name);
+  if (st != UserPresetNameStatus::Ok) {
+    state.status = user_preset_name_status_toast(st);
+    return;
+  }
+  const std::string old = preset_names_[static_cast<size_t>(selected_preset_)];
+  bool replaced = false;
+  std::string err;
+  if (!rename_user_preset_in(default_user_presets_path(), old, name, overwrite, replaced, err)) {
+    if (err == "existe") {
+      confirm_rename_ow_ = true;
+      return;
+    }
+    state.status = err.empty() ? "Nao deu para renomear" : err;
+    return;
+  }
+  rename_open_ = false;
+  confirm_rename_ow_ = false;
+  reload_presets();
+  std::vector<UserPreset> have;
+  list_user_presets_in(default_user_presets_path(), have);
+  selected_preset_ = find_user_preset_index(have, name);
+  state.status = replaced ? ("Preset substituido: " + name) : ("Preset renomeado: " + name);
+}
+
 bool browse_share_user_preset(HWND owner, const std::string& name, const std::string& text,
                              std::string& out_path) {
   wchar_t file[MAX_PATH]{};
@@ -535,21 +610,21 @@ void SessionCfgOverlay::draw_presets() {
     return;
   }
 
-  if (ImGui::BeginChild("##preset_list", ImVec2(0.f, 132.f), true)) {
+  if (ImGui::BeginChild("##preset_list", ImVec2(0.f, 168.f), true)) {
     if (preset_names_.empty()) {
       ImGui::TextDisabled("Nenhum preset. Salve o look deste jogo.");
     }
     for (int i = 0; i < static_cast<int>(preset_names_.size()); ++i) {
-      char line[160]{};
-      std::snprintf(line, sizeof(line), "%s    %s", preset_names_[static_cast<size_t>(i)].c_str(),
-                    preset_summaries_[static_cast<size_t>(i)].c_str());
-      if (ImGui::Selectable(line, selected_preset_ == i)) selected_preset_ = i;
+      if (draw_user_preset_list_row(i, preset_names_[static_cast<size_t>(i)].c_str(),
+                                    preset_summaries_[static_cast<size_t>(i)].c_str(), selected_preset_ == i))
+        selected_preset_ = i;
     }
   }
   ImGui::EndChild();
 
   const bool have_sel = selected_preset_ >= 0 && selected_preset_ < static_cast<int>(preset_names_.size());
   if (ImGui::Button("Salvar preset")) {
+    rename_open_ = false;
     save_name_open_ = true;
     save_name_[0] = 0;
   }
@@ -558,6 +633,12 @@ void SessionCfgOverlay::draw_presets() {
   if (ImGui::Button("Aplicar")) commit_apply_preset();
   ImGui::SameLine();
   if (ImGui::Button("Apagar")) confirm_delete_ = true;
+  ImGui::SameLine();
+  if (ImGui::Button("Renomear") && have_sel) {
+    save_name_open_ = false;
+    rename_open_ = true;
+    fill_user_preset_name_buf(save_name_, sizeof(save_name_), preset_names_[static_cast<size_t>(selected_preset_)]);
+  }
   ImGui::SameLine();
   if (ImGui::Button("Compartilhar") && have_sel) {
     std::vector<UserPreset> have;
@@ -602,16 +683,13 @@ void SessionCfgOverlay::draw_presets() {
       }
     }
   }
-  ImGui::TextDisabled("Compartilhar gera um arquivo. Importar le o arquivo do amigo. Aplicar liga na sessao.");
+  ImGui::TextDisabled("Renomear troca so o nome. Compartilhar gera um arquivo. Importar nao aplica sozinho.");
 
   if (save_name_open_) {
     ImGui::SetNextItemWidth(-1.f);
     ImGui::InputText("##preset_name", save_name_, sizeof(save_name_), ImGuiInputTextFlags_CallbackCharFilter,
-                     [](ImGuiInputTextCallbackData* data) -> int {
-                       if (data->EventChar > 127) return 0;
-                       return user_preset_char_forbidden(static_cast<unsigned char>(data->EventChar)) ? 1 : 0;
-                     });
-    ImGui::TextDisabled("%s", user_preset_name_field_hint());
+                     preset_name_filter);
+    draw_user_preset_name_field_hint(save_name_);
     if (ImGui::Button("Salvar##go")) {
       std::string name;
       const UserPresetNameStatus st = normalize_user_preset_name(save_name_, name);
@@ -631,6 +709,16 @@ void SessionCfgOverlay::draw_presets() {
     if (ImGui::Button("Cancelar##save")) save_name_open_ = false;
   }
 
+  if (rename_open_) {
+    ImGui::SetNextItemWidth(-1.f);
+    ImGui::InputText("##preset_rename", save_name_, sizeof(save_name_), ImGuiInputTextFlags_CallbackCharFilter,
+                     preset_name_filter);
+    draw_user_preset_name_field_hint(save_name_);
+    if (ImGui::Button("Renomear##go")) commit_rename_preset(false);
+    ImGui::SameLine();
+    if (ImGui::Button("Cancelar##rename")) rename_open_ = false;
+  }
+
   if (confirm_overwrite_) {
     ImGui::OpenPopup("##ow_preset");
     confirm_overwrite_ = false;
@@ -645,6 +733,23 @@ void SessionCfgOverlay::draw_presets() {
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancelar##ow")) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+
+  if (confirm_rename_ow_) {
+    ImGui::OpenPopup("##rn_ow_preset");
+    confirm_rename_ow_ = false;
+  }
+  if (ImGui::BeginPopupModal("##rn_ow_preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    std::string name;
+    normalize_user_preset_name(save_name_, name);
+    ImGui::Text("Substituir %s?", name.empty() ? save_name_ : name.c_str());
+    if (ImGui::Button("Substituir##rn")) {
+      commit_rename_preset(true);
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancelar##rnow")) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
 

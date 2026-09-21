@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `4.1.0` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `4.1.1` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-4.1.0.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-4.1.1.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-4.1.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+1. Instalar `NexusCap-Setup-4.1.1.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -51,7 +51,7 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-4.1.0.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-4.1.1.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap`, sem admin — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -61,9 +61,22 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
 
+### Presets
+
+Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que abre o HDMI.
+
+**Ctrl+M** na captura ou **F12** no lobby — a mesma lista. Um nome (até 50). Aplicar devolve o look inteiro: escala, FG, NR, cena, Pass, HUD.
+
+O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
+
+### Novidades 4.1.1
+
+- **Presets na pratica:** Renomear, nome ate 50, lista em duas linhas (cena + Pass + FG). Compartilha e importa `.nexuscap-preset`.
+- Pitch e README falam disso. Print novo do 2x otimizado.
+
 ### Novidades 4.1.0
 
-- **Presets de sessao:** o snapshot do Ctrl+M (escala, FG, NR, look, Pass, HUD/console) grava com nome de 1 a 60 caracteres em `%LOCALAPPDATA%\NexusCap\presets`. O mesmo bloco aparece no CFG do lobby (F12), nao na coluna SESSAO.
+- **Presets de sessao:** o snapshot do Ctrl+M (escala, FG, NR, look, Pass, HUD/console) grava com nome de 1 a 50 caracteres em `%LOCALAPPDATA%\NexusCap\presets`. O mesmo bloco aparece no CFG do lobby (F12), nao na coluna SESSAO.
 - **Aplicar / compartilhar / importar:** nome unico (case-insensitive, overwrite). Arquivo `.nexuscap-preset`. Importar nao aplica sozinho. Benchmark nao le nem grava preset.
 - **Reportar performance no HDMI:** Esc com escala/NR relanca o lobby e ainda abre a analise (mesmo cartao do Benchmark).
 - Traz o 4.0.1/4.0.2: overlay FG ON real, instalador sem video duplicado e sem NGX na raiz (~693 MB).
@@ -448,9 +461,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.1.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.1.1
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.1.0
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.1.1
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (`PrivilegesRequired=lowest` no Inno — **sem UAC / sem admin**). É menos invasivo de propósito: o setup não mexe no sistema. **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

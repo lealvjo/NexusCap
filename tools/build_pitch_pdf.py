@@ -105,9 +105,9 @@ def photo_slide(c, regular, bold, kicker_s, ttl, stats, note, img: Path, tag: st
 def main() -> None:
     regular, bold = fonts()
     c = canvas.Canvas(str(OUT), pagesize=(W, H))
-    c.setTitle("Nexus Cap 4.0")
+    c.setTitle("Nexus Cap 4.1")
     c.setAuthor("NexusCap")
-    scene = "NexusCap 4.0  ·  HDMI de qualquer console  ·  1440p60  ·  VSYNC"
+    scene = "NexusCap 4.1  ·  HDMI de qualquer console  ·  1440p60  ·  VSYNC"
 
     # 1 cover: foco sem abrir o pipeline
     fill(c)
@@ -188,7 +188,7 @@ def main() -> None:
     )
     title(c, bold, "Instalação", y=H - 160)
     steps = [
-        "1.  NexusCap-Setup-4.1.0.exe na Release do GitHub.",
+        "1.  NexusCap-Setup-4.1.1.exe na Release do GitHub.",
         "2.  Instala em %LOCALAPPDATA%\\NexusCap, pasta da sua conta, sem administrador.",
         "3.  Abre, escolhe a placa, RenoDX se quiser NR. Pass Count: 1,5x recomendado.",
         "4.  Frame Gen: se o Lossless Scaling estiver na Steam, o NexusCap liga até 4x sozinho.",
@@ -326,6 +326,54 @@ def main() -> None:
     cfg = PITCH / "print_cfg.jpg"
     if cfg.is_file():
         fit(c, cfg, 490, 28, 434, H - 120)
+    c.showPage()
+
+    # Presets 4.1 — um jogo, um look, um arquivo
+    fill(c)
+    kicker(c, regular, scene)
+    title(c, bold, "Um jogo. Um preset.")
+    body_lines(
+        c,
+        regular,
+        [
+            "Montou o TLOU em 2x otimizado, cinema, FG x3. Salva. Acabou.",
+            "Amanhã aplica. O amigo manda o arquivo. Você importa.",
+            "Ctrl+M em cima do HDMI. F12 no lobby. A mesma lista.",
+        ],
+        H - 88,
+        17,
+    )
+    preset_img = PITCH / "print_preset.jpg"
+    if not preset_img.is_file():
+        preset_img = PITCH / "print_preset.png"
+    if preset_img.is_file():
+        fit(c, preset_img, 36, 44, W - 72, H - 176)
+    else:
+        bits = [
+            ("Salvar", "O look deste jogo,\ncom um nome."),
+            ("Aplicar", "Pass, cena, FG, escala.\nDevolve tudo."),
+            ("Compartilhar", "Um arquivo\n.nexuscap-preset."),
+            ("Importar", "Entra na lista.\nAplicar é você."),
+        ]
+        cw, ch, gap = 210, 168, 14
+        y_card = 56
+        for i, (head, copy) in enumerate(bits):
+            x = 36 + i * (cw + gap)
+            card(c, x, y_card, cw, ch)
+            c.setFillColorRGB(*ACCENT)
+            c.roundRect(x + 14, y_card + ch - 18, 22, 4, 2, fill=1, stroke=0)
+            c.setFillColorRGB(*INK)
+            c.setFont(bold, 14)
+            c.drawString(x + 14, y_card + ch - 48, head)
+            c.setFillColorRGB(*MUTED)
+            c.setFont(regular, 11)
+            ty = y_card + ch - 74
+            for line in copy.split("\n"):
+                c.drawString(x + 14, ty, line)
+                ty -= 16
+    c.setFillColorRGB(*GOOD)
+    c.setFont(bold, 11)
+    c.drawString(36, 22, "Benchmark não mexe nisso. É o teu HDMI.")
     c.showPage()
 
     # Se ficar pesado: escala DLSS + modo da placa
@@ -580,7 +628,7 @@ def main() -> None:
          "L600  40,0 fps   ·   present 20,8 ms   ·   UNSTABLE   ·   1440p nativo",
          "Os mesmos 2 evaluates. Mais flicker, cintilação e ghost na UI/HUD.", "~40 FPS", BAD),
         (PITCH / "print_compare_2xopt.jpg", "2x otimizado",
-         "L600  40,0 fps   ·   present 20,5 ms   ·   UNSTABLE   ·   1440p nativo",
+         "L600  40,0 fps   ·   FG x3   ·   PLAYABLE FG   ·   1440p nativo",
          "Mesmo custo. Gancho de cor/UI estável: menos flicker, menos cintilação, imagem mais limpa.",
          "MENOS FLICKER", GOOD),
         (PITCH / "print_compare_3x.jpg", "3x  ·  o teto",
@@ -633,7 +681,7 @@ def main() -> None:
     c.drawString(36, 96, "Usa o 1,5x. Se pesar: escala do Feed ou modo HDMI, na mão.")
     c.setFillColorRGB(*MUTED)
     c.setFont(regular, 9)
-    c.drawString(36, 28, "Sessão real · HDMI de console (aqui PS5) · VSYNC · FG off · escala 100%.  Nexus Cap v4.1.0")
+    c.drawString(36, 28, "Sessão real · HDMI de console (aqui PS5) · VSYNC · FG off · escala 100%.  Nexus Cap v4.1.1")
     c.showPage()
 
     # 2x default vs 2x otimizado

@@ -104,6 +104,7 @@ private:
   void commit_save_preset();
   void commit_apply_preset();
   void commit_delete_preset();
+  void commit_rename_preset(bool overwrite);
   bool browse_share_preset(const std::string& name, const std::string& text, std::string& out_path);
   bool browse_import_preset(std::string& text);
 
@@ -124,12 +125,17 @@ private:
   std::vector<std::string> preset_names_;
   std::vector<std::string> preset_summaries_;
   int selected_preset_ = -1;
-  char save_name_[64]{};
+  char save_name_[51]{};  // 50 + NUL — kUserPresetNameMax
   bool save_name_open_ = false;
+  bool rename_open_ = false;
   bool confirm_overwrite_ = false;
+  bool confirm_rename_ow_ = false;
   bool confirm_delete_ = false;
   bool confirm_import_ow_ = false;
   std::string pending_import_text_;
 };
+
+void draw_user_preset_name_field_hint(const char* buf);
+bool draw_user_preset_list_row(int id, const char* name, const char* summary, bool selected);
 
 }  // namespace nexuscap

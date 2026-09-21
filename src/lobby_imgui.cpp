@@ -1021,9 +1021,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   std::vector<std::string> lobby_preset_names;
   std::vector<std::string> lobby_preset_summaries;
   int lobby_preset_sel = -1;
-  char lobby_preset_save_name[64]{};
+  char lobby_preset_save_name[kUserPresetNameBuf]{};
   bool lobby_preset_save_open = false;
+  bool lobby_preset_rename_open = false;
   bool lobby_preset_ow = false;
+  bool lobby_preset_rename_ow = false;
   bool lobby_preset_del = false;
   bool lobby_preset_imp_ow = false;
   std::string lobby_preset_imp_text;
@@ -1934,21 +1936,22 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
         ImGui::Separator();
         ImGui::TextUnformatted("Presets");
-        if (ImGui::BeginChild("##cfg_preset_list", ImVec2(0.f, 132.f), true)) {
+        if (ImGui::BeginChild("##cfg_preset_list", ImVec2(0.f, 168.f), true)) {
           if (lobby_preset_names.empty()) {
             ImGui::TextDisabled("Nenhum preset. Salve o look deste jogo.");
           }
           for (int i = 0; i < static_cast<int>(lobby_preset_names.size()); ++i) {
-            char line[160]{};
-            std::snprintf(line, sizeof(line), "%s    %s", lobby_preset_names[static_cast<size_t>(i)].c_str(),
-                          lobby_preset_summaries[static_cast<size_t>(i)].c_str());
-            if (ImGui::Selectable(line, lobby_preset_sel == i)) lobby_preset_sel = i;
+            if (draw_user_preset_list_row(i, lobby_preset_names[static_cast<size_t>(i)].c_str(),
+                                          lobby_preset_summaries[static_cast<size_t>(i)].c_str(),
+                                          lobby_preset_sel == i))
+              lobby_preset_sel = i;
           }
         }
         ImGui::EndChild();
         const bool cfg_have_preset =
             lobby_preset_sel >= 0 && lobby_preset_sel < static_cast<int>(lobby_preset_names.size());
         if (ImGui::Button("Salvar preset")) {
+          lobby_preset_rename_open = false;
           lobby_preset_save_open = true;
           lobby_preset_save_name[0] = 0;
         }
@@ -1962,6 +1965,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
         ImGui::SameLine();
         if (ImGui::Button("Apagar")) lobby_preset_del = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Renomear") && cfg_have_preset) {
+          lobby_preset_save_open = false;
+          lobby_preset_rename_open = true;
+          fill_user_preset_name_buf(lobby_preset_save_name, sizeof(lobby_preset_save_name),
+                                    lobby_preset_names[static_cast<size_t>(lobby_preset_sel)]);
+        }
         ImGui::SameLine();
         if (ImGui::Button("Compartilhar") && cfg_have_preset) {
           std::vector<UserPreset> have;
@@ -2005,17 +2015,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             }
           }
         }
-        ImGui::TextDisabled("Mesma lista do Ctrl+M. Aplicar grava para o Iniciar.");
+        ImGui::TextDisabled("Renomear troca so o nome. Mesma lista do Ctrl+M. Aplicar grava para o Iniciar.");
 
         if (lobby_preset_save_open) {
           ImGui::SetNextItemWidth(-1.f);
           ImGui::InputText("##lobby_preset_name", lobby_preset_save_name, sizeof(lobby_preset_save_name),
                            ImGuiInputTextFlags_CallbackCharFilter, [](ImGuiInputTextCallbackData* data) -> int {
-                             if (data->EventChar > 127) return 0;
-                             return user_preset_char_forbidden(static_cast<unsigned char>(data->EventChar)) ? 1
-                                                                                                           : 0;
+                             return user_preset_name_filter_event(data->EventChar, data->BufTextLen);
                            });
-          ImGui::TextDisabled("%s", user_preset_name_field_hint());
+          draw_user_preset_name_field_hint(lobby_preset_save_name);
           if (ImGui::Button("Salvar##lobbygo")) {
             std::string name;
             const UserPresetNameStatus st = normalize_user_preset_name(lobby_preset_save_name, name);
@@ -2047,6 +2055,41 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           ImGui::SameLine();
           if (ImGui::Button("Cancelar##lobbysave")) lobby_preset_save_open = false;
         }
+        if (lobby_preset_rename_open) {
+          ImGui::SetNextItemWidth(-1.f);
+          ImGui::InputText("##lobby_preset_rename", lobby_preset_save_name, sizeof(lobby_preset_save_name),
+                           ImGuiInputTextFlags_CallbackCharFilter, [](ImGuiInputTextCallbackData* data) -> int {
+                             return user_preset_name_filter_event(data->EventChar, data->BufTextLen);
+                           });
+          draw_user_preset_name_field_hint(lobby_preset_save_name);
+          if (ImGui::Button("Renomear##lobbygo")) {
+            std::string name;
+            const UserPresetNameStatus st = normalize_user_preset_name(lobby_preset_save_name, name);
+            if (st != UserPresetNameStatus::Ok) {
+              push_lobby_toast(user_preset_name_status_toast(st));
+            } else if (cfg_have_preset) {
+              bool replaced = false;
+              std::string err;
+              const std::string old = lobby_preset_names[static_cast<size_t>(lobby_preset_sel)];
+              if (!rename_user_preset_in(default_user_presets_path(), old, name, false, replaced, err)) {
+                if (err == "existe") {
+                  lobby_preset_rename_ow = true;
+                } else {
+                  push_lobby_toast(err.empty() ? "Nao deu para renomear" : err);
+                }
+              } else {
+                lobby_preset_rename_open = false;
+                reload_lobby_presets();
+                std::vector<UserPreset> now;
+                list_user_presets_in(default_user_presets_path(), now);
+                lobby_preset_sel = find_user_preset_index(now, name);
+                push_lobby_toast(replaced ? ("Preset substituido: " + name) : ("Preset renomeado: " + name));
+              }
+            }
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancelar##lobbyrename")) lobby_preset_rename_open = false;
+        }
         if (lobby_preset_ow) {
           ImGui::OpenPopup("##lobby_ow_preset");
           lobby_preset_ow = false;
@@ -2074,6 +2117,37 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           }
           ImGui::SameLine();
           if (ImGui::Button("Cancelar##lobbyow")) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
+        if (lobby_preset_rename_ow) {
+          ImGui::OpenPopup("##lobby_rn_ow_preset");
+          lobby_preset_rename_ow = false;
+        }
+        if (ImGui::BeginPopupModal("##lobby_rn_ow_preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+          std::string name;
+          normalize_user_preset_name(lobby_preset_save_name, name);
+          ImGui::Text("Substituir %s?", name.empty() ? lobby_preset_save_name : name.c_str());
+          if (ImGui::Button("Substituir##lobbyrn")) {
+            if (cfg_have_preset) {
+              bool replaced = false;
+              std::string err;
+              const std::string old = lobby_preset_names[static_cast<size_t>(lobby_preset_sel)];
+              const std::string dest = name.empty() ? lobby_preset_save_name : name;
+              if (rename_user_preset_in(default_user_presets_path(), old, dest, true, replaced, err)) {
+                lobby_preset_rename_open = false;
+                reload_lobby_presets();
+                std::vector<UserPreset> now;
+                list_user_presets_in(default_user_presets_path(), now);
+                lobby_preset_sel = find_user_preset_index(now, dest);
+                push_lobby_toast("Preset substituido: " + dest);
+              } else {
+                push_lobby_toast(err.empty() ? "Nao deu para renomear" : err);
+              }
+            }
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancelar##lobbyrnow")) ImGui::CloseCurrentPopup();
           ImGui::EndPopup();
         }
         if (lobby_preset_del) {

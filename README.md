@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `3.1.11` · instalador Inno via `tools\make_installer.ps1` |
+| **Versão** | `4.0.0` · instalador Inno via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,13 +20,13 @@
 
 Distribua **só** o instalador — sem pasta manual, sem código:
 
-**[NexusCap-Setup-3.1.7.exe](https://github.com/lealvjo/NexusCap/releases)**
+**[NexusCap-Setup-4.0.0.exe](https://github.com/lealvjo/NexusCap/releases)**
 
 O setup **não fica no git**; sobe na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. Instalar `NexusCap-Setup-3.1.7.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+1. Instalar `NexusCap-Setup-4.0.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup). Page Down no CFG.
 
@@ -43,15 +43,15 @@ Nada mais. Sem copiar DLL avulsa, sem pasta X2.
 
 ### Instalador menos invasivo
 
-O setup **não pede administrador** e **não mostra** o UAC (“Deseja permitir que este aplicativo faça alterações no dispositivo?”). Instala na pasta da tua conta — `%LOCALAPPDATA%\NexusCap` — no mesmo espírito do Steam, Discord e Spotify.
+O setup **não pede administrador** e **não mostra** o UAC (“Deseja permitir que este aplicativo faça alterações no dispositivo?”). Instala na pasta da sua conta — `%LOCALAPPDATA%\NexusCap` — no mesmo espírito do Steam, Discord e Spotify.
 
 Isso **não é menos seguro**. Aquele aviso só aparece quando o programa quer poder no sistema inteiro (`Program Files`, serviços, outras contas). Nós não precisamos disso. Pedir admin só para parecer “oficial” seria **mais perigoso**.
 
-RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Program Files o Windows bloqueia a escrita; presets falham. Por isso o padrão é a pasta do utilizador: menos invasivo, e o enhance funciona.
+RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Program Files o Windows bloqueia a escrita; presets falham. Por isso o padrão é a pasta do usuario: menos invasivo, e o enhance funciona.
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-3.1.7.exe` na Release do GitHub.
+1. Baixe `NexusCap-Setup-4.0.0.exe` na Release do GitHub.
 2. Execute o setup (Instala em `%LOCALAPPDATA%\NexusCap`, sem admin — pasta gravável; RenoDX precisa escrever ini/cfg/cache).
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -60,6 +60,18 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 7. **Reportar bug / Reportar performance** (checkboxes abaixo do VSYNC, off por padrão): geram `.txt` leves em `report/` e `performance/` ao lado do exe — úteis para suporte / colar numa IA.
 
 **Evite instalar em Program Files** — o Present/RenoDX precisa gravar ao lado do exe.
+
+### Novidades 4.0.0
+
+- **CFG no preview:** o menu abre em HDMI cru. Quem quiser o look ao vivo clica **Visualizar configuracoes no preview em tempo real** (relanca o pipeline). O Iniciar nao usa esta flag.
+- **Aviso de motores:** se trocarem o Feed ou o RenoDX depois de instalar, o footer avisa (size+SHA uma vez ao abrir). Motores oficiais = sem mensagem.
+- **2x otimizado:** mesmos dois evaluates do 2x default, look exclusivo (gancho de cor/UI mais estavel). Menos flicker, cintilacao e ghost no mesmo ~40 fps.
+- **Overlay proprio do Nexus Cap:** HUD queimado no Present. Sem Afterburner nem overlay de terceiro.
+- **Frametime com FG:** duas linhas (cap em baixo, FG em cima) com o FPS a esquerda. **STABLE** / **PLAYABLE FG** / **UNSTABLE**.
+- **Benchmark no seu PC:** 40 s de The Last of Us Parte II, sem placa de captura. Modelo com fps, present, latencia, stalls, escala e FG. Cada cartao sugere o proximo passo, inclusive se a latencia extra do Frame Gen ainda da para jogar.
+- **Reportar performance** no HDMI: no fim da captura abre o mesmo cartao do Benchmark.
+- **Benchmark nao vaza no lobby:** CFG live off nao esvazia o pipeline do teste. Esc, X ou o timer devolvem escala, Pass, NR e Feed ao HDMI.
+- **Validado em PS5, Switch 2 e Xbox Series S.** Os prints do pitch sao 2x otimizado + FG x3. 1x, 1,5x, 2x e 3x usam o mesmo Present.
 
 ### Novidades 3.1.11
 
@@ -152,20 +164,24 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 - Mini overlay: `cap … · present …ms+NR` · HUD F3: `present … (+NR/DLSS5)`.
 - Instalador **Release** sem janela preta de CMD (só GUI). **Sem admin / sem UAC** — pasta do utilizador, menos invasivo.
 
-### Prints (HDMI de qualquer consola · sessão PS5 · God of War · 1440p60 · 100% · VSYNC · FG off)
+### Prints (HDMI de qualquer console · God of War · 1440p60 · 100% · VSYNC · FG off)
 
-Sinal HDMI **direto de qualquer consola** (PS5, Xbox, Switch, outro HDMI), sem recapturar o PC. As stills deste pitch são de uma **sessão PS5**. A escada: o que dá para crescer, com desempenho. **1,5x é o modo justo.**
+Sinal HDMI **direto de qualquer console** (PS5, Xbox Series S, Switch 2, outro HDMI), sem recapturar o PC. A escada de look e de uma **sessao PS5**. **1,5x e o modo do dia a dia.** **2x otimizado** e o look pesado que recomendamos se o PC aguentar.
 
-Vês a imagem **direto**: preview no lobby, captura no Present, OBS Game Capture pega o mesmo frame (HUD/mini overlay queimados). No **1x** nativo (100%, VSYNC) o ritmo fica ~59,9 fps, stalls 0, Feed leve.
+Voce ve a imagem **direto**: preview no lobby, captura no Present, OBS Game Capture pega o mesmo frame (HUD/mini overlay queimados). No **1x** nativo (100%, VSYNC) o ritmo fica ~59,9 fps, stalls 0, Feed leve.
 
 | | |
 |---|---|
-| UI da consola no mesmo HDMI (sessão PS5) | ![consola](assets/pitch/print_ps5_home.jpg) |
+| Capa / lobby (TLOU Parte II) | ![capa](assets/pitch/print_cover.jpg) |
 | Sem DLSS / NR | ![sem NR](assets/pitch/print_compare_nroff.jpg) |
 | **1x** · 59,9 fps · stalls 0 | ![1x](assets/pitch/print_compare_1x.jpg) |
 | **1,5x** · 59,9 fps · stalls 0 · recomendado | ![1,5x](assets/pitch/print_compare_15x.jpg) |
-| **2x** · ~40 fps · pesado, pouco ganho | ![2x](assets/pitch/print_compare_2x.jpg) |
-| **3x** · ~27 fps · teto, ainda mais pesado | ![3x](assets/pitch/print_compare_3x.jpg) |
+| **2x** default · ~40 fps | ![2x](assets/pitch/print_compare_2x.jpg) |
+| **2x otimizado** · ~40 fps · menos flicker | ![2xopt](assets/pitch/print_compare_2xopt.jpg) |
+| **3x** · ~27 fps · teto | ![3x](assets/pitch/print_compare_3x.jpg) |
+| PS5 (sessao TLOU) | ![ps5](assets/pitch/print_ps5_session.jpg) |
+| Switch 2 (sessao) | ![sw2](assets/pitch/print_switch2_session.jpg) |
+| Xbox Series S (sessao) | ![xss](assets/pitch/print_xbox_session.jpg) |
 
 Pitch em PDF: [`assets/pitch/NexusCap_Pitch.pdf`](assets/pitch/NexusCap_Pitch.pdf)
 
@@ -196,10 +212,10 @@ Muitos viewers “bonitos” **capturam a tela** (ou a janela de outro app) para
 **NexusCap não faz isso.** Ele lê o **HDMI da placa de captura** e desenha **ele mesmo** em D3D11. O enhance (RenoDX) e o Frame Gen entram **depois**, no Present — uma passagem limpa:
 
 ```text
-  consola (PS5 / Xbox / Switch / …) ──HDMI──► placa ──DShow──► NexusCap (D3D11 Present)
-                                              │
-                                              ├─ RenoDX / NR  (opcional)
-                                              └─ Lossless FG  (opcional)
+  console (PS5 / Xbox / Switch 2 / ...)  --HDMI--> placa --DShow--> NexusCap (D3D11 Present)
+                                              |
+                                              |- RenoDX / NR  (opcional)
+                                              +- Lossless FG  (opcional)
 ```
 
 Resultado: imagem estável, latência previsível, sem o “tranco” clássico de recapturar a própria saída.
@@ -220,17 +236,17 @@ ImGui é só UI do lobby; o caminho quente (captura → Present) é C++ + D3D11.
 
 ---
 
-## Arquitetura (2.0)
+## Arquitetura (4.0)
 
 ```mermaid
 flowchart TB
   subgraph IN["Entrada"]
-    HDMI["Qualquer consola<br/>HDMI"]
+    HDMI["Qualquer console<br/>HDMI"]
     CARD["Placa de captura<br/>DirectShow"]
     HDMI --> CARD
   end
 
-  subgraph APP["NexusCap · C++17 · v2.0"]
+  subgraph APP["NexusCap · C++17 · v4.0"]
     direction TB
     LOBBY["Lobby ImGui<br/>preview CPU · CFG<br/>MGF Techniques idle se RenoDX off"]
     CAP["DShowCapture<br/>NV12 scratch + FrameSlot recycle"]
@@ -279,15 +295,15 @@ flowchart TB
 
 **Regra de ouro:** a captura **nunca** olha para o framebuffer já filtrado. Por isso o hitch de “capturar a própria tela” não aparece aqui.
 
-**Contrato de escala (2.0):** com RenoDX, o slider de escala **não** reduz o RT do app (evita double-downsample). Só o Feed recebe `work_resolution`. Sem RenoDX, o scale GPU do renderer continua valendo.
+**Contrato de escala (4.0):** com RenoDX, o slider de escala **não** reduz o RT do app (evita double-downsample). Só o Feed recebe `work_resolution`. Sem RenoDX, o scale GPU do renderer continua valendo.
 
 ### Comparativo rápido
 
 | Abordagem | Caminho | Risco de hitch |
 |-----------|---------|----------------|
 | Recapturar tela/janela + filtro | sinal → app A → tela → capturador → app B | alto |
-| **DLSS5 MGF X2** | VEDO → app Sobrepor + Feed/NR | baixo (bom), menos telemetria |
-| **NexusCap 2.0** | sinal → placa → **um** Present D3D11 (+ Feed/NR/FG) | baixo + métricas 600f / analyze |
+| Outro viewer + Feed/NR | VEDO → app de overlay + Feed/NR | baixo (bom), menos telemetria |
+| **NexusCap 4.0** | sinal → placa → **um** Present D3D11 (+ Feed/NR/FG) | baixo + métricas 600f / analyze |
 
 ---
 
@@ -416,9 +432,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe`. **Não inclui Lossless Scaling** (Fram
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 3.1.7
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.0.0
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 3.1.7
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.0.0
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (`PrivilegesRequired=lowest` no Inno — **sem UAC / sem admin**). É menos invasivo de propósito: o setup não mexe no sistema. **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

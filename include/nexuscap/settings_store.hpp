@@ -1,8 +1,11 @@
 #pragma once
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace nexuscap {
 
@@ -34,6 +37,7 @@ struct SessionUiFlags {
   bool sync_image = true;  // VSYNC default — TEAR+ALLOW_TEARING felt shakier in A/B vs 2.0.1
   bool preview_mute = false;  // lobby preview audio mute (botao Desativar som)
   bool preview_enabled = true;  // lobby HDMI preview capture; off stops DShow + WASAPI
+  bool preview_cfg_live = false;  // NR/RenoDX no preview do lobby; default off (GPU)
   bool bug_report = false;    // session → report/bug_TIMESTAMP.txt
   bool perf_report = false;   // session → performance/performance_TIMESTAMP.txt
   // Live overlay strip. Console branding is public (all overlays).
@@ -53,6 +57,145 @@ inline const char* lobby_preview_toggle_label(bool preview_enabled) {
 inline const char* lobby_audio_toggle_label(bool muted) {
   return muted ? "Ativar som" : "Desativar som";
 }
+inline bool lobby_preview_cfg_wanted(bool preview_enabled, bool preview_cfg_live) {
+  return preview_enabled && preview_cfg_live;
+}
+inline const char* lobby_preview_cfg_toggle_label(bool preview_cfg_live) {
+  return preview_cfg_live ? "Ocultar configuracoes no preview em tempo real"
+                          : "Visualizar configuracoes no preview em tempo real";
+}
+
+// Disco do Present do lobby. Iniciar usa sync_persisted_session_files, nao estes helpers.
+inline bool lobby_preview_nr_files_on(bool preview_enabled, bool preview_cfg_live, bool enhance_renodx,
+                                      bool neural_rendering) {
+  return lobby_preview_cfg_wanted(preview_enabled, preview_cfg_live) && enhance_renodx &&
+         neural_rendering;
+}
+inline bool lobby_preview_feed_files_on(bool preview_enabled, bool preview_cfg_live, bool enhance_renodx) {
+  return lobby_preview_cfg_wanted(preview_enabled, preview_cfg_live) && enhance_renodx;
+}
+inline const char* lobby_preview_cfg_pipeline_hold_line(bool cfg_wanted) {
+  return cfg_wanted ? "Configuracoes no preview em tempo real" : "Preview HDMI sem NR";
+}
+
+inline const char* motors_stock_filename() { return "motors.stock"; }
+
+struct MotorStockEntry {
+  std::uint64_t size = 0;
+  std::string sha256;
+  std::string rel;
+};
+
+inline std::string normalize_motor_stock_rel(std::string rel) {
+  while (!rel.empty() && (rel.front() == ' ' || rel.front() == '\t')) rel.erase(rel.begin());
+  while (!rel.empty() && (rel.back() == ' ' || rel.back() == '\t' || rel.back() == '\r')) rel.pop_back();
+  if (rel.size() >= 2 && rel[0] == '.' && (rel[1] == '/' || rel[1] == '\\')) rel.erase(0, 2);
+  for (char& c : rel) {
+    if (c == '\\') c = '/';
+  }
+  return rel;
+}
+
+inline bool motor_stock_hex_equal(const std::string& a, const std::string& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    char x = a[i];
+    char y = b[i];
+    if (x >= 'A' && x <= 'F') x = static_cast<char>(x - 'A' + 'a');
+    if (y >= 'A' && y <= 'F') y = static_cast<char>(y - 'A' + 'a');
+    if (x != y) return false;
+  }
+  return true;
+}
+
+inline bool motor_stock_rel_is_tracked(const std::string& rel) {
+  return rel == "addons-stable/renodx-dlss5.addon64" || rel == "addons-stable/dlss5-feed.addon64" ||
+         rel == "addons-multipass/renodx-dlss5.addon64" || rel == "addons-multipass/dlss5-feed.addon64";
+}
+
+inline bool motor_stock_rel_is_stable(const std::string& rel) {
+  return rel.find("addons-stable/") == 0;
+}
+
+inline bool motor_stock_rel_is_multipass(const std::string& rel) {
+  return rel.find("addons-multipass/") == 0;
+}
+
+inline bool motor_file_matches_stock(std::uint64_t want_size, const std::string& want_sha,
+                                    std::uint64_t got_size, const std::string& got_sha) {
+  return want_size == got_size && motor_stock_hex_equal(want_sha, got_sha);
+}
+
+inline bool lobby_motor_override_wanted(bool stock_ok, bool compared_any, bool stable_dirty,
+                                        bool multipass_dirty) {
+  return stock_ok && compared_any && (stable_dirty || multipass_dirty);
+}
+
+inline const char* lobby_motor_override_warn() {
+  return "Aviso: motores padrao alterados. Podes trocar o Feed e/ou o RenoDX (um ou os dois) depois de "
+         "instalar, mas pode dar bugs e perdes 2x otimizado, 1,5x e 1x no Feed mais estavel.";
+}
+
+inline const char* lobby_motor_override_which(bool stable, bool multipass) {
+  if (stable && multipass) return "1x (stable) e 1,5x/2x/3x (multipass)";
+  if (stable) return "so o motor 1x (Feed estavel)";
+  if (multipass) return "so o motor 1,5x/2x/2x otimizado/3x";
+  return "";
+}
+
+inline std::vector<MotorStockEntry> parse_motor_stock_manifest(const std::string& text) {
+  std::vector<MotorStockEntry> out;
+  std::string line;
+  for (size_t i = 0; i <= text.size(); ++i) {
+    if (i < text.size() && text[i] != '\n') {
+      line.push_back(text[i]);
+      continue;
+    }
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    size_t a = 0;
+    while (a < line.size() && (line[a] == ' ' || line[a] == '\t')) ++a;
+    if (a < line.size() && line[a] != '#' && line[a] != ';') {
+      const auto sp1 = line.find_first_of(" \t", a);
+      if (sp1 != std::string::npos) {
+        size_t b = sp1;
+        while (b < line.size() && (line[b] == ' ' || line[b] == '\t')) ++b;
+        const auto sp2 = line.find_first_of(" \t", b);
+        if (sp2 != std::string::npos) {
+          MotorStockEntry e;
+          e.size = static_cast<std::uint64_t>(std::strtoull(line.c_str() + a, nullptr, 10));
+          e.sha256 = line.substr(b, sp2 - b);
+          e.rel = normalize_motor_stock_rel(line.substr(sp2 + 1));
+          if (e.size > 0 && e.sha256.size() == 64 && motor_stock_rel_is_tracked(e.rel)) out.push_back(e);
+        }
+      }
+    }
+    line.clear();
+  }
+  return out;
+}
+
+struct BundledMotorProbe {
+  bool stock_ok = false;
+  bool compared_any = false;
+  bool stable_dirty = false;
+  bool multipass_dirty = false;
+  bool wanted() const {
+    return lobby_motor_override_wanted(stock_ok, compared_any, stable_dirty, multipass_dirty);
+  }
+};
+
+inline void apply_motor_file_compare(bool compared, bool matches, bool is_stable, bool is_multipass,
+                                     bool& compared_any, bool& stable_dirty, bool& multipass_dirty) {
+  if (!compared) return;
+  compared_any = true;
+  if (matches) return;
+  if (is_stable) stable_dirty = true;
+  if (is_multipass) multipass_dirty = true;
+}
+
+std::string sha256_hex(const void* data, size_t n);
+std::string sha256_file_hex(const std::string& path, std::uint64_t* size_out);
+BundledMotorProbe probe_bundled_motors(const std::string& exe_dir);
 
 struct PersistedSettings {
   HotkeyConfig hotkeys{};
@@ -1011,6 +1154,17 @@ inline bool sync_persisted_session_files(const std::string& exe_dir, const Persi
   (void)sync_feed_work_resolution_in_dir(exe_dir, feed_work_resolution_for_session(s.scale_percent));
   (void)sync_mgf_techniques_for_phase(exe_dir, s.enhance_renodx);
   return true;
+}
+
+// Lobby Present: NR/Feed/grade só com preview + CFG live. Sem reescrever o look do Iniciar.
+inline bool sync_lobby_preview_pipeline_files(const std::string& exe_dir, const PersistedSettings& s) {
+  const bool live = lobby_preview_cfg_wanted(s.ui.preview_enabled, s.ui.preview_cfg_live);
+  (void)sync_mgf_techniques_for_phase(exe_dir, live && s.enhance_renodx);
+  return sync_neural_rendering_enabled_files(
+      exe_dir,
+      lobby_preview_nr_files_on(s.ui.preview_enabled, s.ui.preview_cfg_live, s.enhance_renodx,
+                                s.neural_rendering),
+      lobby_preview_feed_files_on(s.ui.preview_enabled, s.ui.preview_cfg_live, s.enhance_renodx));
 }
 
 // Alvo do lobby apos Benchmark: so persist HDMI. O plano do teste nao entra.

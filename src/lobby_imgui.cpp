@@ -830,18 +830,31 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   bool nr_runtime_on = cfg.nr_runtime_on;
   int nr_boot_retries = 0;
   bool renodx_dir_ok = true;
+  BundledMotorProbe motor_probe{};
   {
     wchar_t exe_path[MAX_PATH]{};
     GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
     const auto exe_dir = std::filesystem::path(exe_path).parent_path();
+    motor_probe = probe_bundled_motors(exe_dir.string());
     renodx_dir_ok = prepare_renodx_runtime_dirs(exe_dir.string());
     sync_feed_work_resolution_in_dir(exe_dir.string(), feed_work_resolution_for_lobby());
-    // Idle lobby: drop Techniques when RenoDX off; keep full chain for live preview.
-    sync_mgf_techniques_for_phase(exe_dir.string(), settings.enhance_renodx);
-    const bool want_nr = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-    sync_neural_rendering_enabled_files(exe_dir.string(), want_nr,
-                                        feed_pipeline_on_for_renodx(settings.enhance_renodx));
-    if (want_nr != nr_runtime_on) nr_boot_retries = 180;
+    // Idle lobby: NR/Feed no disco só se CFG live. Iniciar grava o look da sessão no clique.
+    const bool cfg_live =
+        lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
+    const bool session_want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
+    const bool strip_same_process = !cfg_live && nr_runtime_on;
+    sync_lobby_preview_pipeline_files(exe_dir.string(), settings);
+    if (cfg_live && session_want) {
+      // Fresh attach lê NeuralUplift=1. Não pulsar — o enable-pulse inverte o runtime.
+      nr_runtime_on = true;
+      cfg.nr_runtime_on = true;
+    } else {
+      nr_runtime_on = false;
+      cfg.nr_runtime_on = false;
+    }
+    if (strip_same_process && relaunch_current_process(nullptr)) {
+      ExitProcess(0);
+    }
   }
 
   // Lobby = HDMI. Mata LS leftover do Benchmark e nao lanca Frame Gen no menu.
@@ -1031,8 +1044,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     }
     if (!g_lobby_running) break;
 
-    preview.set_visual_preview(settings.renodx_preset,
-                               want_neural_rendering(settings.enhance_renodx, settings.neural_rendering));
+    preview.set_visual_preview(
+        settings.renodx_preset,
+        lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live) &&
+            want_neural_rendering(settings.enhance_renodx, settings.neural_rendering));
     if (lobby_preview_capture_wanted(settings.ui.preview_enabled)) {
       preview.tick();
     } else if (preview.live) {
@@ -1061,16 +1076,25 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     // Lobby Present loads Bridge asynchronously — pulse only when carried runtime ≠ want.
     if (nr_boot_retries > 0) {
       --nr_boot_retries;
-      const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
+      const bool want =
+          lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live) &&
+          want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
       if (want == nr_runtime_on) {
         nr_boot_retries = 0;
       } else if (dlss5_bridge_ready_for_nr()) {
         wchar_t exe_path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-        if (apply_neural_rendering_state(std::filesystem::path(exe_path).parent_path().string(), want,
-                                         &nr_runtime_on)) {
-          nr_boot_retries = 0;
-          cfg.nr_runtime_on = nr_runtime_on;
+        {
+          const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+          if (apply_neural_rendering_state(exe_dir, want, &nr_runtime_on)) {
+            nr_boot_retries = 0;
+            cfg.nr_runtime_on = nr_runtime_on;
+            if (!want) {
+              sync_neural_rendering_enabled_files(
+                  exe_dir, want_neural_rendering(settings.enhance_renodx, settings.neural_rendering),
+                  feed_pipeline_on_for_renodx(settings.enhance_renodx));
+            }
+          }
         }
       }
     }
@@ -1130,7 +1154,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     // Pixel-tight vertical budget: body + ItemSpacing + footer == ContentRegionAvail
     // (ImGui inserts ItemSpacing between the body row and the footer child — do NOT add Dummy).
     const float item_sp_y = ImGui::GetStyle().ItemSpacing.y;
-    const float footer_h = 72.f;
+    const bool motor_warn = motor_probe.wanted();
+    const float footer_h = motor_warn ? 118.f : 72.f;
     const float avail_y = ImGui::GetContentRegionAvail().y;
     const float body_h = (std::max)(200.f, avail_y - footer_h - item_sp_y);
     const float body_w = ImGui::GetContentRegionAvail().x;
@@ -1302,15 +1327,37 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextDisabled("PRE-VISUALIZACAO  ·  %dx%d @ %.0f", settings.width, settings.height, settings.fps);
         {
           const char* pv = lobby_preview_toggle_label(settings.ui.preview_enabled);
+          const char* cfgp = lobby_preview_cfg_toggle_label(settings.ui.preview_cfg_live);
           const char* sm = lobby_audio_toggle_label(settings.ui.preview_mute);
           const float pad_x = ImGui::GetStyle().FramePadding.x * 2.f;
           const float gap = ImGui::GetStyle().ItemSpacing.x;
           const float bw1 = ImGui::CalcTextSize(pv).x + pad_x;
+          const float bw_cfg = ImGui::CalcTextSize(cfgp).x + pad_x;
           const float bw2 = ImGui::CalcTextSize(sm).x + pad_x;
           const float status_w = 88.f;
-          const float total = bw1 + gap + bw2 + gap + status_w + 12.f;
+          const float total = bw1 + gap + bw_cfg + gap + bw2 + gap + status_w + 12.f;
           ImGui::SameLine(ImGui::GetWindowWidth() - total);
+          auto queue_preview_pipeline_relaunch = [&]() {
+            wchar_t exe_path[MAX_PATH]{};
+            GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+            const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+            sync_lobby_preview_pipeline_files(exe_dir, settings);
+            const bool live =
+                lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
+            const bool session_want =
+                want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
+            preview.set_visual_preview(settings.renodx_preset, live && session_want);
+            nr_runtime_on = live && session_want;
+            cfg.nr_runtime_on = nr_runtime_on;
+            motor_swap_title = lobby_pipeline_hold_title();
+            motor_swap_line = lobby_preview_cfg_pipeline_hold_line(live);
+            motor_swap_args = g_open_gear ? lobby_cfg_relaunch_args() : "";
+            motor_swap_pending = true;
+            motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+          };
           if (ImGui::SmallButton(pv)) {
+            const bool pipeline_was =
+                lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
             settings.ui.preview_enabled = !settings.ui.preview_enabled;
             std::string serr;
             save_settings(settings, settings_default_path(), serr);
@@ -1321,7 +1368,19 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
               lobby_audio.stop();
               lobby_audio_want = false;
             }
+            const bool pipeline_now =
+                lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
+            if (pipeline_was != pipeline_now) queue_preview_pipeline_relaunch();
           }
+          ImGui::SameLine();
+          ImGui::BeginDisabled(!settings.ui.preview_enabled);
+          if (ImGui::SmallButton(cfgp)) {
+            settings.ui.preview_cfg_live = !settings.ui.preview_cfg_live;
+            std::string serr;
+            save_settings(settings, settings_default_path(), serr);
+            queue_preview_pipeline_relaunch();
+          }
+          ImGui::EndDisabled();
           ImGui::SameLine();
           if (ImGui::SmallButton(sm)) {
             settings.ui.preview_mute = !settings.ui.preview_mute;
@@ -1404,6 +1463,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::SameLine();
 
     ImGui::BeginChild("sessao", ImVec2(right_w, body_h), true);
+    ImGui::PushTextWrapPos(0.f);
     ImGui::TextDisabled("SESSAO");
     ImGui::TextUnformatted("Configuracoes");
     ImGui::Spacing();
@@ -1465,6 +1525,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::Checkbox("Reportar performance", &settings.ui.perf_report);
     ImGui::TextDisabled(settings.ui.perf_report ? "  -> no fim da captura abre a analise (mesmo modelo do Benchmark)"
                                                 : "  -> off (sem analise no fim)");
+    ImGui::PopTextWrapPos();
     ImGui::EndChild();
 
     // Footer sits directly under body; natural ItemSpacing.y is the only gap (already reserved).
@@ -1472,9 +1533,12 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     {
       const float row_h = 48.f;
       // Center the button row inside footer_h — slight air above without growing the layout.
-      const float pad_y = (std::max)(0.f, (footer_h - row_h) * 0.5f - 2.f);
-      if (pad_y > 0.5f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + pad_y);
+      if (!motor_warn) {
+        const float pad_y = (std::max)(0.f, (footer_h - row_h) * 0.5f - 2.f);
+        if (pad_y > 0.5f) ImGui::SetCursorPosY(ImGui::GetCursorPosY() + pad_y);
+      }
 
+      const float footer_y0 = ImGui::GetCursorPosY();
       if (preview.live && preview.frames_seen > 0) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f), "* Preview ao vivo — Iniciar libera a placa");
@@ -1485,7 +1549,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f), "* Pronto — Esc na captura volta ao menu");
       }
-      ImGui::SameLine(ImGui::GetWindowWidth() - 420);
+      if (motor_warn) {
+        ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 430.f);
+        ImGui::TextColored(nexuscap_warn_color(), "%s", lobby_motor_override_warn());
+        ImGui::TextColored(nexuscap_warn_color(), "  -> %s",
+                           lobby_motor_override_which(motor_probe.stable_dirty, motor_probe.multipass_dirty));
+        ImGui::PopTextWrapPos();
+      }
+      ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - 420.f, footer_y0));
       if (ImGui::Button("Sair", ImVec2(100, row_h))) {
         g_start_requested = false;
         g_lobby_running = false;
@@ -1551,7 +1622,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                               ImGuiCond_Appearing);
       ImGui::SetNextWindowSize(ImVec2(gear_w, gear_h), ImGuiCond_Always);
       if (ImGui::Begin("Configuracoes (CFG)", &g_open_gear, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::TextColored(nexuscap_accent_color(), "Ajuste e veja no preview ao vivo");
+        ImGui::TextColored(nexuscap_accent_color(),
+                           lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)
+                               ? "Ajuste e veja no preview ao vivo"
+                               : "Ajuste grava para o Iniciar (preview sem NR)");
         ImGui::PushTextWrapPos(0.f);  // notas longas quebram linha em vez de sumir na borda
         ImGui::Separator();
         ImGui::TextUnformatted("Frame Gen (Lossless Scaling)");
@@ -1643,12 +1717,16 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           wchar_t exe_path[MAX_PATH]{};
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
-          sync_mgf_techniques_for_phase(exe_dir, settings.enhance_renodx);
+          const bool live =
+              lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-          if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
-                                            feed_pipeline_on_for_renodx(settings.enhance_renodx)) &&
-              want && !dlss5_bridge_ready_for_nr()) {
-            nr_boot_retries = 120;
+          sync_lobby_preview_pipeline_files(exe_dir, settings);
+          if (live) {
+            if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
+                                              feed_pipeline_on_for_renodx(settings.enhance_renodx)) &&
+                want && !dlss5_bridge_ready_for_nr()) {
+              nr_boot_retries = 120;
+            }
           }
           push_lobby_toast(want ? session_notice_nr_on() : session_notice_nr_off());
         }
@@ -1678,12 +1756,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-          // Immediate look on the preview band + sync RenoDX files / Bridge for Present.
-          preview.set_visual_preview(settings.renodx_preset, want);
+          const bool live =
+              lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
+          preview.set_visual_preview(settings.renodx_preset, live && want);
           const bool writable = prepare_renodx_runtime_dirs(exe_dir);
           if (!writable) {
             push_lobby_toast(renodx_write_denied_notice());
-          } else {
+          } else if (live) {
             apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on,
                                            settings.nr_pass_count);
             cfg.nr_runtime_on = nr_runtime_on;
@@ -1693,6 +1772,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
               nr_boot_retries = 120;
             }
+          } else {
+            (void)sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count);
+            push_lobby_toast(std::string("Preset: ") +
+                             renodx_visual_preset_name(settings.renodx_preset, settings.nr_pass_count) +
+                             " — no Iniciar");
           }
         }
         ImGui::TextDisabled("NR=%d  model=%d  ·  olhe a imagem (nao so o texto)",
@@ -1726,7 +1810,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           const bool need_relaunch = !nr_pass_count_change_applies_live(pass_before, settings.nr_pass_count);
           if (!writable) {
             push_lobby_toast(renodx_write_denied_notice());
-          } else if (need_relaunch) {
+          } else if (need_relaunch &&
+                     lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)) {
             // Krish ↔ multipass: show hold notice, then relaunch (avoids "bugou" flash).
             std::string serr;
             save_settings(settings, settings_default_path(), serr);
@@ -1744,7 +1829,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             push_lobby_toast(motor_change
                                  ? session_notice_dlss5_motor_swap(pass_before, settings.nr_pass_count)
                                  : session_notice_nr_pass_count_apply(pass_before, settings.nr_pass_count));
-          } else {
+          } else if (lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)) {
             // 1,5x ↔ 2x ↔ 3x: same multipass addon — INI + NR reload only.
             apply_lobby_nr_pass_count_live(exe_dir, settings.nr_pass_count, want, &nr_runtime_on,
                                            settings.renodx_preset);
@@ -1753,6 +1838,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {
               nr_boot_retries = 120;
             }
+          } else {
+            (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
+            push_lobby_toast(std::string("Pass Count: ") + nr_pass_count_label(settings.nr_pass_count) +
+                             " — no Iniciar");
           }
         }
         ImGui::TextDisabled("%s", nr_pass_count_15x_hint());
@@ -1817,8 +1906,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
           sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count);
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-          apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
-                                       feed_pipeline_on_for_renodx(settings.enhance_renodx));
+          if (lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)) {
+            sync_neural_rendering_enabled_files(exe_dir, want,
+                                                feed_pipeline_on_for_renodx(settings.enhance_renodx));
+            apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
+                                         feed_pipeline_on_for_renodx(settings.enhance_renodx));
+          } else {
+            sync_lobby_preview_pipeline_files(exe_dir, settings);
+          }
         };
         if (ImGui::Button("Salvar", ImVec2(120, 0))) {
           persist_gear();
@@ -1962,6 +2057,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           } else if (!write_perf_test_plan_file(default_perf_test_plan_path(app_data_dir()), g_perf_plan)) {
             push_lobby_toast("Nao gravou o plano do teste");
           } else {
+            (void)sync_perf_test_pipeline_files(exe_dir_utf8(), g_perf_plan);
             motor_swap_title = perf_test_pipeline_notice_title();
             motor_swap_line = perf_test_pipeline_notice_detail();
             motor_swap_args = perf_test_cli_args(g_perf_plan);

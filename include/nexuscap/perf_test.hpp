@@ -109,17 +109,17 @@ inline const char* perf_test_lobby_title() { return "Benchmark"; }
 inline const char* perf_test_lobby_button() { return "Benchmark"; }
 inline const char* perf_test_lobby_start() { return "Iniciar benchmark"; }
 inline const char* perf_test_lobby_blurb() {
-  return "Funcao beta. A nota vem de um modelo de Benchmark que criamos: uma equacao matematica (fps, present, stalls, escala e FG), nao um chute. O video e otimizado so para validar a carga: as imagens podem parecer um pouco menos nitidas, mas o resultado e real. O teste dura por volta de 40 segundos. O relogio so conta quando NR e FG ja tiverem ligado. A nota e do teu PC — o CFG HDMI nao muda.";
+  return "Funcao beta. A nota nao e um chute: e um modelo nosso, uma equacao com fps, present, stalls, escala e Frame Gen. Em cima disso o NexusCap monta uma sugestao inteligente (que escala, se o FG ajuda, qual Pass). O video e so para validar a carga, uns 40 segundos de gameplay. As imagens podem parecer um pouco menos nitidas, o resultado e real. O relogio so conta quando NR e FG ja tiverem ligado. A nota e do teu PC. O CFG HDMI nao muda.";
 }
 inline const char* perf_test_hz_title() { return "Simular captura em 30 ou 60 Hz"; }
 inline const char* perf_test_hz_blurb() {
-  return "O pino entrega o clipe como uma placa HDMI a 30 ou 60 Hz. A nota usa esta meta — nao e o Hz do monitor.";
+  return "O pino entrega o clipe como uma placa HDMI a 30 ou 60 Hz. A nota usa esta meta, nao e o Hz do monitor.";
 }
 inline const char* perf_test_audio_toggle() { return "Habilitar som no teste"; }
 inline const char* perf_test_audio_hint() {
   return "Toca o audio original da captura de jogo na saida padrao. Desliga se nao quiseres barulho.";
 }
-inline const char* perf_test_counting_notice() { return "Benchmark a contar — parametros carregados"; }
+inline const char* perf_test_counting_notice() { return "Benchmark a contar. Parametros carregados."; }
 
 // Resultado no lobby: uma vez, so depois deste benchmark. Ficheiro last.txt nao reabre o cartao.
 inline bool perf_test_should_popup_result(bool just_finished_benchmark, bool result_valid,
@@ -571,7 +571,7 @@ inline std::string perf_test_advice(const PerfTestPlan& raw, const PerfTestSampl
       (g == PerfTestGrade::Fail) ? perf_test_fg_alt_advice(s.fps, target, p.fg_multiplier) : std::string{};
   if (g == PerfTestGrade::Good) {
     if (p.fps < 45.0 && s.fps + 1e-6 >= 60.0 - kPerfTestFpsSlop) {
-      return "O cap ja segura 60 — podes testar a meta 60.";
+      return "O cap ja segura 60. Podes testar a meta 60.";
     }
     return {};
   }
@@ -608,8 +608,8 @@ inline std::string perf_test_advice(const PerfTestPlan& raw, const PerfTestSampl
     return std::string("Para melhores resultados, ") + rest;
   }
   if (p.fg_multiplier >= 2)
-    return "Para melhores resultados, desliga o Frame Gen — neste minimo o FG nao salva o cap.";
-  return "Neste minimo (1080p · 50% · Pass 1x · 30 fps) a maquina nao segura este plano.";
+    return "Para melhores resultados, desliga o Frame Gen. Neste minimo o FG nao salva o cap.";
+  return "Neste minimo (1080p, 50%, Pass 1x, 30 fps) a maquina nao segura este plano.";
 }
 
 inline std::string perf_test_advice(const PerfTestPlan& raw, PerfTestGrade g) {
@@ -639,31 +639,31 @@ inline std::string format_perf_test_card(const PerfTestPlan& raw, const PerfTest
   char buf[880];
   if (g == PerfTestGrade::PlayableFg && fg_on) {
     std::snprintf(buf, sizeof(buf),
-                  "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps no cap / ~%s FG, latencia ~%s ms). O fps extra e gerado — da para jogar, mas nao e %.0f nativo.",
+                  "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps no cap / ~%s FG, latencia ~%s ms). O fps extra e gerado. Da para jogar, mas nao e %.0f nativo.",
                   nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                   p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, fgb, latb,
                   p.fps);
   } else if (g == PerfTestGrade::Good && fg_on) {
     std::snprintf(buf, sizeof(buf),
-                  "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps nativo). FG da ~%s extra; latencia ~%s ms. FG opcional.",
+                  "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps nativo). FG da ~%s extra; latencia ~%s ms. FG opcional.",
                   nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                   p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, fgb, latb);
   } else if (g == PerfTestGrade::Tight && fg_on && s.stalls > 0) {
     std::snprintf(buf, sizeof(buf),
-                  "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps no cap / ~%s FG, present %s ms, %llu stalls). O cap segura %.0f. O FG esta a custar. Desliga o FG e ficas nativo.",
+                  "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps no cap / ~%s FG, present %s ms, %llu stalls). O cap segura %.0f. O FG esta a custar. Desliga o FG e ficas nativo.",
                   nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                   p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, fgb, presb,
                   static_cast<unsigned long long>(s.stalls), p.fps);
   } else if (g == PerfTestGrade::Tight) {
     if (fg_on) {
       std::snprintf(buf, sizeof(buf),
-                    "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps no cap / ~%s FG, present %s ms, %llu stalls). Chega aos %.0f, mas apertado.",
+                    "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps no cap / ~%s FG, present %s ms, %llu stalls). Chega aos %.0f, mas apertado.",
                     nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                     p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, fgb, presb,
                     static_cast<unsigned long long>(s.stalls), p.fps);
     } else {
       std::snprintf(buf, sizeof(buf),
-                    "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps, present %s ms, %llu stalls). Chega aos %.0f, mas apertado.",
+                    "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps, present %s ms, %llu stalls). Chega aos %.0f, mas apertado.",
                     nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                     p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, presb,
                     static_cast<unsigned long long>(s.stalls), p.fps);
@@ -671,26 +671,26 @@ inline std::string format_perf_test_card(const PerfTestPlan& raw, const PerfTest
   } else if (fg_on) {
     if (s.fps < 20.0) {
       std::snprintf(buf, sizeof(buf),
-                    "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps no cap / ~%s FG, present %s ms, %llu stalls). FG passa o numero no ecra; o cap e baixo demais.",
+                    "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps no cap / ~%s FG, present %s ms, %llu stalls). FG passa o numero no ecra; o cap e baixo demais.",
                     nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                     p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, fgb, presb,
                     static_cast<unsigned long long>(s.stalls));
     } else {
       std::snprintf(buf, sizeof(buf),
-                    "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps no cap / ~%s FG, present %s ms, %llu stalls). Nem o FG chega a meta.",
+                    "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps no cap / ~%s FG, present %s ms, %llu stalls). Nem o FG chega a meta.",
                     nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                     p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, fgb, presb,
                     static_cast<unsigned long long>(s.stalls));
     }
   } else if (g == PerfTestGrade::Good || cap_ok) {
     std::snprintf(buf, sizeof(buf),
-                  "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps, present %s ms, %llu stalls). Segura %.0f nativo sem FG.",
+                  "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps, present %s ms, %llu stalls). Segura %.0f nativo sem FG.",
                   nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                   p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, presb,
                   static_cast<unsigned long long>(s.stalls), p.fps);
   } else {
     std::snprintf(buf, sizeof(buf),
-                  "Com %s · %s · %.0f fps · escala %d%% · %s, o resultado foi %s (%s fps, present %s ms, %llu stalls). Sem FG nao chega aos %.0f.",
+                  "Com %s, %s, %.0f fps, escala %d%%, %s, o resultado foi %s (%s fps, present %s ms, %llu stalls). Sem FG nao chega aos %.0f.",
                   nr_pass_count_short(p.nr_pass_count), perf_test_signal_label(p.width, p.height), p.fps,
                   p.scale_percent, perf_test_fg_label(p.fg_multiplier), perf_test_grade_label(g), fpsb, presb,
                   static_cast<unsigned long long>(s.stalls), p.fps);
@@ -861,6 +861,23 @@ inline std::string default_perf_test_result_path(const std::string& data_dir) {
 // Processo novo depois do Benchmark (Esc / X / timer). O lobby nao herda Pass/tom/NR/Feed/LS.
 inline const char* perf_test_return_relaunch_args() { return "--show-perf-result"; }
 
+// Lobby CFG live OFF esvazia Techniques=. O Iniciar regrava antes do relaunch; o Benchmark
+// tem de fazer o mesmo — senão o RenoDX arranca sem cadeia e o relógio morre em evals=0.
+inline PersistedSettings persisted_from_perf_test_plan(const PerfTestPlan& raw) {
+  const PerfTestPlan p = clamp_perf_test_plan(raw);
+  PersistedSettings s = default_settings();
+  s.enhance_renodx = true;
+  s.neural_rendering = true;
+  s.nr_pass_count = p.nr_pass_count;
+  s.renodx_preset = p.renodx_preset;
+  s.scale_percent = p.scale_percent;
+  return s;
+}
+
+inline bool sync_perf_test_pipeline_files(const std::string& exe_dir, const PerfTestPlan& raw) {
+  return sync_persisted_session_files(exe_dir, persisted_from_perf_test_plan(raw));
+}
+
 inline void apply_perf_test_plan_to_config(const PerfTestPlan& raw, AppConfig& cfg) {
   const PerfTestPlan p = clamp_perf_test_plan(raw);
   cfg.perf_test = true;
@@ -929,7 +946,7 @@ inline bool fill_perf_test_session_result(const AppConfig& cfg, const PerfScoreA
     out.summary = format_perf_test_card(out.plan, out.sample, out.grade);
   } else {
     out.grade = PerfTestGrade::Fail;
-    out.summary = "O teste acabou sem amostras suficientes — nao usa o fps do vsync.";
+    out.summary = "O teste acabou sem amostras suficientes. Nao usa o fps do vsync.";
   }
   out.popup = true;
   return true;

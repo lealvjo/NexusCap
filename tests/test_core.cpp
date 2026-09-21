@@ -319,6 +319,25 @@ TEST_CASE("MGF techniques idle lobby vs session chain") {
   CHECK(renodx_mgf_chain_order_ok(sess));
 }
 
+TEST_CASE("perf test pipeline restores techniques after lobby CFG live off") {
+  CHECK_FALSE(lobby_preview_nr_files_on(true, false, true, true));
+  const std::string idle = apply_mgf_techniques_for_phase(
+      "Techniques=Lumenite_Kernel@lumenite_Kernel.fx\nTechniqueSorting=Lumenite_Kernel@lumenite_Kernel.fx\n",
+      false);
+  CHECK_FALSE(renodx_mgf_chain_order_ok(idle));
+  CHECK(apply_mgf_techniques_for_phase(idle, true).find(kRenodxSessionTechniqueChain) != std::string::npos);
+
+  PerfTestPlan p;
+  p.nr_pass_count = 4;
+  p.renodx_preset = 1;
+  p.scale_percent = 100;
+  const PersistedSettings s = persisted_from_perf_test_plan(p);
+  CHECK(s.enhance_renodx);
+  CHECK(s.neural_rendering);
+  CHECK(s.nr_pass_count == 4);
+  CHECK(s.renodx_preset == 1);
+}
+
 TEST_CASE("HitchDetector threshold and log cap") {
   HitchDetector d(25.0, 8);
   int logged = 0;
@@ -1692,6 +1711,194 @@ TEST_CASE("lobby preview and audio toggles persist and stop capture") {
   CHECK_FALSE(missing.ui.preview_mute);
 }
 
+TEST_CASE("lobby preview cfg live default off persist and labels") {
+  CHECK_FALSE(default_settings().ui.preview_cfg_live);
+  CHECK_FALSE(lobby_preview_cfg_wanted(true, false));
+  CHECK(lobby_preview_cfg_wanted(true, true));
+  CHECK_FALSE(lobby_preview_cfg_wanted(false, true));
+  CHECK_FALSE(lobby_preview_cfg_wanted(false, false));
+  CHECK(std::string(lobby_preview_cfg_toggle_label(false)) ==
+        "Visualizar configuracoes no preview em tempo real");
+  CHECK(std::string(lobby_preview_cfg_toggle_label(true)) ==
+        "Ocultar configuracoes no preview em tempo real");
+
+  PersistedSettings s = default_settings();
+  s.ui.preview_cfg_live = true;
+  PersistedSettings on;
+  REQUIRE(parse_settings_ini(serialize_settings_ini(s), on));
+  CHECK(on.ui.preview_cfg_live);
+  CHECK(serialize_settings_ini(on).find("preview_cfg_live=1") != std::string::npos);
+
+  s.ui.preview_cfg_live = false;
+  PersistedSettings off;
+  REQUIRE(parse_settings_ini(serialize_settings_ini(s), off));
+  CHECK_FALSE(off.ui.preview_cfg_live);
+  CHECK(serialize_settings_ini(off).find("preview_cfg_live=0") != std::string::npos);
+
+  PersistedSettings missing;
+  REQUIRE(parse_settings_ini("preview_enabled=1\n", missing));
+  CHECK_FALSE(missing.ui.preview_cfg_live);
+
+  CHECK_FALSE(lobby_preview_nr_files_on(true, false, true, true));
+  CHECK(lobby_preview_nr_files_on(true, true, true, true));
+  CHECK_FALSE(lobby_preview_nr_files_on(true, true, false, true));
+  CHECK_FALSE(lobby_preview_feed_files_on(true, false, true));
+  CHECK(lobby_preview_feed_files_on(true, true, true));
+  CHECK(std::string(lobby_preview_cfg_pipeline_hold_line(false)) == "Preview HDMI sem NR");
+  CHECK(std::string(lobby_preview_cfg_pipeline_hold_line(true)) ==
+        "Configuracoes no preview em tempo real");
+}
+
+TEST_CASE("bundled motor stock never false-positive or false-negative") {
+  CHECK_FALSE(lobby_motor_override_wanted(false, true, true, true));
+  CHECK_FALSE(lobby_motor_override_wanted(true, false, true, false));
+  CHECK_FALSE(lobby_motor_override_wanted(true, true, false, false));
+  CHECK(lobby_motor_override_wanted(true, true, true, false));
+  CHECK(lobby_motor_override_wanted(true, true, false, true));
+  CHECK(lobby_motor_override_wanted(true, true, true, true));
+
+  CHECK(std::string(lobby_motor_override_warn()) ==
+        "Aviso: motores padrao alterados. Podes trocar o Feed e/ou o RenoDX (um ou os dois) depois de "
+        "instalar, mas pode dar bugs e perdes 2x otimizado, 1,5x e 1x no Feed mais estavel.");
+  CHECK(std::string(lobby_motor_override_which(true, false)) == "so o motor 1x (Feed estavel)");
+  CHECK(std::string(lobby_motor_override_which(false, true)) == "so o motor 1,5x/2x/2x otimizado/3x");
+  CHECK(std::string(lobby_motor_override_which(true, true)) == "1x (stable) e 1,5x/2x/3x (multipass)");
+  CHECK(std::string(lobby_motor_override_which(false, false)).empty());
+
+  CHECK(sha256_hex(nullptr, 0) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  CHECK(sha256_hex("abc", 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+  const std::string stock_a = "hello-stock-a";
+  const std::string stock_b = "hello-stock-B";
+  const std::string sha_a = sha256_hex(stock_a.data(), stock_a.size());
+  const std::string sha_b = sha256_hex(stock_b.data(), stock_b.size());
+  REQUIRE(sha_a != sha_b);
+  CHECK(motor_file_matches_stock(stock_a.size(), sha_a, stock_a.size(), sha_a));
+  {
+    std::string upper = sha_a;
+    for (char& c : upper) {
+      if (c >= 'a' && c <= 'f') c = static_cast<char>(c - 'a' + 'A');
+    }
+    CHECK(motor_file_matches_stock(stock_a.size(), sha_a, stock_a.size(), upper));
+  }
+  CHECK_FALSE(motor_file_matches_stock(stock_a.size(), sha_a, stock_a.size(), sha_b));
+  CHECK_FALSE(motor_file_matches_stock(stock_a.size(), sha_a, stock_a.size() + 1, sha_a));
+
+  CHECK(parse_motor_stock_manifest("").empty());
+  CHECK(parse_motor_stock_manifest("# only comment\n\n; nope\n").empty());
+  const std::string sha64a(64, 'A');
+  const std::string sha64b(64, 'b');
+  const std::string sha64skip(64, 'd');
+  const std::string mixed = std::string("# size sha256 path\n") + "12 " + sha64a +
+                            " addons-stable\\renodx-dlss5.addon64\n" + "99 " + sha64skip +
+                            " other/skip.addon64\n" + "8 " + sha64b +
+                            " ./addons-multipass/dlss5-feed.addon64\r\n";
+  const auto parsed = parse_motor_stock_manifest(mixed);
+  REQUIRE(parsed.size() == 2);
+  CHECK(parsed[0].rel == "addons-stable/renodx-dlss5.addon64");
+  CHECK(parsed[0].size == 12);
+  CHECK(motor_stock_hex_equal(parsed[0].sha256, std::string(64, 'a')));
+  CHECK(parsed[1].rel == "addons-multipass/dlss5-feed.addon64");
+
+  const auto tmp = std::filesystem::temp_directory_path() / "nexuscap_motors_ut";
+  std::error_code ec;
+  std::filesystem::remove_all(tmp, ec);
+  std::filesystem::create_directories(tmp / "addons-stable", ec);
+  std::filesystem::create_directories(tmp / "addons-multipass", ec);
+
+  auto write_bin = [&](const std::filesystem::path& p, const std::string& bytes) {
+    std::ofstream o(p, std::ios::binary | std::ios::trunc);
+    o << bytes;
+  };
+  auto write_stock = [&](const std::string& body) {
+    std::ofstream o(tmp / motors_stock_filename(), std::ios::binary | std::ios::trunc);
+    o << body;
+  };
+  auto stock_line = [&](const std::string& rel, const std::string& bytes) {
+    return std::to_string(bytes.size()) + " " + sha256_hex(bytes.data(), bytes.size()) + " " + rel + "\n";
+  };
+
+  const std::string snr = "stable-nr";
+  const std::string sfeed = "stable-feed";
+  const std::string mnr = "multi-nr";
+  const std::string mfeed = "multi-feed";
+  write_bin(tmp / "addons-stable" / "renodx-dlss5.addon64", snr);
+  write_bin(tmp / "addons-stable" / "dlss5-feed.addon64", sfeed);
+  write_bin(tmp / "addons-multipass" / "renodx-dlss5.addon64", mnr);
+  write_bin(tmp / "addons-multipass" / "dlss5-feed.addon64", mfeed);
+
+  CHECK_FALSE(probe_bundled_motors(tmp.string()).wanted());  // no stock
+  write_stock("#\n");
+  CHECK_FALSE(probe_bundled_motors(tmp.string()).stock_ok);
+
+  write_stock(stock_line("addons-stable/renodx-dlss5.addon64", snr) +
+              stock_line("addons-stable/dlss5-feed.addon64", sfeed) +
+              stock_line("addons-multipass/renodx-dlss5.addon64", mnr) +
+              stock_line("addons-multipass/dlss5-feed.addon64", mfeed));
+  {
+    const auto ok = probe_bundled_motors(tmp.string());
+    CHECK(ok.stock_ok);
+    CHECK(ok.compared_any);
+    CHECK_FALSE(ok.stable_dirty);
+    CHECK_FALSE(ok.multipass_dirty);
+    CHECK_FALSE(ok.wanted());
+  }
+
+  std::filesystem::remove(tmp / "addons-stable" / "dlss5-feed.addon64", ec);
+  {
+    const auto miss = probe_bundled_motors(tmp.string());
+    CHECK(miss.stock_ok);
+    CHECK(miss.compared_any);
+    CHECK_FALSE(miss.wanted());
+  }
+  write_bin(tmp / "addons-stable" / "dlss5-feed.addon64", sfeed);
+
+  write_bin(tmp / "addons-stable" / "dlss5-feed.addon64", "stable-FEED");  // same-ish size? different bytes
+  {
+    const auto feed_only = probe_bundled_motors(tmp.string());
+    CHECK(feed_only.wanted());
+    CHECK(feed_only.stable_dirty);
+    CHECK_FALSE(feed_only.multipass_dirty);
+    CHECK(std::string(lobby_motor_override_which(feed_only.stable_dirty, feed_only.multipass_dirty)) ==
+          "so o motor 1x (Feed estavel)");
+  }
+  write_bin(tmp / "addons-stable" / "dlss5-feed.addon64", sfeed);
+
+  write_bin(tmp / "addons-multipass" / "renodx-dlss5.addon64", "multi-nrX");
+  {
+    const auto mp = probe_bundled_motors(tmp.string());
+    CHECK(mp.wanted());
+    CHECK_FALSE(mp.stable_dirty);
+    CHECK(mp.multipass_dirty);
+    CHECK(std::string(lobby_motor_override_which(mp.stable_dirty, mp.multipass_dirty)) ==
+          "so o motor 1,5x/2x/2x otimizado/3x");
+  }
+
+  write_bin(tmp / "addons-stable" / "renodx-dlss5.addon64", "stable-nrX");
+  {
+    const auto both = probe_bundled_motors(tmp.string());
+    CHECK(both.wanted());
+    CHECK(both.stable_dirty);
+    CHECK(both.multipass_dirty);
+    CHECK(std::string(lobby_motor_override_which(both.stable_dirty, both.multipass_dirty)) ==
+          "1x (stable) e 1,5x/2x/3x (multipass)");
+  }
+
+  write_bin(tmp / "addons-stable" / "renodx-dlss5.addon64", snr);
+  write_bin(tmp / "addons-multipass" / "renodx-dlss5.addon64", mnr);
+  std::filesystem::remove(tmp / "addons-stable" / "renodx-dlss5.addon64", ec);
+  std::filesystem::remove(tmp / "addons-stable" / "dlss5-feed.addon64", ec);
+  std::filesystem::remove(tmp / "addons-multipass" / "renodx-dlss5.addon64", ec);
+  std::filesystem::remove(tmp / "addons-multipass" / "dlss5-feed.addon64", ec);
+  {
+    const auto none = probe_bundled_motors(tmp.string());
+    CHECK(none.stock_ok);
+    CHECK_FALSE(none.compared_any);
+    CHECK_FALSE(none.wanted());
+  }
+  std::filesystem::remove_all(tmp, ec);
+}
+
 TEST_CASE("lobby preview caps decode width for UI fps (not soft 640)") {
   // Soft 640 was muddy; full 2560 CPU NV12 decode pinned lobby ~30 fps.
   CHECK(kLobbyPreviewMaxWidth == 1280);
@@ -2843,17 +3050,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(3, 1, 11));
+  CHECK(app_version_is(4, 0, 0));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "3.1.11");
-  CHECK(std::strstr(kAppNameWithVersion, "v3.1.11") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-3.1.11");
+  CHECK(std::string(kAppVersion) == "4.0.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.0.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.0.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("3.1.11") != std::string::npos);
+  CHECK(lobby_t.find("4.0.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("3.1.11") != std::string::npos);
+  CHECK(sess_t.find("4.0.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -4547,10 +4754,12 @@ TEST_CASE("perf test lobby says Benchmark") {
   CHECK(std::string(perf_test_lobby_blurb()).find("40") != std::string::npos);
   CHECK(std::string(perf_test_lobby_blurb()).find("CFG HDMI") != std::string::npos);
   CHECK(std::string(perf_test_lobby_blurb()).find("beta") != std::string::npos);
-  CHECK(std::string(perf_test_lobby_blurb()).find("otimiz") != std::string::npos);
   CHECK(std::string(perf_test_lobby_blurb()).find("nitid") != std::string::npos);
   CHECK(std::string(perf_test_lobby_blurb()).find("modelo") != std::string::npos);
   CHECK(std::string(perf_test_lobby_blurb()).find("equacao") != std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find("sugestao") != std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find(" — ") == std::string::npos);
+  CHECK(std::string(perf_test_lobby_blurb()).find(" · ") == std::string::npos);
   CHECK(std::string(perf_test_counting_notice()).find("Benchmark") != std::string::npos);
   CHECK(std::string(perf_test_hz_title()).find("30") != std::string::npos);
   CHECK(std::string(perf_test_hz_title()).find("60 Hz") != std::string::npos);
@@ -5185,7 +5394,7 @@ TEST_CASE("perf test card mentions combo and grade") {
   CHECK(perf_test_fg_latency_ms(40.0, 2) < 45.0);
   CHECK(fg_card.find("Jogavel com FG") != std::string::npos);
   CHECK(fg_card.find("gerado") != std::string::npos);
-  CHECK(fg_card.find("da para jogar") != std::string::npos);
+  CHECK(fg_card.find("Da para jogar") != std::string::npos);
   CHECK(fg_card.find("escala para 75") != std::string::npos);
   CHECK(perf_test_suggest_scale(100, s, PerfTestGrade::PlayableFg, 60) == 75);
   CHECK(perf_test_advice(p, PerfTestGrade::Fail).find("Pass 1x") != std::string::npos);
@@ -5696,7 +5905,7 @@ TEST_CASE("perf test table 30 and 60 with fg and advice") {
   p.fps = 30;
   const std::string play30 = format_perf_test_card(p, sample(22.0, 2, 30), PerfTestGrade::PlayableFg);
   CHECK(play30.find("Jogavel com FG") != std::string::npos);
-  CHECK(play30.find("da para jogar") != std::string::npos);
+  CHECK(play30.find("Da para jogar") != std::string::npos);
 }
 
 TEST_CASE("perf test advice validates real 3x cadence lock not area formula") {

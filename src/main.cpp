@@ -221,19 +221,26 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     const fs::path exe_dir = fs::path(exe_path).parent_path();
     const bool want_nr = (cfg.enhance == EnhanceBackend::Renodx) && cfg.neural_rendering;
     // Lobby preview may already have NR ON in this process — never force false then pulse.
-    g_nr_runtime_on = cfg.perf_test ? false : cfg.nr_runtime_on;
+    g_nr_runtime_on = cfg.nr_runtime_on;
     g_nr_toggle_last_ms = 0;
     // Do NOT resync from ReShade.log here: a prior process leaves "NR toggled OFF" on disk and
     // a boot enable-pulse would flip NeuralUplift's already-ON runtime back to OFF.
     {
       const bool mp = renodx_active_addon_is_multipass(exe_dir.string());
       const NeuralRuntimePlan boot = plan_neural_runtime(want_nr, g_nr_runtime_on);
-      if (cfg.perf_test) {
-        // Processo fresco: flag do plano nao e prova. Multipass auto-avalia; stable precisa de pulse.
+      if (cfg.perf_test && want_nr) {
+        // Multipass nao loga EvaluateFeature succeeded — o wait travava o Benchmark.
+        // Ficheiros NR=ON + techniques ja gravados: mesmo trust do HDMI.
+        g_nr_boot_retries = mp ? 0 : 180;
+        g_nr_runtime_on = true;
+        cfg.nr_runtime_on = true;
+        append_log(cfg.log_dir, mp ? "nr boot: perf-test trust NeuralUplift ON (no EvaluateFeature wait)"
+                                   : "nr boot: perf-test pulse then trust NeuralUplift");
+      } else if (cfg.perf_test) {
         cfg.nr_runtime_on = false;
-        g_nr_boot_retries = (want_nr && !mp) ? 180 : 0;
-        append_log(cfg.log_dir, mp ? "nr boot: perf-test wait EvaluateFeature (multipass)"
-                                   : "nr boot: perf-test pulse then wait EvaluateFeature");
+        g_nr_runtime_on = false;
+        g_nr_boot_retries = 0;
+        append_log(cfg.log_dir, "nr boot: perf-test NR off");
       } else if (want_nr && !g_nr_runtime_on) {
         // Fresh session + NeuralUplift=1: RenoDX boots NR ON. Skip Bridge pulse.
         g_nr_boot_retries = 0;
@@ -1619,7 +1626,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (presented % 8 == 0 || presented <= 2) {
         nr_evals += consume_reshade_nr_evals(session_exe_dir, reshade_eval_off);
       }
-      const bool nr_live = perf_test_nr_evals_are_live(nr_evals);
+        const bool nr_live = perf_test_nr_evals_are_live(nr_evals) || g_nr_runtime_on;
       const bool want_nr_live = (cfg.enhance == EnhanceBackend::Renodx) && cfg.neural_rendering;
       if (nr_live && want_nr_live && !g_nr_runtime_on) {
         g_nr_runtime_on = true;
@@ -2068,6 +2075,9 @@ int main(int argc, char** argv) {
     {
       const bool want_nr = cfg.perf_test ? true : (settings.enhance_renodx && settings.neural_rendering);
       (void)nexuscap::sync_neural_rendering_enabled_files(base.string(), want_nr, want_nr);
+      if (cfg.perf_test) {
+        (void)nexuscap::sync_mgf_techniques_for_phase(base.string(), true);
+      }
     }
     // Feed locks work_resolution at the first swapchain: 100% when the lobby opens first
     // (sharp menus), session scale when we boot straight into capture (--autostart / --perf-test).

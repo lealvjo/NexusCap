@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "3.1.11",
+  [string]$Version = "4.0.0",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -177,6 +177,28 @@ foreach ($leak in @(
 if ($missingCritical.Count -gt 0) {
   Write-Warning ("RenoDX incompleto no stage (faltando: {0}). Instalador sai sem enhance completo." -f ($missingCritical -join ", "))
 }
+
+function Write-MotorsStock([string]$Root) {
+  $rels = @(
+    "addons-stable/renodx-dlss5.addon64",
+    "addons-stable/dlss5-feed.addon64",
+    "addons-multipass/renodx-dlss5.addon64",
+    "addons-multipass/dlss5-feed.addon64"
+  )
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add("# size sha256 path") | Out-Null
+  foreach ($rel in $rels) {
+    $p = Join-Path $Root ($rel -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $p)) { continue }
+    $len = (Get-Item -LiteralPath $p).Length
+    $hash = (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()
+    $lines.Add(("{0} {1} {2}" -f $len, $hash, $rel)) | Out-Null
+  }
+  if ($lines.Count -lt 2) { return }
+  Set-Content -Path (Join-Path $Root "motors.stock") -Value $lines -Encoding ASCII
+  Write-Host "wrote motors.stock ($($lines.Count - 1) addons)"
+}
+Write-MotorsStock $Stage
 
 if (Test-Path -LiteralPath $DefaultsFeed) {
   Copy-Item -LiteralPath $DefaultsFeed -Destination (Join-Path $Stage "dlss5-feed.cfg") -Force

@@ -220,6 +220,29 @@ DirectNeuralRenderingPassCount=1
 "@
 Set-Content -Path (Join-Path $DestDir "ReShade.ini") -Value $ini -Encoding UTF8
 Write-Host "wrote ReShade.ini (AddonPath=addons-stable | 2x→addons-multipass no reinicio)"
+
+function Write-MotorsStock([string]$Root) {
+  $rels = @(
+    "addons-stable/renodx-dlss5.addon64",
+    "addons-stable/dlss5-feed.addon64",
+    "addons-multipass/renodx-dlss5.addon64",
+    "addons-multipass/dlss5-feed.addon64"
+  )
+  $lines = New-Object System.Collections.Generic.List[string]
+  $lines.Add("# size sha256 path") | Out-Null
+  foreach ($rel in $rels) {
+    $p = Join-Path $Root ($rel -replace '/', '\')
+    if (-not (Test-Path -LiteralPath $p)) { continue }
+    $len = (Get-Item -LiteralPath $p).Length
+    $hash = (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()
+    $lines.Add(("{0} {1} {2}" -f $len, $hash, $rel)) | Out-Null
+  }
+  if ($lines.Count -lt 2) { return }
+  Set-Content -Path (Join-Path $Root "motors.stock") -Value $lines -Encoding ASCII
+  Write-Host "wrote motors.stock ($($lines.Count - 1) addons)"
+}
+Write-MotorsStock $DestDir
+
 Write-Host "OK -> $DestDir"
 Write-Host "Rode: NexusCap.exe --renodx"
 Write-Host "Pass Count 1x=addons-stable | 2x/3x=addons-multipass (reinicia sozinho)"

@@ -2200,9 +2200,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::Separator();
         ImGui::TextUnformatted("Atalhos");
         ImGui::TextDisabled("Clica a tecla para gravar outra.");
-        // Wrap global come o texto da tabela e esconde o Ctrl na borda.
+        // Wrap do CFG pinta o nome em largura cheia e o botao cobre o texto.
         ImGui::PopTextWrapPos();
-        const float label_w = 168.f;
+        ImGui::PushTextWrapPos(FLT_MAX);
         const float key_w = 148.f;
         auto bind_key = [&](const char* id, int* vk, bool with_ctrl) {
           char buf[80];
@@ -2215,27 +2215,49 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           }
           if (ImGui::Button(buf, ImVec2(key_w, 0))) g_capture_vk_target = vk;
         };
+        auto hk_section = [&](const char* title) {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::TextDisabled("%s", title);
+          ImGui::TableNextColumn();
+          ImGui::TableNextColumn();
+        };
         auto hk_row = [&](const char* label, const char* id, int* vk, bool* ctrl) {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
           ImGui::AlignTextToFramePadding();
           ImGui::TextUnformatted(label);
-          ImGui::SameLine(label_w);
+          ImGui::TableNextColumn();
           bind_key(id, vk, ctrl && *ctrl);
+          ImGui::TableNextColumn();
           if (ctrl) {
-            ImGui::SameLine(0.f, 10.f);
-            ImGui::Checkbox((std::string("Ctrl##") + id).c_str(), ctrl);
+            ImGui::Checkbox((std::string("##ctrl") + id).c_str(), ctrl);
+            ImGui::SameLine(0.f, 6.f);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Ctrl");
           }
         };
-        ImGui::TextDisabled("Lobby");
-        hk_row("Abrir este CFG", "gear", &settings.hotkeys.vk_gear, nullptr);
-        ImGui::TextDisabled("Captura");
-        hk_row("Overlay HUD", "hud", &settings.hotkeys.vk_hud, &settings.hotkeys.hud_ctrl);
-        hk_row("CFG no jogo", "cfgkey", &settings.hotkeys.vk_cfg, &settings.hotkeys.cfg_ctrl);
-        hk_row("Frame Gen", "fg", &settings.hotkeys.vk_fg_toggle, nullptr);
-        hk_row("Ciclo Frame Gen", "fgcycle", &settings.hotkeys.vk_fg_cycle, nullptr);
-        hk_row("Neural Rendering", "nr", &settings.hotkeys.vk_nr_toggle, nullptr);
-        hk_row("Tela cheia", "fs", &settings.hotkeys.vk_fullscreen, nullptr);
-        hk_row("Analise", "analyze", &settings.hotkeys.vk_analyze, nullptr);
-        hk_row("Preset visual", "renodx", &settings.hotkeys.vk_renodx, nullptr);
+        const ImGuiTableFlags hk_flags =
+            ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoSavedSettings |
+            ImGuiTableFlags_NoClip;
+        if (ImGui::BeginTable("##hotkeys", 3, hk_flags)) {
+          ImGui::TableSetupColumn("lab", ImGuiTableColumnFlags_WidthFixed, 178.f);
+          ImGui::TableSetupColumn("key", ImGuiTableColumnFlags_WidthFixed, key_w + 4.f);
+          ImGui::TableSetupColumn("mod", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoClip, 92.f);
+          hk_section("Lobby");
+          hk_row("Abrir este CFG", "gear", &settings.hotkeys.vk_gear, nullptr);
+          hk_section("Captura");
+          hk_row("Overlay HUD", "hud", &settings.hotkeys.vk_hud, &settings.hotkeys.hud_ctrl);
+          hk_row("CFG no jogo", "cfgkey", &settings.hotkeys.vk_cfg, &settings.hotkeys.cfg_ctrl);
+          hk_row("Frame Gen", "fg", &settings.hotkeys.vk_fg_toggle, nullptr);
+          hk_row("Ciclo Frame Gen", "fgcycle", &settings.hotkeys.vk_fg_cycle, nullptr);
+          hk_row("Neural Rendering", "nr", &settings.hotkeys.vk_nr_toggle, nullptr);
+          hk_row("Tela cheia", "fs", &settings.hotkeys.vk_fullscreen, nullptr);
+          hk_row("Analise", "analyze", &settings.hotkeys.vk_analyze, nullptr);
+          hk_row("Preset visual", "renodx", &settings.hotkeys.vk_renodx, nullptr);
+          ImGui::EndTable();
+        }
+        ImGui::PopTextWrapPos();
         ImGui::PushTextWrapPos(0.f);
 
         ImGui::Spacing();

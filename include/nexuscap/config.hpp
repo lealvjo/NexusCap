@@ -11,6 +11,7 @@
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/system_metrics.hpp"
 #include "nexuscap/version.hpp"
+#include "nexuscap/audio.hpp"
 
 namespace nexuscap {
 
@@ -56,6 +57,7 @@ struct AppConfig {
   int color_space = 0;      // Padrao → BT.709
   int color_range = 0;      // Limitado
   int capture_buffering = 0;  // Desativado
+  int capture_volume = 100;  // HDMI WASAPI 0–100; settings.ini, not presets
 
   // Enhance: renodx (ReShade proxy + presets) | streamline (native) | off
   EnhanceBackend enhance = EnhanceBackend::Off;
@@ -747,6 +749,7 @@ inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettin
   s.renodx_preset = clamp_renodx_visual_preset(cfg.renodx_preset);
   s.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
   s.scale_percent = clamp_scale_percent(cfg.scale_percent);
+  s.capture_volume = clamp_capture_volume_percent(cfg.capture_volume);
   s.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
   s.ui.overlay_console = cfg.overlay_console;
   s.ui.overlay_no_bg = cfg.overlay_no_bg;

@@ -906,6 +906,7 @@ inline void apply_perf_test_plan_to_config(const PerfTestPlan& raw, AppConfig& c
   cfg.neural_rendering = true;
   cfg.nr_runtime_on = true;
   cfg.perf_test_audio = p.audio;
+  // Volume is settings.ini, not the Benchmark plan. apply_perf_test_plan_to_config must not touch it.
   // Feature nova: todo Benchmark gera report de bug (nao grava no CFG HDMI).
   cfg.bug_report = true;
   if (p.fg_multiplier >= 2) {

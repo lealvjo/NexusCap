@@ -1,5 +1,6 @@
 ﻿#include "nexuscap/session_cfg.hpp"
 
+#include "nexuscap/audio.hpp"
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/imgui_theme.hpp"
 #include "nexuscap/live_mode.hpp"
@@ -240,6 +241,15 @@ void SessionCfgOverlay::draw_panel() {
     // Linha fixa: se o aviso sumisse, todos os controles subiriam e o clique erraria o alvo.
     ImGui::TextDisabled("%s", state.status.empty() ? " " : ascii_dashes(state.status).c_str());
     ImGui::PushTextWrapPos(0.f);  // as notas longas não podem sair pela borda
+    ImGui::Separator();
+
+    ImGui::TextUnformatted("Volume da captura");
+    if (ImGui::SliderInt("##capture_vol", &state.capture_volume, kMinCaptureVolumePercent,
+                         kMaxCaptureVolumePercent, "%d%%")) {
+      state.capture_volume = clamp_capture_volume_percent(state.capture_volume);
+      actions_.volume_changed = true;
+    }
+    ImGui::TextDisabled("HDMI no fone / caixa  |  0-100  |  nao vai para o preset");
     ImGui::Separator();
 
     if (ImGui::Checkbox("Overlay HUD", &state.hud_visible)) actions_.hud_changed = true;

@@ -182,7 +182,10 @@ void AudioMonitor::thread_main(std::string prefer) {
           if (muted_ || (flags & AUDCLNT_BUFFERFLAGS_SILENT)) {
             std::memset(out, 0, static_cast<size_t>(to_write) * frame_bytes);
           } else {
-            std::memcpy(out, data, static_cast<size_t>(to_write) * frame_bytes);
+            const size_t nbytes = static_cast<size_t>(to_write) * frame_bytes;
+            std::memcpy(out, data, nbytes);
+            apply_capture_volume_mix_pcm(out, to_write, mix->nChannels, mix->wBitsPerSample,
+                                        capture_volume_gain(volume_.load()));
           }
           arc->ReleaseBuffer(to_write, 0);
         }

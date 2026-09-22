@@ -221,6 +221,8 @@ struct PersistedSettings {
   int color_space = 0;        // ColorSpace::Default (BT.709)
   int color_range = 0;        // ColorRange::Limited
   int capture_buffering = 0;  // CaptureBuffering::Disabled
+  // HDMI WASAPI monitor gain (CFG). App setting — never a user preset field.
+  int capture_volume = 100;
 };
 
 enum class RenodxVisualPreset : int {
@@ -775,44 +777,173 @@ inline int parse_reshade_nr_pass_count(const std::string& text, int fallback = 1
   return raw;
 }
 
-// Multipass registers two Home overlays (RenoDX DLSS + Neural Resolution). Keep NR panel collapsed.
-inline std::string collapse_reshade_imgui_window(std::string text, const char* title) {
+// Home overlay layout. Extra RenoDX panels stay off-screen — Collapsed=1 still shows a title bar.
+inline constexpr const char* kReshadeVisibleImguiGeom = "Pos=8,,8,Size=520,,900,Collapsed=0";
+inline constexpr const char* kReshadeHiddenImguiGeom = "Pos=-8000,,-8000,Size=1,,1,Collapsed=1";
+inline constexpr const char* kReshadeHomeKrishTitle = "RenoDX DLSS5 Generic";
+// Krish v4.7 register_overlay title is the C-string with a trailing space (21 chars).
+inline constexpr const char* kReshadeHomeKrishTitleSpaced = "RenoDX DLSS5 Generic ";
+inline constexpr const char* kReshadeHomeMultipassTitle = "RenoDX DLSS";
+
+inline constexpr const char* kReshadeKrishSettingsOverlay =
+    "DLSS 5 Neural Rendering@renodx-dlss5.addon64";
+inline constexpr const char* kReshadeChromeDocked0 =
+    "Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,0";
+inline constexpr const char* kReshadeChromeDocked1 =
+    "Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,1";
+inline constexpr const char* kReshadeChromeDocked2 =
+    "Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,2";
+inline constexpr const char* kReshadeChromeDocked3 =
+    "Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,3";
+inline constexpr const char* kReshadeChromeDocked4 =
+    "Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,4";
+inline constexpr const char* kReshadeChromeDocked5 =
+    "Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,5";
+
+inline std::string reshade_imgui_window_token(const char* title, const char* geom) {
+  std::string t = "[Window][";
+  t += title ? title : "";
+  t += "],";
+  t += geom ? geom : kReshadeHiddenImguiGeom;
+  return t;
+}
+
+inline std::string reshade_imgui_window_token(const char* title, bool visible) {
+  return reshade_imgui_window_token(title, visible ? kReshadeVisibleImguiGeom : kReshadeHiddenImguiGeom);
+}
+
+inline std::string upsert_reshade_imgui_window(std::string text, const char* title, const char* geom) {
   if (!title || !title[0]) return text;
+  const std::string token = reshade_imgui_window_token(title, geom);
   const std::string marker = std::string("[Window][") + title + "]";
-  const auto pos = text.find(marker);
-  if (pos == std::string::npos) return text;
-  const auto collapsed = text.find("Collapsed=", pos);
-  if (collapsed == std::string::npos) return text;
-  const auto next_window = text.find("[Window][", pos + marker.size());
-  if (next_window != std::string::npos && collapsed > next_window) return text;
-  const auto val = collapsed + 10;  // after Collapsed=
-  if (val < text.size() && (text[val] == '0' || text[val] == '1')) text[val] = '1';
+
+  std::size_t pos = 0;
+  while ((pos = text.find(marker, pos)) != std::string::npos) {
+    const auto next = text.find("[Window][", pos + marker.size());
+    const auto nl = text.find_first_of("\r\n", pos);
+    std::size_t end = text.size();
+    if (next != std::string::npos && (nl == std::string::npos || next < nl))
+      end = next;
+    else if (nl != std::string::npos)
+      end = nl;
+    text.replace(pos, end - pos, token);
+    const auto after = pos + token.size();
+    if (after < text.size() && text.compare(after, 8, "[Window]") == 0) text.insert(after, ",");
+    pos = after;
+  }
+
+  pos = 0;
+  bool saw_window = false;
+  while ((pos = text.find("Window=", pos)) != std::string::npos) {
+    const bool at_line = (pos == 0) || text[pos - 1] == '\n' || text[pos - 1] == '\r';
+    if (!at_line) {
+      pos += 7;
+      continue;
+    }
+    saw_window = true;
+    const auto line_end = text.find_first_of("\r\n", pos);
+    const std::size_t end = line_end == std::string::npos ? text.size() : line_end;
+    const std::string line = text.substr(pos, end - pos);
+    if (line.find(marker) == std::string::npos) {
+      std::size_t insert_at = end;
+      if (insert_at > pos + 7) {
+        const char prev = text[insert_at - 1];
+        if (prev != '=' && prev != ',') {
+          text.insert(insert_at, ",");
+          ++insert_at;
+        }
+      }
+      text.insert(insert_at, token);
+      pos = insert_at + token.size();
+    } else {
+      pos = end == std::string::npos ? text.size() : end + 1;
+    }
+  }
+
+  if (!saw_window) {
+    if (!text.empty() && text.back() != '\n') text.push_back('\n');
+    text += "Window=";
+    text += token;
+    text.push_back('\n');
+  }
+  return text;
+}
+
+inline std::string upsert_reshade_imgui_window(std::string text, const char* title, bool visible) {
+  return upsert_reshade_imgui_window(std::move(text), title,
+                                    visible ? kReshadeVisibleImguiGeom : kReshadeHiddenImguiGeom);
+}
+
+inline std::string collapse_reshade_imgui_window(std::string text, const char* title) {
+  return upsert_reshade_imgui_window(std::move(text), title, /*visible=*/false);
+}
+
+// ReShade 6.6 Begin() titles are "Label###id" (locale + id). Bare "###home" is a ghost
+// key: DockId/Selected attach to windows that never exist, so Home falls back to Início.
+inline constexpr const char kReshadeWinHomePt[] = "In\xC3\xAD" "cio###home";
+inline constexpr const char kReshadeWinHomeEn[] = "Home###home";
+inline constexpr const char kReshadeWinAddonsPt[] = "Complementos###addons";
+inline constexpr const char kReshadeWinAddonsEn[] = "Add-ons###addons";
+inline constexpr const char kReshadeWinSettingsPt[] = "Configura\xC3\xA7\xC3\xB5" "es###settings";
+inline constexpr const char kReshadeWinSettingsEn[] = "Settings###settings";
+inline constexpr const char kReshadeWinStatsPt[] = "Estat\xC3\xAD" "sticas###statistics";
+inline constexpr const char kReshadeWinStatsEn[] = "Statistics###statistics";
+inline constexpr const char kReshadeWinAboutPt[] = "Sobre###about";
+inline constexpr const char kReshadeWinAboutEn[] = "About###about";
+
+inline std::string upsert_reshade_overlay_chrome(std::string text, bool addons_first = false) {
+  const char* g_home = addons_first ? kReshadeChromeDocked1 : kReshadeChromeDocked0;
+  const char* g_addons = addons_first ? kReshadeChromeDocked0 : kReshadeChromeDocked1;
+  const char* home_names[] = {"###home", kReshadeWinHomeEn, kReshadeWinHomePt};
+  const char* addons_names[] = {"###addons", kReshadeWinAddonsEn, kReshadeWinAddonsPt};
+  const char* settings_names[] = {"###settings", kReshadeWinSettingsEn, kReshadeWinSettingsPt};
+  const char* stats_names[] = {"###statistics", kReshadeWinStatsEn, kReshadeWinStatsPt};
+  const char* log_names[] = {"###log", "Log###log"};
+  const char* about_names[] = {"###about", kReshadeWinAboutEn, kReshadeWinAboutPt};
+  for (const char* n : home_names) text = upsert_reshade_imgui_window(std::move(text), n, g_home);
+  for (const char* n : addons_names) text = upsert_reshade_imgui_window(std::move(text), n, g_addons);
+  for (const char* n : settings_names)
+    text = upsert_reshade_imgui_window(std::move(text), n, kReshadeChromeDocked2);
+  for (const char* n : stats_names)
+    text = upsert_reshade_imgui_window(std::move(text), n, kReshadeChromeDocked3);
+  for (const char* n : log_names) text = upsert_reshade_imgui_window(std::move(text), n, kReshadeChromeDocked4);
+  for (const char* n : about_names)
+    text = upsert_reshade_imgui_window(std::move(text), n, kReshadeChromeDocked5);
+  return text;
+}
+
+// ImHashStr("addons") with ReShade 6.6 CRC32C — Complementos tab.
+inline constexpr const char* kReshadeDockingSelectAddons =
+    "[Docking][Data],DockNode  ID=0x00000001 Pos=931,,128 Size=895,,1296 Selected=0x84F87037,"
+    "DockSpace ID=0xB0DF600F Window=0xCC18005E Pos=8,,8 Size=2544,,1424 CentralNode=1";
+
+// Complete addon overlay of the active motor (cena / Pass Count / knobs). The other motor stays off-screen.
+// 1x: same tab bar as 2x, Complementos selected, Krish settings expanded.
+inline std::string sanitize_home_windows(std::string text, bool multipass) {
+  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeKrishTitle, !multipass);
+  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeKrishTitleSpaced, !multipass);
+  text = upsert_reshade_imgui_window(std::move(text), "DLSS 5 Neural Rendering", !multipass);
+  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeMultipassTitle, multipass);
+  text = upsert_reshade_imgui_window(std::move(text), "RenoDX-DLSSNR", multipass);
+  text = upsert_reshade_imgui_window(std::move(text), "RenoDX Neural Resolution", multipass);
+  text = upsert_reshade_overlay_chrome(std::move(text), /*addons_first=*/!multipass);
+  if (!multipass) {
+    text = apply_keyed_value(std::move(text), "OverlayCollapsed=", kReshadeKrishSettingsOverlay);
+    text = apply_keyed_value(std::move(text), "Docking=", kReshadeDockingSelectAddons);
+  }
   return text;
 }
 
 inline std::string sanitize_multipass_home_windows(std::string text) {
-  text = collapse_reshade_imgui_window(std::move(text), "RenoDX-DLSSNR");
-  text = collapse_reshade_imgui_window(std::move(text), "RenoDX Neural Resolution");
-  const char* seed =
-      "[Window][RenoDX DLSS],Pos=8,,8,Size=520,,900,Collapsed=0,"
-      "[Window][RenoDX-DLSSNR],Pos=8,,8,Size=520,,900,Collapsed=1,"
-      "[Window][RenoDX Neural Resolution],Pos=8,,8,Size=520,,900,Collapsed=1";
-  if (text.find("[Window][RenoDX DLSS]") != std::string::npos ||
-      text.find("[Window][RenoDX-DLSSNR]") != std::string::npos ||
-      text.find("[Window][RenoDX Neural Resolution]") != std::string::npos) {
-    return text;
-  }
-  const auto w = text.find("Window=");
-  if (w == std::string::npos) {
-    if (!text.empty() && text.back() != '\n') text.push_back('\n');
-    text += "Window=";
-    text += seed;
-    text.push_back('\n');
-    return text;
-  }
-  const auto end = text.find_first_of("\r\n", w);
-  text.insert(end == std::string::npos ? text.size() : end, seed);
-  return text;
+  return sanitize_home_windows(std::move(text), true);
+}
+
+inline std::string sanitize_stable_home_windows(std::string text) {
+  return sanitize_home_windows(std::move(text), false);
+}
+
+inline std::string sanitize_home_windows_for_pass(std::string text, int pass_count) {
+  return sanitize_home_windows(std::move(text), nr_pass_count_uses_multipass_addon(pass_count));
 }
 
 // Align DirectNeuralRendering* keys (2/3/4=1.5x default look; 5 = 2x otimizado exclusivo).
@@ -870,6 +1001,7 @@ inline std::string apply_reshade_stable_look_defaults(std::string text, int visu
   text = apply_keyed_int(std::move(text), "NREnableUpscaling=", 1);
   text = apply_keyed_int(std::move(text), "NeuralUplift=", 1);
   text = apply_reshade_visual_look_keys(std::move(text), visual_preset);
+  text = sanitize_stable_home_windows(std::move(text));
   return text;
 }
 

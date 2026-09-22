@@ -1,4 +1,5 @@
 #include "nexuscap/settings_store.hpp"
+#include "nexuscap/audio.hpp"
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/dlss5_bridge.hpp"
 
@@ -210,6 +211,7 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "color_space=" << clamp_color_space(s.color_space) << "\n";
   o << "color_range=" << clamp_color_range(s.color_range) << "\n";
   o << "capture_buffering=" << clamp_capture_buffering(s.capture_buffering) << "\n";
+  o << "capture_volume=" << clamp_capture_volume_percent(s.capture_volume) << "\n";
   o << "show_fps=" << (s.ui.show_fps ? 1 : 0) << "\n";
   o << "advanced_metrics=" << (s.ui.advanced_metrics ? 1 : 0) << "\n";
   o << "mini_overlay=" << (s.ui.mini_overlay ? 1 : 0) << "\n";
@@ -284,6 +286,7 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "color_space") s.color_space = clamp_color_space(std::atoi(val.c_str()));
       else if (key == "color_range") s.color_range = clamp_color_range(std::atoi(val.c_str()));
       else if (key == "capture_buffering") s.capture_buffering = clamp_capture_buffering(std::atoi(val.c_str()));
+      else if (key == "capture_volume") s.capture_volume = clamp_capture_volume_percent(std::atoi(val.c_str()));
       else if (key == "show_fps") s.ui.show_fps = (val == "1" || val == "true");
       else if (key == "advanced_metrics") s.ui.advanced_metrics = (val == "1" || val == "true");
       else if (key == "mini_overlay") s.ui.mini_overlay = (val == "1" || val == "true");
@@ -547,8 +550,9 @@ bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int vi
   if (!in) return false;
   std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   in.close();
+  const bool mp = nr_pass_count_uses_multipass_addon(p);
   text = apply_reshade_addon_path(std::move(text), p);
-  if (nr_pass_count_uses_multipass_addon(p)) {
+  if (mp) {
     text = apply_reshade_multipass_look_defaults(std::move(text), p, v);
   } else {
     text = apply_reshade_stable_look_defaults(std::move(text), v);

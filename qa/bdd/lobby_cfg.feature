@@ -18,6 +18,17 @@ Funcionalidade: CFG do menu principal
     Quando eu fecho o app e abro de novo
     Entao as mesmas opcoes voltam
 
+  @importante @hdmi
+  Cenario: Volume da captura no topo do CFG e nao vai para preset
+    Dado que o painel Configuracoes (CFG) esta aberto
+    Entao Volume da captura e o primeiro bloco (acima do Frame Gen)
+    Quando eu movo o slider de 0 a 100
+    Entao o som HDMI no fone / caixa muda na hora
+    E %LOCALAPPDATA%\NexusCap\settings.ini grava capture_volume
+    Quando eu salvo ou aplico um preset
+    Entao o volume fica igual
+    E o arquivo .nexuscap-preset nao tem capture_volume
+
   @critico @hdmi
   Cenario: Esc fecha o CFG do lobby e nao o app
     Quando eu aperto Esc
@@ -160,7 +171,7 @@ Funcionalidade: CFG do menu principal
     # ctest -R unit — from_persisted, apply-plan, FG missing, sem tocar placa
     Dado um snapshot do CFG do lobby (HUD, Pass, look, FG, escala)
     Entao user_preset_from_persisted redonda os mesmos campos do Ctrl+M
-    E aplicar no PersistedSettings nao escreve device_name, hotkeys nem fg_path
+    E aplicar no PersistedSettings nao escreve device_name, hotkeys, fg_path nem capture_volume
     E 1x para 2x otimizado pede relaunch de motor no lobby
     E FG no preset sem Lossless aplica o resto e deixa FG off
 

@@ -565,10 +565,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       std::printf("audio: monitorando %s -> saida padrao\n",
                   audio_prefer.empty() ? "auto" : audio_prefer.c_str());
       append_log(cfg.log_dir, "audio monitor started (" + (audio_prefer.empty() ? "auto" : audio_prefer) + ")");
+      audio.set_volume(cfg.capture_volume);
     }
   } else if (cfg.perf_test && cfg.perf_test_audio && !cfg.smoke) {
     std::string aerr;
     const std::string audio_side = perf_test_audio_sidecar_path(cfg.video_path);
+    clip_audio.set_volume(cfg.capture_volume);
     if (!clip_audio.start(cfg.video_path, audio_side, aerr)) {
       std::fprintf(stderr, "perf-test audio: %s (continuando sem som)\n", aerr.c_str());
       append_log(cfg.log_dir, "perf-test clip audio fail: " + aerr);
@@ -1392,6 +1394,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.fg_busy = fg.busy();
       ui.hud_visible = g_overlay.load();
       ui.overlay_no_bg = cfg.overlay_no_bg;
+      ui.capture_volume = clamp_capture_volume_percent(cfg.capture_volume);
       ui.live_console = cfg.live_console;
       ui.overlay_console = cfg.overlay_console;
       ui.signal_w = overlay.capture_w > 0 ? overlay.capture_w : cap_w;
@@ -1481,6 +1484,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           ps.ui.overlay_no_bg = cfg.overlay_no_bg;
           save_settings(ps, settings_default_path(), serr);
         }
+      }
+      if (act.volume_changed) {
+        cfg.capture_volume = clamp_capture_volume_percent(ui.capture_volume);
+        audio.set_volume(cfg.capture_volume);
+        clip_audio.set_volume(cfg.capture_volume);
+        PersistedSettings ps = default_settings();
+        std::string serr;
+        load_settings(ps, settings_default_path(), serr);
+        ps.capture_volume = cfg.capture_volume;
+        save_settings(ps, settings_default_path(), serr);
       }
       if (act.console_changed) {
         cfg.live_console = static_cast<int>(clamp_live_console(ui.live_console));
@@ -2106,6 +2119,7 @@ int main(int argc, char** argv) {
     } else {
       nexuscap::apply_perf_test_plan_to_config(nexuscap::perf_test_plan_from_config(cfg), cfg);
     }
+    cfg.capture_volume = nexuscap::clamp_capture_volume_percent(settings.capture_volume);
     if (cfg.fg_path.empty()) cfg.fg_path = settings.fg_path;
     {
       std::string bundled;
@@ -2127,16 +2141,16 @@ int main(int argc, char** argv) {
     }
     (void)nexuscap::sync_nr_pass_count_files(base.string(), boot_pass, boot_preset);
     (void)nexuscap::sync_renodx_visual_preset_files(base.string(), boot_preset, boot_pass);
-    {
-      const bool want_nr = cfg.perf_test ? true : (settings.enhance_renodx && settings.neural_rendering);
-      (void)nexuscap::sync_neural_rendering_enabled_files(base.string(), want_nr, want_nr);
-      if (cfg.perf_test) {
-        (void)nexuscap::sync_mgf_techniques_for_phase(base.string(), true);
-      }
-    }
     // Feed locks work_resolution at the first swapchain: 100% when the lobby opens first
     // (sharp menus), session scale when we boot straight into capture (--autostart / --perf-test).
     const bool lobby_first = cfg.show_lobby && !cfg.autostart && !cfg.perf_test;
+    {
+      const bool want_nr = cfg.perf_test ? true : (settings.enhance_renodx && settings.neural_rendering);
+      (void)nexuscap::sync_neural_rendering_enabled_files(base.string(), want_nr, want_nr);
+      // HDMI --autostart must mount the same MGF chain as lobby Iniciar. Leaving
+      // Techniques= empty (lobby CFG live OFF) boots passthrough with HUD nr=on.
+      (void)nexuscap::sync_mgf_techniques_for_phase(base.string(), want_nr && !lobby_first);
+    }
     (void)nexuscap::sync_feed_work_resolution_in_dir(
         base.string(), nexuscap::feed_work_resolution_at_boot(lobby_first, boot_scale));
   }
@@ -2163,6 +2177,7 @@ int main(int argc, char** argv) {
     cfg.advanced_metrics = settings.ui.advanced_metrics;
     cfg.mini_overlay = settings.ui.mini_overlay;
     cfg.overlay_no_bg = settings.ui.overlay_no_bg;
+    cfg.capture_volume = nexuscap::clamp_capture_volume_percent(settings.capture_volume);
     cfg.hw_info = settings.ui.hw_info;
     cfg.hide_panel_on_capture = true;
     cfg.sync_image = settings.ui.sync_image;
@@ -2262,6 +2277,7 @@ int main(int argc, char** argv) {
       settings.ui.live_overlay = cfg.live_overlay;
       settings.ui.overlay_console = cfg.overlay_console;
       settings.ui.overlay_no_bg = cfg.overlay_no_bg;
+      settings.capture_volume = nexuscap::clamp_capture_volume_percent(cfg.capture_volume);
       settings.ui.live_console =
           nexuscap::live_console_key(nexuscap::clamp_live_console(cfg.live_console));
       {

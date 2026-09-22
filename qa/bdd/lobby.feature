@@ -122,3 +122,13 @@ Funcionalidade: Tela principal (lobby)
     Quando eu abro o app e inicio a sessao com RenoDX
     Entao o Pass Count e 1x
     E o Neural Rendering esta ON
+
+  @importante @hdmi
+  Cenario: Benchmark abre com o volume do CFG
+    Dado que o Volume da captura no CFG esta em 40
+    Quando eu abro o menu Benchmark
+    Entao o slider Volume da captura mostra 40
+    Quando eu clico Iniciar benchmark
+    Entao o som do clipe toca a 40
+    E o plano do teste nao grava capture_volume
+    E o CFG HDMI (Pass, tom, escala) nao muda

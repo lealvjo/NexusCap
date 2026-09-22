@@ -23,6 +23,17 @@ Funcionalidade: Atalhos
       | F4           | analyze                                     |
       | Ctrl+M       | abre o CFG da sessao                        |
 
+  @critico @hdmi
+  Cenario: Home abre o mod completo do motor ativo
+    Dado que estou na sessao de captura com RenoDX ligado
+    Quando o Pass Count e 1x e eu aperto Home
+    Entao abre o overlay completo com todas as abas e Complementos no Krish (cena e NR)
+    E o overlay do motor 1,5x/2x/3x nao aparece
+    Quando o Pass Count e 1,5x ou 2x ou 3x e eu aperto Home
+    Entao abre o multipass completo (RenoDX DLSS + DLSSNR + Neural Resolution) com Pass Count
+    E o overlay do 1x nao aparece
+    E nunca abrem os dois motores juntos
+
   @critico @atalho @hdmi
   Cenario: F12 abre o CFG no lobby
     Dado que estou no lobby

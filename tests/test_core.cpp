@@ -2,6 +2,7 @@
 #include "doctest.h"
 
 #include "nexuscap/analyze.hpp"
+#include "nexuscap/audio.hpp"
 #include "nexuscap/audio_select.hpp"
 #include "nexuscap/clock.hpp"
 #include "nexuscap/color_bt709.hpp"
@@ -26,6 +27,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -1744,6 +1746,118 @@ TEST_CASE("lobby preview and audio toggles persist and stop capture") {
   CHECK_FALSE(missing.ui.preview_mute);
 }
 
+TEST_CASE("capture volume clamps gain persists and stays out of presets") {
+  CHECK(clamp_capture_volume_percent(-8) == 0);
+  CHECK(clamp_capture_volume_percent(0) == 0);
+  CHECK(clamp_capture_volume_percent(40) == 40);
+  CHECK(clamp_capture_volume_percent(100) == 100);
+  CHECK(clamp_capture_volume_percent(140) == 100);
+  CHECK(capture_volume_gain(0) == 0.f);
+  CHECK(capture_volume_gain(50) == 0.5f);
+  CHECK(capture_volume_gain(100) == 1.f);
+  CHECK(capture_volume_gain(-8) == 0.f);
+  CHECK(capture_volume_gain(140) == 1.f);
+
+  float f32[] = {1.f, -0.5f, 0.25f};
+  apply_capture_volume_f32(f32, 3, 1.f);
+  CHECK(f32[0] == 1.f);
+  CHECK(f32[1] == -0.5f);
+  apply_capture_volume_f32(f32, 3, 0.5f);
+  CHECK(f32[0] == 0.5f);
+  CHECK(f32[1] == -0.25f);
+  CHECK(f32[2] == 0.125f);
+  apply_capture_volume_f32(f32, 3, 0.f);
+  CHECK(f32[0] == 0.f);
+  CHECK(f32[1] == 0.f);
+  CHECK(f32[2] == 0.f);
+
+  std::int16_t s16[] = {1000, -800, 400};
+  apply_capture_volume_s16(s16, 3, 0.5f);
+  CHECK(s16[0] == 500);
+  CHECK(s16[1] == -400);
+  CHECK(s16[2] == 200);
+  apply_capture_volume_s16(s16, 3, 0.f);
+  CHECK(s16[0] == 0);
+  CHECK(s16[1] == 0);
+
+  CHECK(default_settings().capture_volume == kDefaultCaptureVolumePercent);
+  PersistedSettings s = default_settings();
+  s.capture_volume = 40;
+  PersistedSettings out;
+  REQUIRE(parse_settings_ini(serialize_settings_ini(s), out));
+  CHECK(out.capture_volume == 40);
+  CHECK(serialize_settings_ini(out).find("capture_volume=40") != std::string::npos);
+
+  PersistedSettings missing;
+  REQUIRE(parse_settings_ini("show_fps=1\n", missing));
+  CHECK(missing.capture_volume == 100);
+  PersistedSettings over;
+  REQUIRE(parse_settings_ini("capture_volume=180\n", over));
+  CHECK(over.capture_volume == 100);
+  PersistedSettings under;
+  REQUIRE(parse_settings_ini("capture_volume=-3\n", under));
+  CHECK(under.capture_volume == 0);
+
+  AppConfig cfg;
+  apply_persisted_to_config(out, cfg);
+  CHECK(cfg.capture_volume == 40);
+  cfg.capture_volume = 25;
+  apply_session_cfg_to_persisted(cfg, s);
+  CHECK(s.capture_volume == 25);
+  cfg.perf_test = true;
+  cfg.capture_volume = 90;
+  apply_session_cfg_to_persisted(cfg, s);
+  CHECK(s.capture_volume == 25);
+
+  UserPreset p;
+  p.name = "TLOU 2x";
+  p.nr_pass_count = 5;
+  p.renodx_preset = 2;
+  p.fg_enabled = true;
+  p.fg_multiplier = 3;
+  p.scale_percent = 80;
+  const std::string text = serialize_user_preset(p);
+  CHECK(text.find("capture_volume") == std::string::npos);
+  UserPreset junk;
+  REQUIRE(parse_user_preset(text + "capture_volume=10\n", junk));
+  CHECK(junk.scale_percent == 80);
+
+  PersistedSettings disk = default_settings();
+  disk.capture_volume = 40;
+  disk.device_name = "Elgato 4K X";
+  apply_user_preset_to_persisted(disk, p, true);
+  CHECK(disk.capture_volume == 40);
+  CHECK(disk.nr_pass_count == 5);
+  PersistedSettings before = default_settings();
+  before.capture_volume = 40;
+  before.device_name = "Elgato 4K X";
+  PersistedSettings after = before;
+  apply_user_preset_to_persisted(after, p, true);
+  CHECK(persisted_untouched_by_user_preset(before, after));
+  CHECK(after.capture_volume == 40);
+
+  SessionCfgState sess{};
+  sess.capture_volume = 40;
+  sess.nr_pass_count = 1;
+  stamp_session_from_user_preset(sess, p, true);
+  CHECK(sess.capture_volume == 40);
+  CHECK(sess.nr_pass_count == 5);
+
+  AppConfig bench;
+  bench.capture_volume = 40;
+  PerfTestPlan plan;
+  apply_perf_test_plan_to_config(plan, bench);
+  CHECK(bench.perf_test);
+  CHECK(bench.capture_volume == 40);
+  CHECK(serialize_perf_test_plan(plan).find("capture_volume") == std::string::npos);
+  CHECK(perf_test_plan_from_config(bench).audio == bench.perf_test_audio);
+
+  float mix[] = {1.f, -1.f};
+  apply_capture_volume_mix_pcm(mix, 1, 2, 32, 0.5f);
+  CHECK(mix[0] == 0.5f);
+  CHECK(mix[1] == -0.5f);
+}
+
 TEST_CASE("lobby preview cfg live default off persist and labels") {
   CHECK_FALSE(default_settings().ui.preview_cfg_live);
   CHECK_FALSE(lobby_preview_cfg_wanted(true, false));
@@ -2145,10 +2259,94 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
         "[Window][RenoDX-DLSSNR],Pos=8,,8,Size=100,,100,Collapsed=0,"
         "[Window][RenoDX Neural Resolution],Pos=1,,1,Size=10,,10,Collapsed=0\n";
     win = sanitize_multipass_home_windows(std::move(win));
-    CHECK(win.find("[Window][RenoDX-DLSSNR],Pos=8,,8,Size=100,,100,Collapsed=1") != std::string::npos);
-    CHECK(win.find("[Window][RenoDX Neural Resolution],Pos=1,,1,Size=10,,10,Collapsed=1") !=
+    CHECK(win.find("[Window][RenoDX DLSS],Pos=8,,8,Size=520,,900,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX-DLSSNR],Pos=8,,8,Size=520,,900,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX Neural Resolution],Pos=8,,8,Size=520,,900,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS5 Generic],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS5 Generic ],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
+    CHECK(win.find("[Window][DLSS 5 Neural Rendering],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") !=
           std::string::npos);
-    CHECK(win.find("[Window][RenoDX DLSS],Pos=8,,8,Size=100,,100,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS5 Generic],Pos=8,,8") == std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS5 Generic ],Pos=8,,8") == std::string::npos);
+    CHECK(win.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8") == std::string::npos);
+  }
+  {
+    std::string win =
+        "Window=[Window][RenoDX DLSS],Pos=8,,8,Size=100,,100,Collapsed=0,"
+        "[Window][RenoDX-DLSSNR],Pos=8,,8,Size=100,,100,Collapsed=0,"
+        "[Window][RenoDX Neural Resolution],Pos=1,,1,Size=10,,10,Collapsed=0\n";
+    win = sanitize_stable_home_windows(std::move(win));
+    CHECK(win.find("OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64") != std::string::npos);
+    CHECK(win.find("[Window][###addons],Pos=931,,128,Size=895,,1296,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][Complementos###addons],Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,0") !=
+          std::string::npos);
+    CHECK(win.find("[Window][Add-ons###addons],Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,0") !=
+          std::string::npos);
+    CHECK(win.find("[Window][###home],Pos=931,,128,Size=895,,1296,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][In\xC3\xAD" "cio###home],Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,1") !=
+          std::string::npos);
+    CHECK(win.find("[Window][###about],Pos=931,,128,Size=895,,1296,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][###about],Pos=-8000") == std::string::npos);
+    CHECK(win.find("Selected=0x84F87037") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS5 Generic],Pos=8,,8,Size=520,,900,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS5 Generic ],Pos=8,,8,Size=520,,900,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=520,,900,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX-DLSSNR],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX Neural Resolution],Pos=-8000,,-8000") != std::string::npos);
+    CHECK(win.find("[Window][RenoDX DLSS],Pos=8,,8") == std::string::npos);
+    CHECK(win.find("[Window][RenoDX-DLSSNR],Pos=8,,8") == std::string::npos);
+  }
+  {
+    std::string win =
+        "[OVERLAY]\n"
+        "Window=[Window][Debug##Default],Pos=60,,60,Size=400,,400,Collapsed=0,"
+        "[Window][RenoDX DLSS5 Generic],Pos=8,,8,Size=520,,900,Collapsed=0,"
+        "[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=520,,900,Collapsed=0,"
+        "[Window][RenoDX-DLSSNR],Pos=-8000,,-8000,Size=1,,1,Collapsed=1,"
+        "[Window][RenoDX DLSS],Pos=8,,8,Size=520,,900,Collapsed=0\n"
+        "[RenoDX.DLSS5]\n"
+        "Window=[Window][RenoDX DLSS],Pos=8,,8,Size=520,,900,Collapsed=0,"
+        "[Window][RenoDX-DLSSNR],Pos=-8000,,-8000,Size=1,,1,Collapsed=1,"
+        "[Window][RenoDX Neural Resolution],Pos=-8000,,-8000,Size=1,,1,Collapsed=1\n"
+        "PostSaveCommandHideWindow=0\n"
+        "[ADDON]\n"
+        "OverlayCollapsed=1\n";
+    auto nfind = [](const std::string& s, const std::string& n) {
+      int c = 0;
+      for (std::size_t p = 0; (p = s.find(n, p)) != std::string::npos; p += n.size()) ++c;
+      return c;
+    };
+    const std::string one = sanitize_home_windows_for_pass(win, 1);
+    CHECK(nfind(one, "[Window][RenoDX DLSS5 Generic],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
+    CHECK(nfind(one, "[Window][RenoDX DLSS5 Generic ],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
+    CHECK(nfind(one, "[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
+    CHECK(nfind(one, "[Window][RenoDX DLSS],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
+    CHECK(nfind(one, "[Window][RenoDX-DLSSNR],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
+    CHECK(one.find("[Window][RenoDX DLSS],Pos=8,,8") == std::string::npos);
+    CHECK(one.find("[Window][RenoDX-DLSSNR],Pos=8,,8") == std::string::npos);
+    CHECK(one.find("PostSaveCommandHideWindow=0") != std::string::npos);
+    CHECK(one.find("OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64") != std::string::npos);
+    CHECK(one.find("OverlayCollapsed=1") == std::string::npos);
+    CHECK(one.find("[Window][###addons],Pos=931,,128,Size=895,,1296,Collapsed=0") != std::string::npos);
+    CHECK(one.find("[Window][Complementos###addons],Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,0") !=
+          std::string::npos);
+    CHECK(one.find("[Window][###about],Pos=931,,128,Size=895,,1296,Collapsed=0") != std::string::npos);
+    CHECK(one.find("[Window][###about],Pos=-8000") == std::string::npos);
+    CHECK(one.find("Selected=0x84F87037") != std::string::npos);
+
+    const std::string mp = sanitize_home_windows_for_pass(win, 4);
+    CHECK(nfind(mp, "[Window][RenoDX DLSS],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
+    CHECK(nfind(mp, "[Window][RenoDX-DLSSNR],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
+    CHECK(nfind(mp, "[Window][RenoDX Neural Resolution],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
+    CHECK(nfind(mp, "[Window][RenoDX DLSS5 Generic],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
+    CHECK(nfind(mp, "[Window][RenoDX DLSS5 Generic ],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
+    CHECK(nfind(mp, "[Window][DLSS 5 Neural Rendering],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
+    CHECK(mp.find("[Window][RenoDX DLSS5 Generic],Pos=8,,8") == std::string::npos);
+    CHECK(mp.find("[Window][RenoDX DLSS5 Generic ],Pos=8,,8") == std::string::npos);
+    CHECK(mp.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8") == std::string::npos);
+    CHECK(mp.find("[Window][###addons],Pos=931,,128") != std::string::npos);
+    CHECK(mp.find("[Window][###about],Pos=-8000") == std::string::npos);
   }
 
   PersistedSettings s = default_settings();
@@ -2348,6 +2546,38 @@ TEST_CASE("2x otimizado look is exclusive; 1x 1.5x 2x default 3x stay intact") {
   std::string stable = apply_reshade_stable_look_defaults("NRPreset=0\n", 0);
   CHECK(stable.find("DirectNeuralRenderingEncoding=") == std::string::npos);
   CHECK(stable.find("NRDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(stable.find("[Window][RenoDX DLSS5 Generic]") != std::string::npos);
+  CHECK(stable.find("[Window][RenoDX DLSS5 Generic],Pos=8,,8") != std::string::npos);
+  CHECK(stable.find("[Window][RenoDX DLSS5 Generic ],Pos=8,,8") != std::string::npos);
+  CHECK(stable.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8") != std::string::npos);
+  CHECK(stable.find("[Window][RenoDX-DLSSNR],Pos=-8000,,-8000") != std::string::npos);
+  CHECK(stable.find("[Window][RenoDX DLSS],Pos=-8000,,-8000") != std::string::npos);
+  CHECK(stable.find("OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64") != std::string::npos);
+  CHECK(stable.find("[Window][###addons],Pos=931,,128") != std::string::npos);
+  CHECK(stable.find("[Window][Complementos###addons],Pos=931,,128") != std::string::npos);
+  CHECK(stable.find("[Window][###home],Pos=931,,128") != std::string::npos);
+  CHECK(stable.find("Selected=0x84F87037") != std::string::npos);
+}
+
+TEST_CASE("Krish addon overlay title keeps trailing space") {
+  const auto addon = std::filesystem::path(__FILE__).parent_path().parent_path() /
+                     "build" / "Release" / "addons-stable" / "renodx-dlss5.addon64";
+  REQUIRE(std::filesystem::exists(addon));
+  std::ifstream in(addon, std::ios::binary);
+  REQUIRE(in);
+  const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const char needle[] = "RenoDX DLSS5 Generic ";
+  bool isolated = false;
+  const std::size_t n = sizeof(needle);
+  for (std::size_t i = 0; i + n <= bytes.size(); ++i) {
+    if (std::memcmp(bytes.data() + i, needle, n) == 0) {
+      isolated = true;
+      break;
+    }
+  }
+  CHECK(isolated);
+  CHECK(std::string(kReshadeHomeKrishTitleSpaced) == needle);
+  CHECK(std::strlen(kReshadeHomeKrishTitleSpaced) == 21);
 }
 
 TEST_CASE("fullscreen checkbox save reflects exclusive_fullscreen on Iniciar") {
@@ -3083,17 +3313,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 1, 3));
+  CHECK(app_version_is(4, 1, 4));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.1.3");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.1.3") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.3");
+  CHECK(std::string(kAppVersion) == "4.1.4");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.1.4") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.4");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.1.3") != std::string::npos);
+  CHECK(lobby_t.find("4.1.4") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.1.3") != std::string::npos);
+  CHECK(sess_t.find("4.1.4") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -4839,6 +5069,7 @@ TEST_CASE("perf test lobby says Benchmark") {
   CHECK(std::string(perf_test_hz_blurb()).find("HDMI") != std::string::npos);
   CHECK(std::string(perf_test_audio_toggle()) == "Habilitar som no teste");
   CHECK(std::string(perf_test_audio_hint()).find("audio") != std::string::npos);
+  CHECK(serialize_perf_test_plan(PerfTestPlan{}).find("capture_volume") == std::string::npos);
 }
 
 TEST_CASE("restart notice explains the reason and covers the new process boot") {

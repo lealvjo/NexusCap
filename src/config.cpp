@@ -183,6 +183,7 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.color_space = clamp_color_space(s.color_space);
   cfg.color_range = clamp_color_range(s.color_range);
   cfg.capture_buffering = clamp_capture_buffering(s.capture_buffering);
+  cfg.capture_volume = clamp_capture_volume_percent(s.capture_volume);
   cfg.exclusive_fullscreen = s.ui.fullscreen;
   cfg.show_overlay = s.ui.show_fps;
   cfg.advanced_metrics = s.ui.advanced_metrics;

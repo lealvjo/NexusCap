@@ -142,7 +142,7 @@ $ini = @"
 [ADDON]
 AddonPath=.\addons-stable
 DisabledAddons=
-OverlayCollapsed=1
+OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64
 
 [DEPTH]
 UseAspectRatioHeuristics=1

@@ -1124,7 +1124,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           lobby_audio.stop();
         }
       }
-      if (lobby_audio.running()) lobby_audio.set_muted(settings.ui.preview_mute);
+      if (lobby_audio.running()) {
+        lobby_audio.set_muted(settings.ui.preview_mute);
+        lobby_audio.set_volume(settings.capture_volume);
+      }
     }
 
     // Lobby Present loads Bridge asynchronously — pulse only when carried runtime ≠ want.
@@ -1440,7 +1443,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             settings.ui.preview_mute = !settings.ui.preview_mute;
             std::string serr;
             save_settings(settings, settings_default_path(), serr);
-            if (lobby_audio.running()) lobby_audio.set_muted(settings.ui.preview_mute);
+            if (lobby_audio.running()) {
+              lobby_audio.set_muted(settings.ui.preview_mute);
+              lobby_audio.set_volume(settings.capture_volume);
+            }
           }
           ImGui::SameLine();
           if (!settings.ui.preview_enabled) {
@@ -1685,6 +1691,16 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                                ? "Ajuste e veja no preview ao vivo"
                                : "Ajuste grava para o Iniciar (preview sem NR)");
         ImGui::PushTextWrapPos(0.f);  // notas longas quebram linha em vez de sumir na borda
+        ImGui::Separator();
+        ImGui::TextUnformatted("Volume da captura");
+        if (ImGui::SliderInt("##capture_vol", &settings.capture_volume, kMinCaptureVolumePercent,
+                             kMaxCaptureVolumePercent, "%d%%")) {
+          settings.capture_volume = clamp_capture_volume_percent(settings.capture_volume);
+          if (lobby_audio.running()) lobby_audio.set_volume(settings.capture_volume);
+          std::string serr;
+          save_settings(settings, settings_default_path(), serr);
+        }
+        ImGui::TextDisabled("HDMI no fone / caixa  |  0-100  |  nao vai para o preset");
         ImGui::Separator();
         ImGui::TextUnformatted("Frame Gen (Lossless Scaling)");
         const bool fg_was = settings.fg_enabled;
@@ -2227,6 +2243,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
           settings.renodx_preset = clamp_renodx_visual_preset(settings.renodx_preset);
           settings.nr_pass_count = clamp_nr_pass_count(settings.nr_pass_count);
+          settings.capture_volume = clamp_capture_volume_percent(settings.capture_volume);
           if (!settings.enhance_renodx) settings.neural_rendering = false;
           std::string serr;
           save_settings(settings, settings_default_path(), serr);
@@ -2270,6 +2287,16 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextColored(nexuscap_accent_color(), "Simula a carga sem placa de captura");
         ImGui::PushTextWrapPos(0.f);
         ImGui::TextDisabled("%s", perf_test_lobby_blurb());
+        ImGui::Separator();
+        ImGui::TextUnformatted("Volume da captura");
+        if (ImGui::SliderInt("##perf_capture_vol", &settings.capture_volume, kMinCaptureVolumePercent,
+                             kMaxCaptureVolumePercent, "%d%%")) {
+          settings.capture_volume = clamp_capture_volume_percent(settings.capture_volume);
+          if (lobby_audio.running()) lobby_audio.set_volume(settings.capture_volume);
+          std::string serr;
+          save_settings(settings, settings_default_path(), serr);
+        }
+        ImGui::TextDisabled("abre com o volume do CFG  |  0-100  |  nao vai para o preset");
         ImGui::Separator();
 
         ImGui::TextUnformatted("Pass Count");
@@ -2387,6 +2414,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           } else if (!write_perf_test_plan_file(default_perf_test_plan_path(app_data_dir()), g_perf_plan)) {
             push_lobby_toast("Nao gravou o plano do teste");
           } else {
+            {
+              std::string serr;
+              settings.capture_volume = clamp_capture_volume_percent(settings.capture_volume);
+              save_settings(settings, settings_default_path(), serr);
+            }
             (void)sync_perf_test_pipeline_files(exe_dir_utf8(), g_perf_plan);
             motor_swap_title = perf_test_pipeline_notice_title();
             motor_swap_line = perf_test_pipeline_notice_detail();

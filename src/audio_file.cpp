@@ -248,15 +248,22 @@ void ClipAudioPlayer::thread_main(std::string video_path, std::string sidecar_pa
       continue;
     }
     const size_t need = static_cast<size_t>(avail) * frame_bytes;
+    UINT32 gained = 0;
     if (!play || q.size() < need) {
       std::memset(out, 0, need);
       if (play && !q.empty()) {
         std::memcpy(out, q.data(), q.size());
+        gained = frame_bytes > 0 ? static_cast<UINT32>(q.size() / frame_bytes) : 0;
         q.clear();
       }
     } else {
       std::memcpy(out, q.data(), need);
       q.erase(q.begin(), q.begin() + static_cast<std::ptrdiff_t>(need));
+      gained = avail;
+    }
+    if (gained > 0) {
+      apply_capture_volume_mix_pcm(out, gained, mix->nChannels, mix->wBitsPerSample,
+                                  capture_volume_gain(volume_.load()));
     }
     render->ReleaseBuffer(avail, 0);
     Sleep(5);

@@ -46,6 +46,18 @@ Funcionalidade: CFG na captura (Ctrl+M)
     Entao compacto, mini, ADV e live perdem ou ganham a placa preta na hora
     E o processo nao reinicia
 
+  @importante @hdmi
+  Cenario: Volume da captura no topo do CFG e nao vai para preset
+    Dado que o CFG da sessao esta aberto
+    Entao Volume da captura e o primeiro bloco (acima de Overlay HUD)
+    Quando eu movo o slider de 0 a 100
+    Entao o som HDMI no fone / caixa muda na hora
+    E o processo nao reinicia
+    E %LOCALAPPDATA%\NexusCap\settings.ini grava capture_volume
+    Quando eu salvo ou aplico um preset
+    Entao o volume fica igual
+    E o arquivo .nexuscap-preset nao tem capture_volume
+
   @critico @hdmi
   Esquema do Cenario: NR on/off em qualquer Pass Count reinicia e volta na sessao
     Dado que o Pass Count atual e <modo>
@@ -160,6 +172,7 @@ Funcionalidade: CFG na captura (Ctrl+M)
     E TLOU e tlou sao o mesmo preset
     E o 33o nome novo recusa sem apagar os outros
     E o snapshot redonda HUD, fundo, console, NR, look, Pass, FG+xN e escala
+    E o snapshot nao leva o volume da captura
     E Pass e FG ficam independentes no parse
     E look 2 no 1x e Cinematic e no 2x e Model C — o numero gravado nao traduz sozinho
     E o segundo save com o mesmo nome substitui (count 1)
@@ -173,7 +186,7 @@ Funcionalidade: CFG na captura (Ctrl+M)
     E aplicar gera as mesmas SessionCfgActions do Ctrl+M (fill-safe)
     E 1x para 2x otimizado pede relaunch de motor; 2x default para 2x+ nao
     E FG no preset sem Lossless aplica o resto e deixa FG off
-    E aplicar nao escreve device_name, hotkeys nem fg_path
+    E aplicar nao escreve device_name, hotkeys, fg_path nem capture_volume
     E --perf-test / Benchmark recusa load e save
 
   @critico @hdmi

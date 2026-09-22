@@ -1873,7 +1873,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (ImGui::RadioButton("2x default##nrpass", pass_i == 2)) pass_i = 2;
         if (ImGui::RadioButton("2x otimizado##nrpass", pass_i == 5)) pass_i = 5;
         ImGui::SameLine();
-        if (ImGui::RadioButton("3x##nrpass", pass_i == 3)) pass_i = 3;
+        if (ImGui::RadioButton("3x default##nrpass", pass_i == 3)) pass_i = 3;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("3x otimizado##nrpass", pass_i == 6)) pass_i = 6;
         settings.nr_pass_count = clamp_nr_pass_count(pass_i);
         if (settings.nr_pass_count != pass_before) {
           wchar_t exe_path[MAX_PATH]{};
@@ -2330,7 +2332,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (ImGui::RadioButton("2x default##perfpass", pass_i == 2)) pass_i = 2;
         if (ImGui::RadioButton("2x otimizado##perfpass", pass_i == 5)) pass_i = 5;
         ImGui::SameLine();
-        if (ImGui::RadioButton("3x##perfpass", pass_i == 3)) pass_i = 3;
+        if (ImGui::RadioButton("3x default##perfpass", pass_i == 3)) pass_i = 3;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("3x otimizado##perfpass", pass_i == 6)) pass_i = 6;
         g_perf_plan.nr_pass_count = clamp_nr_pass_count(pass_i);
         ImGui::TextDisabled("%s", nr_pass_count_2x_opt_hint());
 

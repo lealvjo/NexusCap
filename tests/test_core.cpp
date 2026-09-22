@@ -2222,36 +2222,53 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(clamp_nr_pass_count(3) == 3);
   CHECK(clamp_nr_pass_count(4) == 4);
   CHECK(clamp_nr_pass_count(5) == 5);
-  CHECK(clamp_nr_pass_count(9) == 5);
+  CHECK(clamp_nr_pass_count(6) == 6);
+  CHECK(clamp_nr_pass_count(9) == 6);
   CHECK(nr_reshade_pass_count(1) == 1);
   CHECK(nr_reshade_pass_count(2) == 2);
   CHECK(nr_reshade_pass_count(3) == 3);
   CHECK(nr_reshade_pass_count(4) == 1);  // 1.5x writes INI PassCount=1
   CHECK(nr_reshade_pass_count(5) == 2);  // 2x otimizado: dois evaluates
+  CHECK(nr_reshade_pass_count(6) == 3);  // 3x otimizado: tres evaluates
   CHECK(std::string(nr_pass_count_label(1)).find("1x") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(2)).find("2x") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(2)).find("default") != std::string::npos);
-  CHECK(std::string(nr_pass_count_label(3)).find("3x") != std::string::npos);
+  CHECK(std::string(nr_pass_count_label(3)).find("default") != std::string::npos);
+  CHECK(std::string(nr_pass_count_short(3)) == "3x");
   CHECK(std::string(nr_pass_count_label(4)).find("1,5x") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(5)).find("otimizado") != std::string::npos);
+  CHECK(std::string(nr_pass_count_label(6)).find("otimizado") != std::string::npos);
   CHECK(std::string(nr_pass_count_short(4)) == "1.5x");
   CHECK(std::string(nr_pass_count_short(5)) == "2x+");
+  CHECK(std::string(nr_pass_count_short(6)) == "3x+");
   CHECK_FALSE(nr_pass_is_2x_optimized(2));
   CHECK(nr_pass_is_2x_optimized(5));
+  CHECK_FALSE(nr_pass_is_3x_optimized(3));
+  CHECK(nr_pass_is_3x_optimized(6));
+  CHECK_FALSE(nr_pass_uses_optimized_look(3));
+  CHECK(nr_pass_uses_optimized_look(4));
+  CHECK(nr_pass_uses_optimized_look(5));
+  CHECK(nr_pass_uses_optimized_look(6));
+  CHECK_FALSE(nr_pass_uses_optimized_look(2));
+  CHECK_FALSE(nr_pass_uses_optimized_look(1));
   CHECK_FALSE(nr_pass_count_uses_multipass_addon(1));
   CHECK(nr_pass_count_uses_multipass_addon(2));
   CHECK(nr_pass_count_uses_multipass_addon(3));
   CHECK(nr_pass_count_uses_multipass_addon(4));
   CHECK(nr_pass_count_uses_multipass_addon(5));
+  CHECK(nr_pass_count_uses_multipass_addon(6));
   CHECK(nr_pass_count_change_needs_relaunch(1, 2));
   CHECK(nr_pass_count_change_needs_relaunch(1, 4));
   CHECK(nr_pass_count_change_needs_relaunch(4, 1));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(4, 2));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 3));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 5));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(3, 6));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 1));
   CHECK_FALSE(nr_pass_count_change_applies_live(2, 5));
   CHECK_FALSE(nr_pass_count_change_applies_live(5, 2));
+  CHECK_FALSE(nr_pass_count_change_applies_live(3, 6));
+  CHECK_FALSE(nr_pass_count_change_applies_live(6, 3));
 
   {
     std::string win =
@@ -2440,7 +2457,7 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
 #endif
 }
 
-TEST_CASE("2x otimizado look is exclusive; 1x 1.5x 2x default 3x stay intact") {
+TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact") {
   CHECK(nr_reshade_pass_count(2) == 2);
   CHECK(nr_reshade_pass_count(5) == 2);
   CHECK(perf_test_pass_work(2) == 2.0);
@@ -2470,12 +2487,15 @@ TEST_CASE("2x otimizado look is exclusive; 1x 1.5x 2x default 3x stay intact") {
   const std::string look2b = apply(2);
   const std::string look3 = apply(3);
   const std::string look5 = apply(5);
+  const std::string look6 = apply(6);
   CHECK(look2 == look2b);
   CHECK(look2 != look5);
   CHECK(look15 != look2);
   CHECK(look15 != look5);
   CHECK(look3 != look2);
   CHECK(look3 != look5);
+  CHECK(look3 != look6);
+  CHECK(look6 != look5);
 
   CHECK(parse_reshade_nr_pass_count(look1) == 1);
   CHECK(look1.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
@@ -2483,14 +2503,20 @@ TEST_CASE("2x otimizado look is exclusive; 1x 1.5x 2x default 3x stay intact") {
   CHECK(parse_reshade_nr_pass_count(look2) == 2);
   CHECK(parse_reshade_nr_pass_count(look3) == 3);
   CHECK(parse_reshade_nr_pass_count(look5) == 2);
+  CHECK(parse_reshade_nr_pass_count(look6) == 3);
 
-  CHECK(look15.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
-  CHECK(look15.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
-  CHECK(look15.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
-  CHECK(look15.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingHookPoint=2") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingUiCorrectionMode=2") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingDiffuseWhiteNits=100") != std::string::npos);
+  CHECK(look15.find("NRDiffuseWhiteNits=100") != std::string::npos);
+  CHECK(look15.find("NRUICorrection=2") != std::string::npos);
   CHECK(look15.find("DirectNeuralRenderingAutoMask=1") != std::string::npos);
   CHECK(look15.find("DirectNeuralRenderingIntensity=1") != std::string::npos);
   CHECK(look15.find("DirectNeuralRenderingLocalStructureStrength=1") != std::string::npos);
+  CHECK(look15.find("DirectNeuralRenderingPassCount=1") != std::string::npos);
+  CHECK(reshade_look_is_2x_optimized(look15));
+  CHECK(infer_multipass_ui_pass_count("AddonPath=.\\addons-multipass\n" + look15) == 4);
 
   CHECK(look2.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
   CHECK(look2.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
@@ -2506,6 +2532,17 @@ TEST_CASE("2x otimizado look is exclusive; 1x 1.5x 2x default 3x stay intact") {
   CHECK(look3.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
   CHECK(look3.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
   CHECK(look3.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(look3.find("DirectNeuralRenderingPassCount=3") != std::string::npos);
+  CHECK_FALSE(reshade_look_is_2x_optimized(look3));
+  CHECK(infer_multipass_ui_pass_count("AddonPath=.\\addons-multipass\n" + look3) == 3);
+
+  CHECK(look6.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
+  CHECK(look6.find("DirectNeuralRenderingHookPoint=2") != std::string::npos);
+  CHECK(look6.find("DirectNeuralRenderingUiCorrectionMode=2") != std::string::npos);
+  CHECK(look6.find("DirectNeuralRenderingDiffuseWhiteNits=100") != std::string::npos);
+  CHECK(look6.find("DirectNeuralRenderingPassCount=3") != std::string::npos);
+  CHECK(reshade_look_is_2x_optimized(look6));
+  CHECK(infer_multipass_ui_pass_count("AddonPath=.\\addons-multipass\n" + look6) == 6);
 
   CHECK(look5.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
   CHECK(look5.find("DirectNeuralRenderingHookPoint=2") != std::string::npos);
@@ -2523,11 +2560,25 @@ TEST_CASE("2x otimizado look is exclusive; 1x 1.5x 2x default 3x stay intact") {
   CHECK_FALSE(reshade_look_is_2x_optimized(look2));
 
   {
+    std::string infer15 = "AddonPath=.\\addons-multipass\n" + look15;
+    infer15 = apply_reshade_look_for_current_stack(std::move(infer15), 0);
+    CHECK(reshade_look_is_2x_optimized(infer15));
+    CHECK(parse_reshade_nr_pass_count(infer15) == 1);
+    CHECK(infer_multipass_ui_pass_count(infer15) == 4);
+  }
+  {
     std::string infer = "AddonPath=.\\addons-multipass\n" + look5;
     infer = apply_reshade_look_for_current_stack(std::move(infer), 0);
     CHECK(reshade_look_is_2x_optimized(infer));
     CHECK(parse_reshade_nr_pass_count(infer) == 2);
     CHECK(infer_multipass_ui_pass_count(infer) == 5);
+  }
+  {
+    std::string infer6 = "AddonPath=.\\addons-multipass\n" + look6;
+    infer6 = apply_reshade_look_for_current_stack(std::move(infer6), 0);
+    CHECK(reshade_look_is_2x_optimized(infer6));
+    CHECK(parse_reshade_nr_pass_count(infer6) == 3);
+    CHECK(infer_multipass_ui_pass_count(infer6) == 6);
   }
   {
     std::string infer = "AddonPath=.\\addons-multipass\n" + look2;
@@ -3313,17 +3364,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 1, 5));
+  CHECK(app_version_is(4, 1, 6));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.1.5");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.1.5") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.5");
+  CHECK(std::string(kAppVersion) == "4.1.6");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.1.6") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.6");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.1.5") != std::string::npos);
+  CHECK(lobby_t.find("4.1.6") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.1.5") != std::string::npos);
+  CHECK(sess_t.find("4.1.6") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -6743,6 +6794,7 @@ TEST_CASE("user preset list summary is Pass look FG and scale") {
   CHECK(user_preset_list_summary(make_user_preset("c", 4, 1, true, 2, 100)) == "1.5x  Model B  FG x2  100%");
   CHECK(user_preset_list_summary(make_user_preset("d", 2, 0, true, 4, 100)) == "2x  Model A  FG x4  100%");
   CHECK(user_preset_list_summary(make_user_preset("e", 3, 2, false, 3, 80)) == "3x  Model C  FG off  80%");
+  CHECK(user_preset_list_summary(make_user_preset("e6", 6, 2, false, 3, 80)) == "3x+  Model C  FG off  80%");
   CHECK(user_preset_list_summary(make_user_preset("f", 1, 2, true, 3, 100)) == "1x  Cinematic  FG x3  100%");
   CHECK(user_preset_list_summary(make_user_preset("g", 1, 1, false, 2, 100)) == "1x  Natural  FG off  100%");
   CHECK(user_preset_list_summary(make_user_preset("a", 5, 2, true, 3, 100)).find("HUD") == std::string::npos);
@@ -6952,7 +7004,7 @@ TEST_CASE("user preset import export extra field junk and clamp") {
       "fg_multiplier=7\nscale_percent=3\n",
       wild));
   CHECK(wild.nr_pass_count == clamp_nr_pass_count(99));
-  CHECK(wild.nr_pass_count == 5);
+  CHECK(wild.nr_pass_count == 6);
   CHECK(wild.scale_percent == clamp_scale_percent(3));
   CHECK(wild.scale_percent == 25);
   CHECK(wild.fg_multiplier == clamp_fg_multiplier(7));

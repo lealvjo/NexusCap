@@ -237,8 +237,8 @@ inline int clamp_renodx_visual_preset(int v) {
   return v;
 }
 
-// Pass Count UI: 1=Krish, 2=2x default, 3=3x, 4=1.5x, 5=2x otimizado (PassCount=2 + look).
-inline constexpr int kMaxNrPassCount = 5;
+// Pass Count UI: 1=Krish, 2=2x default, 3=3x default, 4=1.5x, 5=2x otimizado, 6=3x otimizado.
+inline constexpr int kMaxNrPassCount = 6;
 
 inline int clamp_nr_pass_count(int v) {
   if (v < 1) return 1;
@@ -247,14 +247,22 @@ inline int clamp_nr_pass_count(int v) {
 }
 
 inline bool nr_pass_is_2x_optimized(int ui) { return clamp_nr_pass_count(ui) == 5; }
+inline bool nr_pass_is_3x_optimized(int ui) { return clamp_nr_pass_count(ui) == 6; }
 
-// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1; UI 5 → INI 2).
+// 1,5x / 2x otimizado / 3x otimizado: mesmo gancho de cor/UI (menos flicker/ghost).
+inline bool nr_pass_uses_optimized_look(int ui) {
+  const int v = clamp_nr_pass_count(ui);
+  return v == 4 || v == 5 || v == 6;
+}
+
+// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1; UI 5 → INI 2; UI 6 → INI 3).
 inline int nr_reshade_pass_count(int ui) {
   switch (clamp_nr_pass_count(ui)) {
     case 2:
     case 5:
       return 2;
     case 3:
+    case 6:
       return 3;
     case 4:
       return 1;
@@ -268,11 +276,13 @@ inline const char* nr_pass_count_label(int v) {
     case 2:
       return "2x default";
     case 3:
-      return "3x multipass";
+      return "3x default";
     case 4:
       return "1,5x";
     case 5:
       return "2x otimizado";
+    case 6:
+      return "3x otimizado";
     default:
       return "1x estavel";
   }
@@ -280,16 +290,16 @@ inline const char* nr_pass_count_label(int v) {
 
 // Hint under the Pass Count radios (lobby F12 e Ctrl+M).
 inline const char* nr_pass_count_15x_hint() {
-  return "1,5x exclusivo NexusCap: rede neural perto do 2x, sem perder desempenho.";
+  return "1,5x exclusivo NexusCap: gancho do 2x otimizado — menos flicker, melhor imagem, sem perder desempenho.";
 }
 inline const char* nr_pass_count_2x_opt_hint() {
   return "2x otimizado exclusivo NexusCap: 2x de verdade, menos flicker e ghost, melhor qualidade de imagem.";
 }
 inline const char* nr_pass_count_23x_hint() {
-  return "2x default / 3x: mais processados. O 2x otimizado e a opcao estavel.";
+  return "2x default / 3x default: look antigo. 2x/3x otimizado: menos flicker.";
 }
 
-// Short HUD tag: "1x" / "1.5x" / "2x" / "2x+" / "3x".
+// Short HUD tag: "1x" / "1.5x" / "2x" / "2x+" / "3x" / "3x+".
 inline const char* nr_pass_count_short(int v) {
   switch (clamp_nr_pass_count(v)) {
     case 2:
@@ -300,12 +310,14 @@ inline const char* nr_pass_count_short(int v) {
       return "1.5x";
     case 5:
       return "2x+";
+    case 6:
+      return "3x+";
     default:
       return "1x";
   }
 }
 
-// 1 → Krish. 2/3/4/5 → addons-multipass (4 = 1.5x; 5 = 2x otimizado).
+// 1 → Krish. 2+ → addons-multipass (4 = 1.5x; 5 = 2x otimizado; 6 = 3x otimizado).
 inline bool nr_pass_count_uses_multipass_addon(int pass_count) {
   const int v = clamp_nr_pass_count(pass_count);
   return v >= 2;
@@ -946,10 +958,10 @@ inline std::string sanitize_home_windows_for_pass(std::string text, int pass_cou
   return sanitize_home_windows(std::move(text), nr_pass_count_uses_multipass_addon(pass_count));
 }
 
-// Align DirectNeuralRendering* keys (2/3/4=1.5x default look; 5 = 2x otimizado exclusivo).
+// Align DirectNeuralRendering* keys (2/3 = default look; 4/5/6 = gancho otimizado).
 inline std::string apply_reshade_multipass_look_defaults(std::string text, int pass_count,
                                                          int visual_preset = 0) {
-  const bool opt = nr_pass_is_2x_optimized(pass_count);
+  const bool opt = nr_pass_uses_optimized_look(pass_count);
   const int nits = opt ? 100 : 500;
   const int encoding = opt ? 2 : 0;
   const int hook = opt ? 2 : 1;
@@ -1015,7 +1027,11 @@ inline bool reshade_look_is_2x_optimized(const std::string& text) {
 
 inline int infer_multipass_ui_pass_count(const std::string& text) {
   const int raw = parse_reshade_nr_pass_count(text, 1);
-  if (raw == 2 && reshade_look_is_2x_optimized(text)) return 5;
+  if (reshade_look_is_2x_optimized(text)) {
+    if (raw == 2) return 5;
+    if (raw == 3) return 6;
+    if (raw == 1) return 4;
+  }
   return raw;
 }
 

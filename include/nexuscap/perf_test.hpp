@@ -450,6 +450,7 @@ inline double perf_test_pass_work(int nr_pass_count) {
     case 5:
       return 2.0;
     case 3:
+    case 6:
       return 3.0;
     default:
       return 1.0;

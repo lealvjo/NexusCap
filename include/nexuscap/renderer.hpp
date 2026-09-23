@@ -161,7 +161,7 @@ private:
   bool visible_ = false;
 };
 
-// Right-edge live strip: console / DLSS5 / FPS (+ FG bar) / frametime sparkline.
+// Right-edge live strip: console / DLSS 1x–3x+ / FG x2-x4|off / FPS / frametime sparkline.
 // Per-pixel alpha (UpdateLayeredWindow) — crisp on high-DPI; click opens console picker.
 class LiveOverlay {
 public:

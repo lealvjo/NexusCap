@@ -24,14 +24,16 @@ enum class LiveConsole : int {
   XboxSx = 5,
   XboxOne = 6,
   Switch = 7,
+  Ps5Pro = 8,
 };
 
-inline constexpr int kLiveConsoleCount = 8;
+inline constexpr int kLiveConsoleCount = 9;
 
 // Lobby combo + overlay click menu (family order, not enum order).
 inline constexpr LiveConsole kLiveConsoleOrder[kLiveConsoleCount] = {
-    LiveConsole::Ps5,     LiveConsole::Ps4,     LiveConsole::Ps3,  LiveConsole::XboxSx,
-    LiveConsole::XboxSs,  LiveConsole::XboxOne, LiveConsole::Switch2, LiveConsole::Switch,
+    LiveConsole::Ps5,    LiveConsole::Ps5Pro, LiveConsole::Ps4,     LiveConsole::Ps3,
+    LiveConsole::XboxSx, LiveConsole::XboxSs, LiveConsole::XboxOne, LiveConsole::Switch2,
+    LiveConsole::Switch,
 };
 
 inline LiveConsole clamp_live_console(int v) {
@@ -40,6 +42,7 @@ inline LiveConsole clamp_live_console(int v) {
 }
 
 inline LiveConsole parse_live_console(const std::string& s) {
+  if (s == "ps5_pro" || s == "ps5pro" || s == "ps5-pro") return LiveConsole::Ps5Pro;
   if (s == "ps4") return LiveConsole::Ps4;
   if (s == "ps3") return LiveConsole::Ps3;
   if (s == "xbox_sx" || s == "xsx" || s == "series_x") return LiveConsole::XboxSx;
@@ -66,6 +69,8 @@ inline const char* live_console_key(LiveConsole c) {
       return "switch2";
     case LiveConsole::Switch:
       return "switch";
+    case LiveConsole::Ps5Pro:
+      return "ps5_pro";
     case LiveConsole::Ps5:
     default:
       return "ps5";
@@ -88,6 +93,8 @@ inline const char* live_console_label(LiveConsole c) {
       return "Switch 2";
     case LiveConsole::Switch:
       return "Switch";
+    case LiveConsole::Ps5Pro:
+      return "PS5 Pro";
     case LiveConsole::Ps5:
     default:
       return "PS5";
@@ -108,6 +115,8 @@ inline COLORREF live_console_color(LiveConsole c) {
     case LiveConsole::Switch2:
     case LiveConsole::Switch:
       return RGB(230, 0, 18);  // Switch red
+    case LiveConsole::Ps5Pro:
+      return RGB(0, 112, 210);  // PS5 Pro brighter blue
     case LiveConsole::Ps5:
     default:
       return RGB(0, 55, 145);  // PS5 dark blue
@@ -167,10 +176,108 @@ inline void format_live_fps_line(char* out, size_t out_n, double fps_cap, double
   }
 }
 
+// Live strip: same Pass tag as Mini/ADV (1x / 1.5x / 2x / 2x+ / 3x / 3x+).
 inline void format_live_dlss5_line(char* out, size_t out_n, bool dlss5_on, int pass_count = 1,
-                                  bool feed_on = true) {
+                                  bool /*feed_on*/ = true) {
   if (!out || out_n == 0) return;
-  format_dlss5_stack_hud_line(out, out_n, dlss5_on, feed_on, pass_count);
+  if (!dlss5_on) {
+    std::snprintf(out, out_n, "DLSS off");
+    return;
+  }
+  std::snprintf(out, out_n, "DLSS %s", nr_pass_count_short(pass_count));
+}
+
+// Frame Gen on the live strip. FG is always uppercase: "FG x2" / "FG x3" / "FG x4" / "FG off".
+inline void format_live_fg_line(char* out, size_t out_n, bool fg_on, int fg_mult) {
+  if (!out || out_n == 0) return;
+  int m = fg_mult;
+  if (m < 1) m = 1;
+  if (m > 4) m = 4;
+  if (fg_on && m >= 2) {
+    std::snprintf(out, out_n, "FG x%d", m);
+  } else {
+    std::snprintf(out, out_n, "FG off");
+  }
+}
+
+// Same RGB as the frametime sparkline (cap / x2 / x3 / x4).
+inline void live_fps_ft_rgb(int trace_k, bool stable, unsigned char& r, unsigned char& g, unsigned char& b) {
+  switch (trace_k) {
+    case 2:
+      r = 255;
+      g = 196;
+      b = 72;
+      return;
+    case 3:
+      r = 210;
+      g = 120;
+      b = 255;
+      return;
+    case 4:
+      r = 80;
+      g = 255;
+      b = 160;
+      return;
+    default:
+      if (stable) {
+        r = 90;
+        g = 220;
+        b = 255;
+      } else {
+        r = 255;
+        g = 140;
+        b = 90;
+      }
+  }
+}
+
+struct LiveFpsPart {
+  char text[24]{};
+  unsigned char r = 180;
+  unsigned char g = 184;
+  unsigned char b = 190;
+};
+
+// Lobby preview + tests: same chips as the session live strip.
+struct LiveStripLines {
+  char console[48]{};
+  char dlss[32]{};
+  char fg[32]{};
+  LiveFpsPart fps_lab;
+  LiveFpsPart fps_cap;
+  LiveFpsPart fps_sep;
+  LiveFpsPart fps_fg;
+  bool has_console = false;
+  bool has_fg_fps = false;
+};
+
+inline void fill_live_strip_lines(LiveStripLines& o, bool show_console, LiveConsole cons, bool dlss_on,
+                                 int pass_count, bool fg_on, int fg_mult, double fps_cap,
+                                 double fps_fg_est = 0.0, bool ft_stable = true) {
+  o = LiveStripLines{};
+  o.has_console = show_console;
+  if (show_console) format_overlay_console_chip(o.console, sizeof(o.console), cons);
+  format_live_dlss5_line(o.dlss, sizeof(o.dlss), dlss_on, pass_count, true);
+  format_live_fg_line(o.fg, sizeof(o.fg), fg_on, fg_mult);
+  std::snprintf(o.fps_lab.text, sizeof(o.fps_lab.text), "FPS  ");
+  o.fps_lab.r = 180;
+  o.fps_lab.g = 184;
+  o.fps_lab.b = 190;
+  live_fps_ft_rgb(1, ft_stable, o.fps_cap.r, o.fps_cap.g, o.fps_cap.b);
+  std::snprintf(o.fps_cap.text, sizeof(o.fps_cap.text), "%.1f", fps_cap);
+  int m = fg_mult;
+  if (m < 1) m = 1;
+  if (m > 4) m = 4;
+  if (fg_on && m >= 2) {
+    o.has_fg_fps = true;
+    std::snprintf(o.fps_sep.text, sizeof(o.fps_sep.text), " | ");
+    o.fps_sep.r = 140;
+    o.fps_sep.g = 144;
+    o.fps_sep.b = 150;
+    const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap * static_cast<double>(m));
+    std::snprintf(o.fps_fg.text, sizeof(o.fps_fg.text), "%.1f", fg);
+    live_fps_ft_rgb(m, ft_stable, o.fps_fg.r, o.fps_fg.g, o.fps_fg.b);
+  }
 }
 
 }  // namespace nexuscap

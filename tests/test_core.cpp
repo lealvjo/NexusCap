@@ -1094,6 +1094,42 @@ TEST_CASE("session HUD shows real|FG dual FPS when FG on") {
   CHECK(std::strstr(fg, "60") != nullptr);
   CHECK(std::strstr(fg, "120") != nullptr);
   CHECK(std::strstr(fg, "->") != nullptr);
+
+  HudFpsParts parts{};
+  fill_session_hud_fps_parts(parts, 60.0, 120.0, true, 2, true, true);
+  char joined[128]{};
+  join_hud_fps_parts(joined, sizeof(joined), parts);
+  format_session_hud_fps_line(line, sizeof(line), 60.0, 120.0, true, 2, true);
+  CHECK(std::string(joined) == std::string(line));
+  CHECK(parts.count >= 4);
+  CHECK(std::string(parts.parts[1].text) == "60.0");
+  CHECK(std::string(parts.parts[3].text) == "120.0");
+  {
+    const FgFtRgb cap = fg_frametime_trace_rgb(1, true);
+    const FgFtRgb x2 = fg_frametime_trace_rgb(2, true);
+    CHECK(parts.parts[1].r == cap.r);
+    CHECK(parts.parts[1].g == cap.g);
+    CHECK(parts.parts[1].b == cap.b);
+    CHECK(parts.parts[3].r == x2.r);
+    CHECK(parts.parts[3].g == x2.g);
+    CHECK(parts.parts[3].b == x2.b);
+  }
+  fill_session_hud_fps_parts(parts, 60.0, 240.0, true, 4, false, true);
+  join_hud_fps_parts(joined, sizeof(joined), parts);
+  format_session_hud_fps_line(line, sizeof(line), 60.0, 240.0, true, 4, false);
+  CHECK(std::string(joined) == std::string(line));
+  CHECK(std::string(parts.parts[3].text) == "240.0");
+  {
+    const FgFtRgb x4 = fg_frametime_trace_rgb(4, true);
+    CHECK(parts.parts[3].r == x4.r);
+    CHECK(parts.parts[3].g == x4.g);
+    CHECK(parts.parts[3].b == x4.b);
+  }
+  fill_session_hud_fps_parts(parts, 60.0, 0.0, false, 2, true, true);
+  join_hud_fps_parts(joined, sizeof(joined), parts);
+  format_session_hud_fps_line(line, sizeof(line), 60.0, 0.0, false, 2, true);
+  CHECK(std::string(joined) == std::string(line));
+  CHECK_FALSE(session_hud_fps_shows_cap_fg_split(joined));
 }
 
 TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
@@ -1153,17 +1189,28 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
       18.0, true, 8.5, 2.2, 2, 1, 5, 2560, 1440, 2560, 1440, 2560, 1440, 100, true, 59.9, 2.0, 2.1, 0, "Default",
       hw_compact, 1.5, 900, 20.0, "lsfg3", 60.0);
   CHECK(nseg >= 8);
-  bool saw_green_fps = false;
+  bool saw_cap_cyan = false;
+  bool saw_fg_gold = false;
   bool saw_purple_nr = false;
   bool saw_yellow_cpu = false;
   bool saw_cyan_gpu = false;
+  const FgFtRgb cap_rgb = fg_frametime_trace_rgb(1, true);
+  const FgFtRgb x2_rgb = fg_frametime_trace_rgb(2, true);
   for (int i = 0; i < nseg; ++i) {
-    if (std::strstr(segs[i].text, "60.0") && segs[i].g >= 240) saw_green_fps = true;
+    if (std::strcmp(segs[i].text, "60.0") == 0 && segs[i].r == cap_rgb.r && segs[i].g == cap_rgb.g &&
+        segs[i].b == cap_rgb.b) {
+      saw_cap_cyan = true;
+    }
+    if (std::strcmp(segs[i].text, "120.0") == 0 && segs[i].r == x2_rgb.r && segs[i].g == x2_rgb.g &&
+        segs[i].b == x2_rgb.b) {
+      saw_fg_gold = true;
+    }
     if (std::strstr(segs[i].text, "DLSS5") && segs[i].b >= 240) saw_purple_nr = true;
     if (std::strstr(segs[i].text, "i5-11400F") && segs[i].r >= 240 && segs[i].g >= 200) saw_yellow_cpu = true;
     if (std::strstr(segs[i].text, "RTX 5070") && segs[i].b >= 240) saw_cyan_gpu = true;
   }
-  CHECK(saw_green_fps);
+  CHECK(saw_cap_cyan);
+  CHECK(saw_fg_gold);
   CHECK(saw_purple_nr);
   CHECK(saw_yellow_cpu);
   CHECK(saw_cyan_gpu);
@@ -3364,17 +3411,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 1, 6));
+  CHECK(app_version_is(4, 1, 7));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.1.6");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.1.6") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.6");
+  CHECK(std::string(kAppVersion) == "4.1.7");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.1.7") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.7");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.1.6") != std::string::npos);
+  CHECK(lobby_t.find("4.1.7") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.1.6") != std::string::npos);
+  CHECK(sess_t.find("4.1.7") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -4290,7 +4337,10 @@ TEST_CASE("live console enum parse/label/color") {
   CHECK(parse_live_console("nsw2") == LiveConsole::Switch2);
   CHECK(parse_live_console("switch") == LiveConsole::Switch);
   CHECK(parse_live_console("switch1") == LiveConsole::Switch);
+  CHECK(parse_live_console("ps5_pro") == LiveConsole::Ps5Pro);
+  CHECK(parse_live_console("ps5pro") == LiveConsole::Ps5Pro);
   CHECK(std::string(live_console_key(LiveConsole::Ps5)) == "ps5");
+  CHECK(std::string(live_console_key(LiveConsole::Ps5Pro)) == "ps5_pro");
   CHECK(std::string(live_console_key(LiveConsole::Ps4)) == "ps4");
   CHECK(std::string(live_console_key(LiveConsole::Ps3)) == "ps3");
   CHECK(std::string(live_console_key(LiveConsole::XboxSs)) == "xbox_ss");
@@ -4299,6 +4349,7 @@ TEST_CASE("live console enum parse/label/color") {
   CHECK(std::string(live_console_key(LiveConsole::Switch2)) == "switch2");
   CHECK(std::string(live_console_key(LiveConsole::Switch)) == "switch");
   CHECK(std::string(live_console_label(LiveConsole::Ps5)) == "PS5");
+  CHECK(std::string(live_console_label(LiveConsole::Ps5Pro)) == "PS5 Pro");
   CHECK(std::string(live_console_label(LiveConsole::Ps4)) == "PS4");
   CHECK(std::string(live_console_label(LiveConsole::Ps3)) == "PS3");
   CHECK(std::string(live_console_label(LiveConsole::XboxSs)) == "Xbox Series S");
@@ -4307,6 +4358,7 @@ TEST_CASE("live console enum parse/label/color") {
   CHECK(std::string(live_console_label(LiveConsole::Switch2)) == "Switch 2");
   CHECK(std::string(live_console_label(LiveConsole::Switch)) == "Switch");
   CHECK(live_console_color(LiveConsole::Ps5) == RGB(0, 55, 145));
+  CHECK(live_console_color(LiveConsole::Ps5Pro) == RGB(0, 112, 210));
   CHECK(live_console_color(LiveConsole::Ps4) == RGB(0, 85, 185));
   CHECK(live_console_color(LiveConsole::Ps3) == RGB(0, 32, 90));
   CHECK(live_console_color(LiveConsole::XboxSs) == RGB(16, 124, 16));
@@ -4439,13 +4491,49 @@ TEST_CASE("live fps line shows FG bar when on") {
   format_live_fps_line(line, sizeof(line), 59.9, 0.0, false, 2);
   CHECK(std::string(line) == "59.9");
   format_live_dlss5_line(line, sizeof(line), true, 1, true);
-  CHECK(std::string(line).find("1x") != std::string::npos);
-  CHECK(std::string(line).find("stable") != std::string::npos);
-  CHECK(std::string(line).find("ON") != std::string::npos);
+  CHECK(std::string(line) == "DLSS 1x");
+  CHECK(std::string(line).find("stable") == std::string::npos);
+  CHECK(std::string(line).find("Model") == std::string::npos);
+  format_live_dlss5_line(line, sizeof(line), true, 2, true);
+  CHECK(std::string(line) == "DLSS 2x");
+  format_live_dlss5_line(line, sizeof(line), true, 5, true);
+  CHECK(std::string(line) == "DLSS 2x+");
+  format_live_dlss5_line(line, sizeof(line), true, 6, true);
+  CHECK(std::string(line) == "DLSS 3x+");
+  format_live_dlss5_line(line, sizeof(line), true, 3, true);
+  CHECK(std::string(line) == "DLSS 3x");
+  format_live_dlss5_line(line, sizeof(line), true, 4, true);
+  CHECK(std::string(line) == "DLSS 1.5x");
   format_live_dlss5_line(line, sizeof(line), false, 2, true);
-  CHECK(std::string(line).find("2x") != std::string::npos);
-  CHECK(std::string(line).find("multipass") != std::string::npos);
-  CHECK(std::string(line).find("off") != std::string::npos);
+  CHECK(std::string(line) == "DLSS off");
+  format_live_fg_line(line, sizeof(line), true, 2);
+  CHECK(std::string(line) == "FG x2");
+  format_live_fg_line(line, sizeof(line), true, 3);
+  CHECK(std::string(line) == "FG x3");
+  format_live_fg_line(line, sizeof(line), true, 4);
+  CHECK(std::string(line) == "FG x4");
+  format_live_fg_line(line, sizeof(line), false, 3);
+  CHECK(std::string(line) == "FG off");
+  CHECK(std::strstr(line, "FG") == line);
+  LiveStripLines strip{};
+  fill_live_strip_lines(strip, true, LiveConsole::Ps5Pro, true, 5, true, 3, 60.0);
+  CHECK(strip.has_console);
+  CHECK(std::string(strip.console) == "PS5 Pro");
+  CHECK(std::string(strip.dlss) == "DLSS 2x+");
+  CHECK(std::string(strip.fg) == "FG x3");
+  CHECK(std::string(strip.fps_cap.text) == "60.0");
+  CHECK(strip.has_fg_fps);
+  CHECK(std::string(strip.fps_fg.text) == "180.0");
+  {
+    const FgFtRgb cap = fg_frametime_trace_rgb(1, true);
+    CHECK(strip.fps_cap.r == cap.r);
+    CHECK(strip.fps_cap.g == cap.g);
+    CHECK(strip.fps_cap.b == cap.b);
+    const FgFtRgb fg3 = fg_frametime_trace_rgb(3, true);
+    CHECK(strip.fps_fg.r == fg3.r);
+    CHECK(strip.fps_fg.g == fg3.g);
+    CHECK(strip.fps_fg.b == fg3.b);
+  }
 }
 
 TEST_CASE("apply_persisted copies live overlay flags") {
@@ -4688,6 +4776,13 @@ TEST_CASE("3.0 HUD stack line names motor and pass count") {
   CHECK(std::strstr(line, "1.5x") != nullptr);
   CHECK(std::strstr(line, "multipass") != nullptr);
   CHECK(std::strstr(line, "1x") == nullptr);  // must not look like Krish 1x
+  format_dlss5_stack_hud_line(line, sizeof(line), true, true, 5);
+  CHECK(std::strstr(line, "2x+") != nullptr);
+  CHECK(std::strstr(line, "2x+") == std::strstr(line, "2x"));
+  format_live_dlss5_line(line, sizeof(line), true, 5, true);
+  CHECK(std::string(line) == "DLSS 2x+");
+  format_live_dlss5_line(line, sizeof(line), true, 6, true);
+  CHECK(std::string(line) == "DLSS 3x+");
 }
 
 TEST_CASE("1.5x mini overlay names multipass motor not 1x stable") {
@@ -4709,6 +4804,28 @@ TEST_CASE("1.5x mini overlay names multipass motor not 1x stable") {
   CHECK(found_15);
   CHECK(found_motor);
   CHECK_FALSE(found_1x_token);
+}
+
+TEST_CASE("2x otimizado mini and live overlays show 2x+") {
+  MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+  char a[8]{}, b[8]{};
+  const int n = format_mini_overlay_segments(
+      segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 0.0, false, 2, true, true, 16.7, 16.6, 17.0,
+      18.0, true, 8.5, 2.2, 0, 0, 0, 2560, 1440, 2560, 1440, 2560, 1440, 100, true, 59.9, 2.0, 2.1, 0, "Default",
+      nullptr, 0, 900, 20.0, nullptr, 60.0, 5);
+  bool found_2xp = false;
+  bool found_bare_2x = false;
+  for (int i = 0; i < n; ++i) {
+    if (std::strstr(segs[i].text, "2x+")) found_2xp = true;
+    if (std::strstr(segs[i].text, "2x") && std::strstr(segs[i].text, "2x+") == nullptr) found_bare_2x = true;
+  }
+  CHECK(found_2xp);
+  CHECK_FALSE(found_bare_2x);
+  char live[32]{};
+  format_live_dlss5_line(live, sizeof(live), true, 5, true);
+  CHECK(std::string(live) == "DLSS 2x+");
+  format_live_dlss5_line(live, sizeof(live), true, 2, true);
+  CHECK(std::string(live) == "DLSS 2x");
 }
 
 TEST_CASE("apply_keyed_int_all rewrites every occurrence") {

@@ -718,6 +718,18 @@ std::wstring utf8_to_wide_hud(const std::string& s) {
   return w;
 }
 
+void paint_hud_fps_parts(HDC hdc, int x, int y, const HudFpsParts& parts) {
+  for (int i = 0; i < parts.count; ++i) {
+    const std::wstring w = utf8_to_wide_hud(parts.parts[i].text);
+    if (w.empty()) continue;
+    SetTextColor(hdc, RGB(parts.parts[i].r, parts.parts[i].g, parts.parts[i].b));
+    TextOutW(hdc, x, y, w.c_str(), static_cast<int>(w.size()));
+    SIZE sz{};
+    GetTextExtentPoint32W(hdc, w.c_str(), static_cast<int>(w.size()), &sz);
+    x += static_cast<int>(sz.cx);
+  }
+}
+
 void hud_draw_title_with_console(HDC hdc, int x, int y, const wchar_t* prefix, const OverlayState& o) {
   SetTextColor(hdc, RGB(255, 210, 70));
   const int plen = static_cast<int>(wcslen(prefix));
@@ -1301,11 +1313,13 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     int n = 0;
     swprintf(lines[n++], 180, L"NexusCap  [%s]  ", mode);
     swprintf(lines[n++], 180, L"%dx%d @ %.0f", o.capture_w, o.capture_h, o.target_fps);
+    HudFpsParts fps_parts{};
     {
-      char fps_line[128]{};
       const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
-      format_session_hud_fps_line(fps_line, sizeof(fps_line), show_fps, o.fps_fg_est, o.fg_on, o.fg_multiplier,
-                                  true);
+      fill_session_hud_fps_parts(fps_parts, show_fps, o.fps_fg_est, o.fg_on, o.fg_multiplier, true,
+                                o.ft_stable);
+      char fps_line[128]{};
+      join_hud_fps_parts(fps_line, sizeof(fps_line), fps_parts);
       swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
     }
     if (fg_frametime_trace_count(o.fg_on, o.fg_multiplier) >= 2) {
@@ -1351,6 +1365,10 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
         hud_draw_title_with_console(hdc, 14, y, lines[i], o);
         continue;
       }
+      if (i == 2) {
+        paint_hud_fps_parts(hdc, 14, y, fps_parts);
+        continue;
+      }
       SetTextColor(hdc, c);
       TextOutW(hdc, 14, y, lines[i], static_cast<int>(wcslen(lines[i])));
     }
@@ -1378,11 +1396,12 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     swprintf(lines[2], 180, L"signal  %dx%d @ %.0f   work %dx%d (100%%)   out %dx%d", o.capture_w,
              o.capture_h, o.target_fps, o.work_w, o.work_h, o.output_w, o.output_h);
   }
-  swprintf(lines[3], 180, L"FPS     %.1f  (smooth %.1f)", o.fps, o.fps_smooth);
+  HudFpsParts fps_parts{};
+  fill_session_hud_fps_parts(fps_parts, o.fps_smooth, o.fps_fg_est, o.fg_on, o.fg_multiplier, false,
+                            o.ft_stable);
   {
     char fps_line[128]{};
-    format_session_hud_fps_line(fps_line, sizeof(fps_line), o.fps_smooth, o.fps_fg_est, o.fg_on, o.fg_multiplier,
-                                false);
+    join_hud_fps_parts(fps_line, sizeof(fps_line), fps_parts);
     swprintf(lines[3], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
   }
   const OverlayFtStatus ft_st = overlay_ft_status(
@@ -1473,6 +1492,10 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     const int y = 10 + i * 28;
     if (i == 0) {
       hud_draw_title_with_console(hdc, 14, y, lines[i], o);
+      continue;
+    }
+    if (i == 3) {
+      paint_hud_fps_parts(hdc, 14, y, fps_parts);
       continue;
     }
     SetTextColor(hdc, color_for_adv(i));
@@ -1981,33 +2004,33 @@ void LiveOverlay::present() const {
   HFONT old_m = static_cast<HFONT>(SelectObject(measure, font));
 
   const LiveConsole cons = clamp_live_console(console_);
-  std::wstring cons_w;
-  if (state_.overlay_console) {
-    char chip[48]{};
-    format_overlay_console_chip(chip, sizeof(chip), cons);
-    cons_w = utf8_to_wide_hud(chip);
-  }
-  char dlss_buf[64]{};
-  format_live_dlss5_line(dlss_buf, sizeof(dlss_buf), state_.renodx_on || state_.dlss_on, state_.nr_pass_count,
-                         state_.feed_on);
-  const std::wstring dlss_w = utf8_to_wide_hud(dlss_buf);
   const double show_fps = state_.fps_smooth > 0 ? state_.fps_smooth : state_.fps;
-  char fps_part[64]{};
-  format_live_fps_line(fps_part, sizeof(fps_part), show_fps, state_.fps_fg_est, state_.fg_on, state_.fg_multiplier);
-  char fps_line[80]{};
-  std::snprintf(fps_line, sizeof(fps_line), "FPS  %s", fps_part);
-  const std::wstring fps_w = utf8_to_wide_hud(fps_line);
+  LiveStripLines strip{};
+  fill_live_strip_lines(strip, state_.overlay_console, cons, state_.renodx_on || state_.dlss_on,
+                        state_.nr_pass_count, state_.fg_on, state_.fg_multiplier, show_fps, state_.fps_fg_est,
+                        state_.ft_stable);
+  const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
+  const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
+  const std::wstring fg_w = utf8_to_wide_hud(strip.fg);
+  const std::wstring fps_lab_w = utf8_to_wide_hud(strip.fps_lab.text);
+  const std::wstring fps_cap_w = utf8_to_wide_hud(strip.fps_cap.text);
+  const std::wstring fps_sep_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_sep.text) : std::wstring{};
+  const std::wstring fps_fg_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_fg.text) : std::wstring{};
 
-  SIZE sz_cons{}, sz_dlss{}, sz_fps{};
-  if (!cons_w.empty()) {
-    GetTextExtentPoint32W(measure, cons_w.c_str(), static_cast<int>(cons_w.size()), &sz_cons);
-  }
-  GetTextExtentPoint32W(measure, dlss_w.c_str(), static_cast<int>(dlss_w.size()), &sz_dlss);
-  GetTextExtentPoint32W(measure, fps_w.c_str(), static_cast<int>(fps_w.size()), &sz_fps);
+  auto measure_w = [&](const std::wstring& s) -> int {
+    if (s.empty()) return 0;
+    SIZE sz{};
+    GetTextExtentPoint32W(measure, s.c_str(), static_cast<int>(s.size()), &sz);
+    return sz.cx;
+  };
+  const int sz_cons = measure_w(cons_w);
+  const int sz_dlss = measure_w(dlss_w);
+  const int sz_fg = measure_w(fg_w);
+  const int sz_fps = measure_w(fps_lab_w) + measure_w(fps_cap_w) + measure_w(fps_sep_w) + measure_w(fps_fg_w);
   SelectObject(measure, old_m);
   DeleteDC(measure);
 
-  const int ww = pad_x + sz_cons.cx + (sz_cons.cx > 0 ? gap : 0) + sz_dlss.cx + gap + sz_fps.cx + gap + spark_w +
+  const int ww = pad_x + sz_cons + (sz_cons > 0 ? gap : 0) + sz_dlss + gap + sz_fg + gap + sz_fps + gap + spark_w +
                  pad_x;
   layout_w_ = ww;
   layout_h_ = hh;
@@ -2054,7 +2077,23 @@ void LiveOverlay::present() const {
 
   if (!cons_w.empty()) draw_seg(cons_w, live_console_color(cons));
   draw_seg(dlss_w, RGB(240, 242, 248));
-  draw_seg(fps_w, RGB(120, 220, 255));
+  unsigned char fgr = 255, fgg = 196, fgb = 72;
+  live_fps_ft_rgb(state_.fg_on && state_.fg_multiplier >= 2 ? state_.fg_multiplier : 1, state_.ft_stable, fgr, fgg,
+                  fgb);
+  draw_seg(fg_w, RGB(fgr, fgg, fgb));
+  auto draw_join = [&](const std::wstring& text, COLORREF color) {
+    if (text.empty()) return;
+    SIZE sz{};
+    GetTextExtentPoint32W(mem, text.c_str(), static_cast<int>(text.size()), &sz);
+    SetTextColor(mem, color);
+    TextOutW(mem, x, text_y, text.c_str(), static_cast<int>(text.size()));
+    x += sz.cx;
+  };
+  draw_join(fps_lab_w, RGB(strip.fps_lab.r, strip.fps_lab.g, strip.fps_lab.b));
+  draw_join(fps_cap_w, RGB(strip.fps_cap.r, strip.fps_cap.g, strip.fps_cap.b));
+  draw_join(fps_sep_w, RGB(strip.fps_sep.r, strip.fps_sep.g, strip.fps_sep.b));
+  draw_join(fps_fg_w, RGB(strip.fps_fg.r, strip.fps_fg.g, strip.fps_fg.b));
+  x += gap;
 
   {
     const int gx = x;

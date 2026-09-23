@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `4.1.6` · instalador + zip portable via `tools\make_installer.ps1` |
+| **Versão** | `4.1.7` · instalador + zip portable via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,16 +20,16 @@
 
 Distribua o **instalador** ou o **zip portable** — sem pasta manual, sem código:
 
-**[NexusCap-Setup-4.1.6.exe](https://github.com/lealvjo/NexusCap/releases)** — instala na conta, sem admin.
+**[NexusCap-Setup-4.1.7.exe](https://github.com/lealvjo/NexusCap/releases)** — instala na conta, sem admin.
 
-**[NexusCap-Portable-4.1.6.zip](https://github.com/lealvjo/NexusCap/releases)** — extrai e roda. Settings e presets viajam com a pasta.
+**[NexusCap-Portable-4.1.7.zip](https://github.com/lealvjo/NexusCap/releases)** — extrai e roda. Settings e presets viajam com a pasta.
 
 O setup e o zip **não ficam no git**; sobem na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. **Setup:** instalar `NexusCap-Setup-4.1.6.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
-   **Portable:** extrair `NexusCap-Portable-4.1.6.zip` numa pasta gravável (SSD; não use Program Files).
+1. **Setup:** instalar `NexusCap-Setup-4.1.7.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+   **Portable:** extrair `NexusCap-Portable-4.1.7.zip` numa pasta gravável (SSD; não use Program Files).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup nem no zip). Page Down no CFG.
 
@@ -54,7 +54,7 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-4.1.6.exe` **ou** `NexusCap-Portable-4.1.6.zip` na Release do GitHub.
+1. Baixe `NexusCap-Setup-4.1.7.exe` **ou** `NexusCap-Portable-4.1.7.zip` na Release do GitHub.
 2. Setup: execute (instala em `%LOCALAPPDATA%\NexusCap`, sem admin). Portable: extraia numa pasta gravável e abra `NexusCap.exe` — o `portable.txt` faz settings/presets/logs ficarem nessa pasta.
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -71,6 +71,12 @@ Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que a
 **Ctrl+M** na captura ou **F12** no lobby — a mesma lista. Um nome (até 50). Aplicar devolve o look inteiro: escala, FG, NR, cena, Pass, HUD.
 
 O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
+
+### Novidades 4.1.7
+
+- Overlay **Live:** sem modelo do motor; DLSS com o mesmo tag dos outros (`1x` / `1.5x` / `2x` / `2x+` / `3x` / `3x+`) e **FG x2 / x3 / x4 / FG off**.
+- **PS5 Pro** no seletor de console; preview do Live no lobby.
+- Contador de FPS nos quatro overlays (Mini / Compacto / ADV / Live) usa as cores do frametime (cap / x2 / x3 / x4).
 
 ### Novidades 4.1.6
 
@@ -488,9 +494,9 @@ Gera `dist\NexusCap-Setup-<versão>.exe` e `dist\NexusCap-Portable-<versão>.zip
 ```bat
 tools\make_installer.bat
 rem ou:
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.1.6
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -Version 4.1.7
 powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -InstallInno
-powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.1.6
+powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 4.1.7
 ```
 
 Instala por padrão em `%LOCALAPPDATA%\NexusCap` (`PrivilegesRequired=lowest` no Inno — **sem UAC / sem admin**). É menos invasivo de propósito: o setup não mexe no sistema. **Evite Program Files** — RenoDX precisa gravar ini/cfg/cache ao lado do exe.

@@ -612,11 +612,75 @@ void apply_window_app_icon(HWND hwnd, HINSTANCE hi) {
 }
 
 // Live HUD on left black bar of letterboxed preview — bright text readable on black.
+void draw_live_preview_strip(const PersistedSettings& settings, const LobbyPreview& preview, ImVec2 img_min,
+                             ImVec2 img_max) {
+  const LiveConsole cons = parse_live_console(settings.ui.live_console);
+  const bool dlss5 = settings.enhance_renodx && settings.neural_rendering;
+  const int fgx = settings.fg_enabled ? (settings.fg_multiplier >= 2 ? settings.fg_multiplier : 2) : 1;
+  const double fps = preview.fps_ema > 1.0 ? preview.fps_ema : settings.fps;
+  LiveStripLines strip{};
+  fill_live_strip_lines(strip, settings.ui.overlay_console, cons, dlss5, settings.nr_pass_count,
+                        settings.fg_enabled, fgx, fps);
+
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const float font_sz = 18.f;
+  const float gap = 10.f;
+  const float pad_x = 10.f;
+  const float pad_y = 6.f;
+  const float bar_h = font_sz + pad_y * 2.f;
+  auto text_w = [&](const char* t) {
+    if (!t || !t[0]) return 0.f;
+    return ImGui::CalcTextSize(t).x * (font_sz / (std::max)(1.f, ImGui::GetFontSize()));
+  };
+  float content_w = text_w(strip.dlss) + gap + text_w(strip.fg) + gap + text_w(strip.fps_lab.text) +
+                    text_w(strip.fps_cap.text);
+  if (strip.has_fg_fps) content_w += text_w(strip.fps_sep.text) + text_w(strip.fps_fg.text);
+  if (strip.has_console) content_w += text_w(strip.console) + gap;
+  const float bar_w = content_w + pad_x * 2.f;
+  const float x1 = img_max.x - 8.f;
+  const float y0 = img_min.y + 8.f;
+  ImVec2 p0(x1 - bar_w, y0);
+  ImVec2 p1(x1, y0 + bar_h);
+  if (p0.x < img_min.x + 4.f) p0.x = img_min.x + 4.f;
+  if (overlay_draws_plate(settings.ui.overlay_no_bg)) {
+    dl->AddRectFilled(p0, p1, IM_COL32(12, 14, 18, 220), 4.f);
+  }
+  float x = p0.x + pad_x;
+  const float y = p0.y + pad_y;
+  auto paint = [&](const char* t, ImU32 col) {
+    if (!t || !t[0]) return;
+    dl->AddText(nullptr, font_sz, ImVec2(x, y), col, t);
+    x += text_w(t) + gap;
+  };
+  if (strip.has_console) {
+    unsigned char cr = 0, cg = 55, cb = 145;
+    live_console_rgb(cons, cr, cg, cb);
+    paint(strip.console, IM_COL32(cr, cg, cb, 255));
+  }
+  paint(strip.dlss, IM_COL32(240, 242, 248, 255));
+  {
+    unsigned char fr = 255, fg = 196, fb = 72;
+    live_fps_ft_rgb(settings.fg_enabled && fgx >= 2 ? fgx : 1, true, fr, fg, fb);
+    paint(strip.fg, IM_COL32(fr, fg, fb, 255));
+  }
+  paint(strip.fps_lab.text, IM_COL32(strip.fps_lab.r, strip.fps_lab.g, strip.fps_lab.b, 255));
+  x -= gap;
+  paint(strip.fps_cap.text, IM_COL32(strip.fps_cap.r, strip.fps_cap.g, strip.fps_cap.b, 255));
+  if (strip.has_fg_fps) {
+    x -= gap;
+    paint(strip.fps_sep.text, IM_COL32(strip.fps_sep.r, strip.fps_sep.g, strip.fps_sep.b, 255));
+    x -= gap;
+    paint(strip.fps_fg.text, IM_COL32(strip.fps_fg.r, strip.fps_fg.g, strip.fps_fg.b, 255));
+  }
+}
+
 void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPreview& preview,
                               ImVec2 band_min, ImVec2 band_max, ImVec2 img_min, ImVec2 img_max) {
+  if (settings.ui.live_overlay) {
+    draw_live_preview_strip(settings, preview, img_min, img_max);
+    return;
+  }
   if (!settings.ui.show_fps) return;
-  // Live overlay owns session HUD — keep lobby preview clear of mini/ADV twin.
-  if (settings.ui.live_overlay) return;
 
   if (settings.ui.mini_overlay || settings.ui.hw_info) {
     g_lobby_hw.sample(g_dx.device, g_lobby_hw_sample);
@@ -749,10 +813,24 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
       IM_COL32(255, 255, 255, 255), IM_COL32(140, 255, 220, 255), IM_COL32(200, 180, 255, 255),
       IM_COL32(255, 170, 120, 255), IM_COL32(160, 255, 200, 255), IM_COL32(255, 150, 150, 255),
   };
+  const float prev_fps = preview.fps_ema > 1.0 ? static_cast<float>(preview.fps_ema) : 0.f;
+  const int prev_fgx = settings.fg_enabled ? (settings.fg_multiplier >= 2 ? settings.fg_multiplier : 2) : 1;
   int row = 0;
   for (int i = 0; i < hud.count; ++i, ++row) {
-    dl->AddText(ImVec2(p0.x + 2.f, p0.y + pad + line_h * static_cast<float>(row)), cols[row % 9],
-                hud.line[i]);
+    const float y = p0.y + pad + line_h * static_cast<float>(row);
+    if (std::strncmp(hud.line[i], "FPS", 3) == 0) {
+      HudFpsParts parts{};
+      fill_lobby_hud_fps_parts(parts, prev_fps, settings.fg_enabled, prev_fgx, true);
+      float x = p0.x + 2.f;
+      for (int p = 0; p < parts.count; ++p) {
+        if (!parts.parts[p].text[0]) continue;
+        dl->AddText(ImVec2(x, y), IM_COL32(parts.parts[p].r, parts.parts[p].g, parts.parts[p].b, 255),
+                    parts.parts[p].text);
+        x += ImGui::CalcTextSize(parts.parts[p].text).x;
+      }
+      continue;
+    }
+    dl->AddText(ImVec2(p0.x + 2.f, y), cols[row % 9], hud.line[i]);
   }
   // Infos GPU/CPU — one metric per line (never concatenated).
   const ImU32 hw_cols[] = {
@@ -1552,33 +1630,35 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
     ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
     ImGui::TextDisabled(settings.ui.sync_image ? "  -> SYNC VSYNC" : "  -> SYNC TEAR");
-      ImGui::Checkbox("Mostrar console", &settings.ui.overlay_console);
-      if (settings.ui.overlay_console) {
-        LiveConsole cur = parse_live_console(settings.ui.live_console);
-        auto console_imcol = [](LiveConsole c) -> ImVec4 {
-          const COLORREF rgb = live_console_color(c);
-          return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
-        };
-        ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
-        char console_btn[48]{};
-        std::snprintf(console_btn, sizeof(console_btn), "%s##console_pick", live_console_label(cur));
-        if (ImGui::Button(console_btn)) ImGui::OpenPopup("##console_menu");
-        ImGui::PopStyleColor();
-        if (ImGui::BeginPopup("##console_menu")) {
-          for (LiveConsole o : kLiveConsoleOrder) {
-            const bool selected = (o == cur);
-            ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
-            if (ImGui::MenuItem(live_console_label(o), nullptr, selected)) {
-              settings.ui.live_console = live_console_key(o);
-            }
-            ImGui::PopStyleColor();
+    if (ImGui::Checkbox("Overlay live", &settings.ui.live_overlay)) {
+      if (settings.ui.live_overlay) settings.ui.overlay_console = true;
+    }
+    ImGui::Checkbox("Mostrar console", &settings.ui.overlay_console);
+    if (settings.ui.overlay_console) {
+      LiveConsole cur = parse_live_console(settings.ui.live_console);
+      auto console_imcol = [](LiveConsole c) -> ImVec4 {
+        const COLORREF rgb = live_console_color(c);
+        return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
+      };
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
+      char console_btn[48]{};
+      std::snprintf(console_btn, sizeof(console_btn), "%s##console_pick", live_console_label(cur));
+      if (ImGui::Button(console_btn)) ImGui::OpenPopup("##console_menu");
+      ImGui::PopStyleColor();
+      if (ImGui::BeginPopup("##console_menu")) {
+        for (LiveConsole o : kLiveConsoleOrder) {
+          const bool selected = (o == cur);
+          ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
+          if (ImGui::MenuItem(live_console_label(o), nullptr, selected)) {
+            settings.ui.live_console = live_console_key(o);
           }
-          ImGui::EndPopup();
+          ImGui::PopStyleColor();
         }
-        ImGui::TextDisabled("  -> nome no overlay (padrao PS5)");
+        ImGui::EndPopup();
       }
-    ImGui::Checkbox("Overlay live", &settings.ui.live_overlay);
+      ImGui::TextDisabled("  -> nome no overlay (PS5 / PS5 Pro / ...)");
+    }
     ImGui::Checkbox("Reportar bug", &settings.ui.bug_report);
     ImGui::TextDisabled(settings.ui.bug_report ? "  -> modo diagnostico (report/*.txt)"
                                                : "  -> off (sem overhead)");

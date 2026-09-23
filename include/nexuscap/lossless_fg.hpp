@@ -179,43 +179,105 @@ inline FgFtRgb overlay_ft_status_rgb(OverlayFtStatus s) {
   }
 }
 
+// Colored FPS chips — same RGB as the frametime sparkline (cap / x2 / x3 / x4).
+struct HudFpsPart {
+  char text[48]{};
+  unsigned char r = 180;
+  unsigned char g = 184;
+  unsigned char b = 190;
+};
+
+struct HudFpsParts {
+  HudFpsPart parts[8]{};
+  int count = 0;
+};
+
+inline void hud_fps_push(HudFpsParts& o, const char* text, unsigned char r, unsigned char g, unsigned char b) {
+  if (!text || !text[0] || o.count >= 8) return;
+  std::snprintf(o.parts[o.count].text, sizeof(o.parts[o.count].text), "%s", text);
+  o.parts[o.count].r = r;
+  o.parts[o.count].g = g;
+  o.parts[o.count].b = b;
+  ++o.count;
+}
+
+inline void join_hud_fps_parts(char* out, size_t out_n, const HudFpsParts& p) {
+  if (!out || out_n == 0) return;
+  out[0] = '\0';
+  size_t used = 0;
+  for (int i = 0; i < p.count; ++i) {
+    const size_t len = std::strlen(p.parts[i].text);
+    if (used + len + 1 > out_n) break;
+    std::memcpy(out + used, p.parts[i].text, len);
+    used += len;
+    out[used] = '\0';
+  }
+}
+
+inline void fill_session_hud_fps_parts(HudFpsParts& o, double fps_cap, double fps_fg_est, bool fg_on,
+                                       int fg_mult, bool compact, bool ft_stable = true) {
+  o = HudFpsParts{};
+  const int m = clamp_fg_multiplier(fg_mult);
+  const FgFtRgb cap = fg_frametime_trace_rgb(1, ft_stable);
+  hud_fps_push(o, compact ? "FPS  " : "FPS     ", 180, 184, 190);
+  char num[24]{};
+  std::snprintf(num, sizeof(num), "%.1f", fps_cap);
+  hud_fps_push(o, num, cap.r, cap.g, cap.b);
+  if (fg_on && m >= 2) {
+    const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap * static_cast<double>(m));
+    hud_fps_push(o, " | ", 140, 144, 150);
+    std::snprintf(num, sizeof(num), "%.1f", fg);
+    const FgFtRgb fgc = fg_frametime_trace_rgb(m, ft_stable);
+    hud_fps_push(o, num, fgc.r, fgc.g, fgc.b);
+    char suf[40]{};
+    if (compact) {
+      std::snprintf(suf, sizeof(suf), "  cap|FG x%d ON", m);
+    } else {
+      std::snprintf(suf, sizeof(suf), "   cap|FG x%d ON", m);
+    }
+    hud_fps_push(o, suf, fgc.r, fgc.g, fgc.b);
+  } else if (m >= 2) {
+    // Prefer "off" over "pronto" — pronto looked like FG was already running.
+    char suf[40]{};
+    if (compact) {
+      std::snprintf(suf, sizeof(suf), "   FG x%d off", m);
+    } else {
+      std::snprintf(suf, sizeof(suf), "   FG x%d off (PageDn)", m);
+    }
+    hud_fps_push(o, suf, 160, 170, 180);
+  }
+}
+
+inline void fill_lobby_hud_fps_parts(HudFpsParts& o, double fps, bool fg_enabled, int fg_mult,
+                                     bool ft_stable = true) {
+  o = HudFpsParts{};
+  const int m = clamp_fg_multiplier(fg_mult);
+  const FgFtRgb cap = fg_frametime_trace_rgb(1, ft_stable);
+  hud_fps_push(o, "FPS  ", 180, 184, 190);
+  char num[24]{};
+  std::snprintf(num, sizeof(num), "%.0f", fps);
+  hud_fps_push(o, num, cap.r, cap.g, cap.b);
+  if (fg_enabled && m >= 2) {
+    char suf[32]{};
+    std::snprintf(suf, sizeof(suf), "   FG x%d off", m);
+    const FgFtRgb fgc = fg_frametime_trace_rgb(m, ft_stable);
+    hud_fps_push(o, suf, fgc.r, fgc.g, fgc.b);
+  }
+}
+
 // Lobby HUD: checkbox on = "off" until session PageDn (never imply running dual FPS).
 inline void format_lobby_hud_fps_line(char* out, size_t out_n, double fps, bool fg_enabled, int fg_mult) {
-  if (!out || out_n == 0) return;
-  const int m = clamp_fg_multiplier(fg_mult);
-  if (fg_enabled && m >= 2) {
-    std::snprintf(out, out_n, "FPS  %.0f   FG x%d off", fps, m);
-  } else {
-    std::snprintf(out, out_n, "FPS  %.0f", fps);
-  }
+  HudFpsParts parts{};
+  fill_lobby_hud_fps_parts(parts, fps, fg_enabled, fg_mult);
+  join_hud_fps_parts(out, out_n, parts);
 }
 
 // Session stats when FG is ON: real capture FPS | estimated FG output FPS.
 inline void format_session_hud_fps_line(char* out, size_t out_n, double fps_cap, double fps_fg_est, bool fg_on,
                                        int fg_mult, bool compact) {
-  if (!out || out_n == 0) return;
-  const int m = clamp_fg_multiplier(fg_mult);
-  if (fg_on && m >= 2) {
-    const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap * static_cast<double>(m));
-    if (compact) {
-      std::snprintf(out, out_n, "FPS  %.1f | %.1f  cap|FG x%d ON", fps_cap, fg, m);
-    } else {
-      std::snprintf(out, out_n, "FPS     %.1f | %.1f   cap|FG x%d ON", fps_cap, fg, m);
-    }
-  } else if (m >= 2) {
-    // Prefer "off" over "pronto" — pronto looked like FG was already running.
-    if (compact) {
-      std::snprintf(out, out_n, "FPS  %.1f   FG x%d off", fps_cap, m);
-    } else {
-      std::snprintf(out, out_n, "FPS     %.1f   FG x%d off (PageDn)", fps_cap, m);
-    }
-  } else {
-    if (compact) {
-      std::snprintf(out, out_n, "FPS  %.1f", fps_cap);
-    } else {
-      std::snprintf(out, out_n, "FPS     %.1f", fps_cap);
-    }
-  }
+  HudFpsParts parts{};
+  fill_session_hud_fps_parts(parts, fps_cap, fps_fg_est, fg_on, fg_mult, compact);
+  join_hud_fps_parts(out, out_n, parts);
 }
 
 // Colored segments for mini overlay paint (r,g,b 0–255). Sep = " · ".
@@ -226,7 +288,7 @@ struct MiniOverlaySeg {
   unsigned char b = 255;
 };
 
-inline constexpr int kMiniOverlayMaxSegs = 28;
+inline constexpr int kMiniOverlayMaxSegs = 32;
 
 inline void mini_seg_set(MiniOverlaySeg& s, const char* text, unsigned char r, unsigned char g,
                          unsigned char b) {
@@ -329,9 +391,11 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   }
   (void)console_flag;
 
-  char fps_part[96]{};
-  format_session_hud_fps_line(fps_part, sizeof(fps_part), fps_cap, fps_fg_est, fg_on, fg_mult, true);
-  push(fps_part, 120, 255, 160);
+  HudFpsParts fps_parts{};
+  fill_session_hud_fps_parts(fps_parts, fps_cap, fps_fg_est, fg_on, fg_mult, true, ft_stable);
+  for (int i = 0; i < fps_parts.count; ++i) {
+    push(fps_parts.parts[i].text, fps_parts.parts[i].r, fps_parts.parts[i].g, fps_parts.parts[i].b);
+  }
 
   if (fg_backend && fg_backend[0] && fg_on) {
     char fg_extra[40]{};

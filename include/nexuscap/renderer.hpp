@@ -232,7 +232,12 @@ private:
   bool create_pipeline(std::string& err);
   bool create_blit_pipeline(std::string& err);
   void burn_mini_overlay(const OverlayState& overlay);
+  void burn_live_overlay(const OverlayState& overlay);
+  void burn_panel_overlay(const OverlayState& overlay);
   void burn_hdmi_hold_notice(const OverlayState& overlay);
+  bool ensure_hud_tex(int w, int h);
+  void upload_hud_bits(const void* bits, int w, int h);
+  void blit_hud(int x, int y, int w, int h);
 
   HWND hwnd_ = nullptr;
   int back_w_ = 0;

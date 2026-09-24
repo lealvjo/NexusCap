@@ -3411,17 +3411,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 1, 7));
+  CHECK(app_version_is(4, 1, 8));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.1.7");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.1.7") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.7");
+  CHECK(std::string(kAppVersion) == "4.1.8");
+  CHECK(std::strstr(kAppNameWithVersion, "v4.1.8") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.8");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.1.7") != std::string::npos);
+  CHECK(lobby_t.find("4.1.8") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.1.7") != std::string::npos);
+  CHECK(sess_t.find("4.1.8") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 

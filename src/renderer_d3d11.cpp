@@ -657,10 +657,15 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   ID3D11ShaderResourceView* null_srv[] = {nullptr};
   impl_->ctx->PSSetShaderResources(0, 1, null_srv);
 
-  // Bake mini overlay into the swapchain so OBS Game Capture (fullscreen/window) gets it.
-  // Live overlay uses its own HWND — never burn mini into the same space.
-  if (overlay.mini_overlay && overlay.visible && !overlay.live_overlay) {
-    burn_mini_overlay(overlay);
+  // Bake HUD into the swapchain so OBS window/game capture of NexusCap sees it.
+  if (overlay.visible) {
+    if (overlay.live_overlay) {
+      burn_live_overlay(overlay);
+    } else if (overlay.mini_overlay) {
+      burn_mini_overlay(overlay);
+    } else {
+      burn_panel_overlay(overlay);
+    }
   }
   if (overlay.hdmi_hold_notice) {
     burn_hdmi_hold_notice(overlay);
@@ -939,6 +944,82 @@ void paint_hdmi_hold_card_hdc(HDC hdc, const RECT& rc, const OverlayState& overl
 
 }  // namespace
 
+void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o);
+
+bool RendererD3D11::ensure_hud_tex(int w, int h) {
+  if (!impl_ || !impl_->device || w < 8 || h < 8) return false;
+  if (impl_->hudTex && impl_->hud_w == w && impl_->hud_h == h) return true;
+  impl_->hudSrv.Reset();
+  impl_->hudTex.Reset();
+  D3D11_TEXTURE2D_DESC td{};
+  td.Width = static_cast<UINT>(w);
+  td.Height = static_cast<UINT>(h);
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_DYNAMIC;
+  td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  if (FAILED(impl_->device->CreateTexture2D(&td, nullptr, &impl_->hudTex))) return false;
+  impl_->device->CreateShaderResourceView(impl_->hudTex.Get(), nullptr, &impl_->hudSrv);
+  impl_->hud_w = w;
+  impl_->hud_h = h;
+  impl_->hud_last_tick = 0;
+  return true;
+}
+
+void RendererD3D11::upload_hud_bits(const void* bits, int w, int h) {
+  if (!impl_ || !impl_->ctx || !impl_->hudTex || !bits || w < 1 || h < 1) return;
+  D3D11_MAPPED_SUBRESOURCE map{};
+  if (FAILED(impl_->ctx->Map(impl_->hudTex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) return;
+  const auto* src = static_cast<const uint8_t*>(bits);
+  auto* dst = static_cast<uint8_t*>(map.pData);
+  const size_t row_bytes = static_cast<size_t>(w) * 4u;
+  for (int y = 0; y < h; ++y) {
+    std::memcpy(dst + static_cast<size_t>(y) * map.RowPitch, src + static_cast<size_t>(y) * row_bytes, row_bytes);
+  }
+  impl_->ctx->Unmap(impl_->hudTex.Get(), 0);
+}
+
+void RendererD3D11::blit_hud(int x, int y, int w, int h) {
+  if (!impl_ || !impl_->ctx || !impl_->rtv || !impl_->hudSrv) return;
+  if (!impl_->hudBlend) {
+    D3D11_BLEND_DESC bd{};
+    bd.RenderTarget[0].BlendEnable = TRUE;
+    bd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+    bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    impl_->device->CreateBlendState(&bd, &impl_->hudBlend);
+  }
+  D3D11_VIEWPORT vp{};
+  vp.MinDepth = 0.f;
+  vp.MaxDepth = 1.f;
+  vp.TopLeftX = static_cast<float>(x);
+  vp.TopLeftY = static_cast<float>(y);
+  vp.Width = static_cast<float>(w);
+  vp.Height = static_cast<float>(h);
+  impl_->ctx->OMSetRenderTargets(1, impl_->rtv.GetAddressOf(), nullptr);
+  impl_->ctx->RSSetViewports(1, &vp);
+  const float bf[4] = {0, 0, 0, 0};
+  if (impl_->hudBlend) impl_->ctx->OMSetBlendState(impl_->hudBlend.Get(), bf, 0xffffffff);
+  impl_->ctx->VSSetShader(impl_->blitVs.Get(), nullptr, 0);
+  impl_->ctx->PSSetShader(impl_->blitPs.Get(), nullptr, 0);
+  ID3D11ShaderResourceView* srv[] = {impl_->hudSrv.Get()};
+  impl_->ctx->PSSetShaderResources(0, 1, srv);
+  ID3D11SamplerState* samp[] = {impl_->sampler.Get()};
+  impl_->ctx->PSSetSamplers(0, 1, samp);
+  impl_->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  impl_->ctx->Draw(3, 0);
+  ID3D11ShaderResourceView* null_srv[] = {nullptr};
+  impl_->ctx->PSSetShaderResources(0, 1, null_srv);
+  impl_->ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
+}
+
 void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
   if (!impl_ || !impl_->ctx || !impl_->rtv || back_w_ < 64 || back_h_ < 32) return;
 
@@ -1068,6 +1149,220 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
   ID3D11ShaderResourceView* null_srv[] = {nullptr};
   impl_->ctx->PSSetShaderResources(0, 1, null_srv);
   impl_->ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
+}
+
+void RendererD3D11::burn_panel_overlay(const OverlayState& overlay) {
+  if (!impl_ || !impl_->ctx || !impl_->rtv || back_w_ < 64 || back_h_ < 32) return;
+  const int margin = 24;
+  int bar_w = (std::min)(hud_panel_width(overlay.advanced_metrics), (std::max)(160, back_w_ - margin * 2));
+  int bar_h = (std::min)(hud_panel_height(overlay.advanced_metrics, overlay.hw_info),
+                         (std::max)(80, back_h_ - margin * 2));
+  if (!overlay.session_notice.empty()) {
+    bar_h = (std::min)(bar_h + 56, (std::max)(80, back_h_ - margin * 2));
+  }
+  if (!ensure_hud_tex(bar_w, bar_h)) return;
+
+  const DWORD now = GetTickCount();
+  const bool refresh = (impl_->hud_last_tick == 0) || (now - impl_->hud_last_tick) >= 33;
+  if (refresh) {
+    impl_->hud_last_tick = now;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = bar_w;
+    bmi.bmiHeader.biHeight = -bar_h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    HBITMAP dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, screen);
+    if (!dib || !bits) {
+      if (dib) DeleteObject(dib);
+      if (mem) DeleteDC(mem);
+      return;
+    }
+    HGDIOBJ old_bmp = SelectObject(mem, dib);
+    if (overlay.overlay_no_bg && bits) {
+      std::memset(bits, 0, static_cast<size_t>(bar_w) * static_cast<size_t>(bar_h) * 4u);
+    }
+    RECT rc{0, 0, bar_w, bar_h};
+    paint_panel_overlay_hdc(mem, rc, overlay);
+    auto* px = static_cast<uint32_t*>(bits);
+    const int n = bar_w * bar_h;
+    if (overlay.overlay_no_bg) {
+      for (int i = 0; i < n; ++i) {
+        const uint32_t rgb = px[i] & 0x00FFFFFFu;
+        px[i] = rgb ? (rgb | 0xFF000000u) : 0;
+      }
+    } else {
+      constexpr uint32_t kA = 220u << 24;
+      for (int i = 0; i < n; ++i) px[i] = (px[i] & 0x00FFFFFFu) | kA;
+    }
+    upload_hud_bits(bits, bar_w, bar_h);
+    SelectObject(mem, old_bmp);
+    DeleteObject(dib);
+    DeleteDC(mem);
+  }
+  blit_hud(margin, margin, bar_w, bar_h);
+}
+
+void RendererD3D11::burn_live_overlay(const OverlayState& overlay) {
+  if (!impl_ || !impl_->ctx || !impl_->rtv || back_w_ < 64 || back_h_ < 32) return;
+
+  UINT dpi = 96;
+  if (hwnd_) {
+    using Fn = UINT(WINAPI*)(HWND);
+    static Fn get_dpi =
+        reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    if (get_dpi) {
+      const UINT d = get_dpi(hwnd_);
+      if (d >= 96) dpi = d;
+    }
+  }
+  auto md = [&](int v) { return MulDiv(v, static_cast<int>(dpi), 96); };
+  const int font_px = md(16);
+  const int hh = md(26);
+  const int spark_w = md(104);
+  const int gap = md(12);
+  const int pad_x = md(8);
+  const int margin = md(10);
+
+  const LiveConsole cons = clamp_live_console(overlay.live_console);
+  const double show_fps = overlay.fps_smooth > 0 ? overlay.fps_smooth : overlay.fps;
+  LiveStripLines strip{};
+  fill_live_strip_lines(strip, overlay.overlay_console, cons, overlay.renodx_on || overlay.dlss_on,
+                        overlay.nr_pass_count, overlay.fg_on, overlay.fg_multiplier, show_fps,
+                        overlay.fps_fg_est, overlay.ft_stable);
+  const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
+  const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
+  const std::wstring fg_w = utf8_to_wide_hud(strip.fg);
+  const std::wstring fps_lab_w = utf8_to_wide_hud(strip.fps_lab.text);
+  const std::wstring fps_cap_w = utf8_to_wide_hud(strip.fps_cap.text);
+  const std::wstring fps_sep_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_sep.text) : std::wstring{};
+  const std::wstring fps_fg_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_fg.text) : std::wstring{};
+
+  HDC screen = GetDC(nullptr);
+  HDC measure = CreateCompatibleDC(screen);
+  HFONT font = CreateFontW(font_px, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
+                           CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+  HFONT old_m = static_cast<HFONT>(SelectObject(measure, font));
+  auto measure_w = [&](const std::wstring& s) -> int {
+    if (s.empty()) return 0;
+    SIZE sz{};
+    GetTextExtentPoint32W(measure, s.c_str(), static_cast<int>(s.size()), &sz);
+    return sz.cx;
+  };
+  const int sz_cons = measure_w(cons_w);
+  int ww = pad_x + sz_cons + (sz_cons > 0 ? gap : 0) + measure_w(dlss_w) + gap + measure_w(fg_w) + gap +
+           measure_w(fps_lab_w) + measure_w(fps_cap_w) + measure_w(fps_sep_w) + measure_w(fps_fg_w) + gap +
+           spark_w + pad_x;
+  SelectObject(measure, old_m);
+  DeleteDC(measure);
+  if (ww < 80) ww = 80;
+  const int bar_h = hh;
+  const int bar_w = (std::min)(back_w_ - margin * 2, (std::max)(ww, (std::min)(960, back_w_ / 2)));
+  const int content_w = (std::min)(ww, bar_w);
+  if (!ensure_hud_tex(bar_w, bar_h)) {
+    DeleteObject(font);
+    ReleaseDC(nullptr, screen);
+    return;
+  }
+
+  const DWORD now = GetTickCount();
+  const bool refresh = (impl_->hud_last_tick == 0) || (now - impl_->hud_last_tick) >= 33;
+  if (refresh) {
+    impl_->hud_last_tick = now;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = bar_w;
+    bmi.bmiHeader.biHeight = -bar_h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HDC mem = CreateCompatibleDC(screen);
+    HBITMAP dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!dib || !bits) {
+      if (dib) DeleteObject(dib);
+      if (mem) DeleteDC(mem);
+      DeleteObject(font);
+      ReleaseDC(nullptr, screen);
+      return;
+    }
+    HGDIOBJ old_bmp = SelectObject(mem, dib);
+    std::memset(bits, 0, static_cast<size_t>(bar_w) * static_cast<size_t>(bar_h) * 4u);
+    const int x0 = bar_w - content_w;
+    if (overlay_draws_plate(overlay.overlay_no_bg)) {
+      RECT plate{x0, 0, bar_w, bar_h};
+      HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
+      FillRect(mem, &plate, bg);
+      DeleteObject(bg);
+    }
+    SetBkMode(mem, TRANSPARENT);
+    HFONT old_font = static_cast<HFONT>(SelectObject(mem, font));
+    const int text_y = (bar_h - font_px) / 2;
+    int x = x0 + pad_x;
+    auto draw_seg = [&](const std::wstring& text, COLORREF color) {
+      if (text.empty()) return;
+      SIZE sz{};
+      GetTextExtentPoint32W(mem, text.c_str(), static_cast<int>(text.size()), &sz);
+      SetTextColor(mem, color);
+      TextOutW(mem, x, text_y, text.c_str(), static_cast<int>(text.size()));
+      x += sz.cx + gap;
+    };
+    auto draw_join = [&](const std::wstring& text, COLORREF color) {
+      if (text.empty()) return;
+      SIZE sz{};
+      GetTextExtentPoint32W(mem, text.c_str(), static_cast<int>(text.size()), &sz);
+      SetTextColor(mem, color);
+      TextOutW(mem, x, text_y, text.c_str(), static_cast<int>(text.size()));
+      x += sz.cx;
+    };
+    if (!cons_w.empty()) draw_seg(cons_w, live_console_color(cons));
+    draw_seg(dlss_w, RGB(240, 242, 248));
+    unsigned char fgr = 255, fgg = 196, fgb = 72;
+    live_fps_ft_rgb(overlay.fg_on && overlay.fg_multiplier >= 2 ? overlay.fg_multiplier : 1, overlay.ft_stable,
+                    fgr, fgg, fgb);
+    draw_seg(fg_w, RGB(fgr, fgg, fgb));
+    draw_join(fps_lab_w, RGB(strip.fps_lab.r, strip.fps_lab.g, strip.fps_lab.b));
+    draw_join(fps_cap_w, RGB(strip.fps_cap.r, strip.fps_cap.g, strip.fps_cap.b));
+    draw_join(fps_sep_w, RGB(strip.fps_sep.r, strip.fps_sep.g, strip.fps_sep.b));
+    draw_join(fps_fg_w, RGB(strip.fps_fg.r, strip.fps_fg.g, strip.fps_fg.b));
+    x += gap;
+    {
+      const int gx = x;
+      const int gw = (std::min)(spark_w, bar_w - gx - pad_x);
+      const int gy = md(4);
+      const int gh = bar_h - gy * 2;
+      if (gw >= 24) paint_frametime_traces(mem, gx, gy, gw, gh, overlay, (std::max)(1, md(1)));
+    }
+    SelectObject(mem, old_font);
+    auto* px = static_cast<uint32_t*>(bits);
+    if (overlay.overlay_no_bg) {
+      const int n = bar_w * bar_h;
+      for (int i = 0; i < n; ++i) {
+        const uint32_t rgb = px[i] & 0x00FFFFFFu;
+        px[i] = rgb ? (rgb | 0xFF000000u) : 0;
+      }
+    } else {
+      constexpr uint32_t kA = 220u << 24;
+      for (int y = 0; y < bar_h; ++y) {
+        uint32_t* row = px + y * bar_w;
+        for (int col = 0; col < bar_w; ++col) {
+          row[col] = col >= x0 ? ((row[col] & 0x00FFFFFFu) | kA) : 0;
+        }
+      }
+    }
+    upload_hud_bits(bits, bar_w, bar_h);
+    SelectObject(mem, old_bmp);
+    DeleteObject(dib);
+    DeleteDC(mem);
+  }
+  DeleteObject(font);
+  ReleaseDC(nullptr, screen);
+  blit_hud((std::max)(margin, back_w_ - margin - bar_w), margin, bar_w, bar_h);
 }
 
 void RendererD3D11::burn_hdmi_hold_notice(const OverlayState& overlay) {
@@ -1242,30 +1537,11 @@ void MetricsHud::reposition() {
 }
 
 void MetricsHud::update(const OverlayState& state) {
-  const bool notice_changed = (state.session_notice != last_notice_);
   state_ = state;
   last_notice_ = state.session_notice;
   if (!hwnd_) return;
-  // Live overlay owns the HUD surface — hide GDI twin / mini twin.
-  if (state.live_overlay) {
-    set_visible(false);
-    return;
-  }
-  // Mini overlay is burned into Present. Hide GDI twin.
-  if (state.mini_overlay) {
-    set_visible(false);
-    return;
-  }
-  set_visible(state.visible);
-  if (!state.visible) return;
-  apply_overlay_layered_attrs(hwnd_, state.overlay_no_bg);
-  reposition();
-  // Throttle GDI paint ~30 Hz — Invalidate+UpdateWindow every Present contended with D3D.
-  const DWORD now = GetTickCount();
-  if (!notice_changed && last_paint_tick_ != 0 && (now - last_paint_tick_) < 33) return;
-  last_paint_tick_ = now;
-  InvalidateRect(hwnd_, nullptr, FALSE);
-  UpdateWindow(hwnd_);
+  // Compact / Mini / ADV / Live are burned into Present so OBS window capture sees them.
+  set_visible(false);
 }
 
 void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o);
@@ -1950,16 +2226,8 @@ void LiveOverlay::update(const OverlayState& state) {
     console_ = static_cast<int>(clamp_live_console(state.live_console));
   }
   if (!hwnd_) return;
-  if (!state.live_overlay) {
-    set_visible(false);
-    return;
-  }
-  set_visible(state.visible);
-  if (!state.visible) return;
-  const DWORD now = GetTickCount();
-  if (last_paint_tick_ != 0 && (now - last_paint_tick_) < 33) return;
-  last_paint_tick_ = now;
-  present();
+  // Live is burned into Present (same as Mini/Compact/ADV). Hide the GDI twin.
+  set_visible(false);
 }
 
 void LiveOverlay::show_console_menu() {

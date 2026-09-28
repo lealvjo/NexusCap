@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cwchar>
 #include <string>
 #include <vector>
 
@@ -47,6 +48,69 @@ int frametime_y_trace(int gy, int gh, double cap_ms, int k, double ceil_ms) {
   const int bot = gy + gh - 2;
   return y < top ? top : (y > bot ? bot : y);
 }
+
+struct CachedHudFont {
+  HFONT handle = nullptr;
+  int px = -1;
+  int weight = 0;
+  DWORD quality = 0;
+  BYTE pitch = 0;
+  wchar_t face[32]{};
+
+  HFONT get(int font_px, int weight_, DWORD quality_, BYTE pitch_, const wchar_t* name) {
+    if (!name) name = L"Segoe UI";
+    if (handle && px == font_px && weight == weight_ && quality == quality_ && pitch == pitch_ &&
+        wcscmp(face, name) == 0) {
+      return handle;
+    }
+    if (handle) {
+      DeleteObject(handle);
+      handle = nullptr;
+    }
+    handle = CreateFontW(font_px, 0, 0, 0, weight_, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
+                         CLIP_DEFAULT_PRECIS, quality_, pitch_, name);
+    px = font_px;
+    weight = weight_;
+    quality = quality_;
+    pitch = pitch_;
+    size_t i = 0;
+    for (; i < 31 && name[i]; ++i) face[i] = name[i];
+    face[i] = 0;
+    return handle;
+  }
+
+  void clear() {
+    if (handle) {
+      DeleteObject(handle);
+      handle = nullptr;
+    }
+    px = -1;
+    face[0] = 0;
+  }
+};
+
+struct HudFontBank {
+  CachedHudFont live;
+  CachedHudFont mini;
+  CachedHudFont panel;
+  CachedHudFont graph;
+  CachedHudFont notice;
+  CachedHudFont notice_live;
+  CachedHudFont hold_big;
+  CachedHudFont hold_small;
+  void clear() {
+    live.clear();
+    mini.clear();
+    panel.clear();
+    graph.clear();
+    notice.clear();
+    notice_live.clear();
+    hold_big.clear();
+    hold_small.clear();
+  }
+};
+
+HudFontBank g_hud_fonts;
 
 void paint_frametime_traces(HDC hdc, int gx, int gy, int gw, int gh, const OverlayState& o, int pen_w,
                            int left_pad = 0) {
@@ -109,8 +173,8 @@ void paint_frametime_graph(HDC hdc, int gx, int gy, int gw, int gh, const Overla
   paint_frametime_traces(hdc, gx, gy, gw, gh, o, pen_w, gutter);
 
   const int traces = fg_frametime_trace_count(o.fg_on, o.fg_multiplier);
-  HFONT lf = CreateFontW(13, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                         CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HFONT lf = g_hud_fonts.graph.get(13, FW_SEMIBOLD, NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS,
+                                   L"Segoe UI");
   HGDIOBJ oldf = SelectObject(hdc, lf);
   SetBkMode(hdc, TRANSPARENT);
   const double last_ms = !o.ft_hist.empty() ? o.ft_hist.back() : o.frame_ms;
@@ -141,7 +205,6 @@ void paint_frametime_graph(HDC hdc, int gx, int gy, int gw, int gh, const Overla
     }
   }
   SelectObject(hdc, oldf);
-  DeleteObject(lf);
 
   SelectObject(hdc, old_brush);
   SelectObject(hdc, old_pen);
@@ -237,6 +300,15 @@ struct RendererD3D11::Impl {
   int hud_w = 0;
   int hud_h = 0;
   DWORD hud_last_tick = 0;
+  int live_blit_x = 0;
+  int live_blit_y = 0;
+  int live_blit_w = 0;
+  int live_blit_h = 0;
+  ComPtr<ID3D11Texture2D> toastTex;
+  ComPtr<ID3D11ShaderResourceView> toastSrv;
+  int toast_w = 0;
+  int toast_h = 0;
+  DWORD toast_last_tick = 0;
   ComPtr<ID3D11Texture2D> noticeTex;
   ComPtr<ID3D11ShaderResourceView> noticeSrv;
   int notice_w = 0;
@@ -250,6 +322,7 @@ struct RendererD3D11::Impl {
 RendererD3D11::~RendererD3D11() { shutdown(); }
 
 void RendererD3D11::shutdown() {
+  g_hud_fonts.clear();
   delete impl_;
   impl_ = nullptr;
   hwnd_ = nullptr;
@@ -659,12 +732,15 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
 
   // Bake HUD into the swapchain so OBS window/game capture of NexusCap sees it.
   if (overlay.visible) {
-    if (overlay.live_overlay) {
+    if (overlay.hud_on && overlay.live_overlay) {
       burn_live_overlay(overlay);
-    } else if (overlay.mini_overlay) {
+    } else if (overlay.hud_on && overlay.mini_overlay) {
       burn_mini_overlay(overlay);
-    } else {
+    } else if (overlay.hud_on) {
       burn_panel_overlay(overlay);
+    }
+    if (overlay_notice_burn(!overlay.session_notice.empty())) {
+      burn_session_notice(overlay);
     }
   }
   if (overlay.hdmi_hold_notice) {
@@ -780,6 +856,35 @@ int append_hw_metric_lines(wchar_t (*lines)[180], int n, int max_n, const Overla
   return n;
 }
 
+void paint_session_notice_band(HDC hdc, const RECT& rc, const OverlayState& o, bool plate, int scale = 1) {
+  if (o.session_notice.empty()) return;
+  if (scale < 1) scale = 1;
+  std::string title, detail;
+  session_notice_split(o.session_notice, title, detail);
+  if (plate && overlay_draws_plate(o.overlay_no_bg)) {
+    HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
+    FillRect(hdc, &rc, bg);
+    DeleteObject(bg);
+  }
+  SetBkMode(hdc, TRANSPARENT);
+  const int font_px = 16 * scale;
+  CachedHudFont& bank = scale > 1 ? g_hud_fonts.notice_live : g_hud_fonts.notice;
+  HFONT notice_font = bank.get(font_px, FW_BOLD, NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HFONT oldn = static_cast<HFONT>(SelectObject(hdc, notice_font));
+  const int pad = 8 * scale;
+  RECT tr{rc.left + pad, rc.top + 4 * scale, rc.right - pad, rc.bottom};
+  SetTextColor(hdc, RGB(255, 200, 90));
+  const std::wstring wt = utf8_to_wide_hud(title.empty() ? o.session_notice : title);
+  DrawTextW(hdc, wt.c_str(), -1, &tr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+  if (!detail.empty()) {
+    RECT dr{rc.left + pad, rc.top + 24 * scale, rc.right - pad, rc.bottom - 2};
+    SetTextColor(hdc, RGB(255, 220, 140));
+    const std::wstring wd = utf8_to_wide_hud(detail);
+    DrawTextW(hdc, wd.c_str(), -1, &dr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+  }
+  SelectObject(hdc, oldn);
+}
+
 void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   if (overlay_draws_plate(o.overlay_no_bg)) {
     HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
@@ -789,9 +894,8 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   SetBkMode(hdc, TRANSPARENT);
 
   const int font_px = hud_mini_overlay_font_px();
-  HFONT mini_font = CreateFontW(font_px, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
-                                FIXED_PITCH | FF_MODERN, L"Consolas");
+  HFONT mini_font = g_hud_fonts.mini.get(font_px, FW_BOLD, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
+                                         L"Consolas");
   HFONT old = static_cast<HFONT>(SelectObject(hdc, mini_font));
   char line0[768]{};
   char line1[768]{};
@@ -810,7 +914,7 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
       o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count,
       overlay_console_label_or_null(o.overlay_console, clamp_live_console(o.live_console)), false, cr, cg, cb,
-      o.fg_queue);
+      o.fg_queue, o.fg_adaptive, o.fg_target_fps);
   (void)line0;
   (void)line1;
 
@@ -819,15 +923,16 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   const int gap = 8;
   const int bar_w = static_cast<int>(rc.right - rc.left);
   const int bar_h = static_cast<int>(rc.bottom - rc.top);
+  const int work_h = (std::max)(48, bar_h);
   const int gx = (std::max)(pad, bar_w - pad - graph_w);
   const int gy = 8;
-  const int gh = (std::max)(51, bar_h - 16);
+  const int gh = (std::max)(51, work_h - 16);
   const int gw = (std::min)(graph_w, bar_w - pad * 2);
   const int text_max_x = gx - gap;
   const int line_gap = 2;
   const int rows = hud_mini_overlay_rows();
   const int block_h = font_px * rows + line_gap * (rows - 1);
-  const int y0 = (std::max)(2, (bar_h - block_h) / 2);
+  const int y0 = (std::max)(2, (work_h - block_h) / 2);
 
   int wrap_st = nseg;
   int wrap_l600 = nseg;
@@ -885,21 +990,6 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   if (gw >= 64) paint_frametime_graph(hdc, gx, gy, gw, gh, o, 2);
 
   SelectObject(hdc, old);
-  DeleteObject(mini_font);
-
-  if (!o.session_notice.empty()) {
-    std::string title, detail;
-    session_notice_split(o.session_notice, title, detail);
-    HFONT notice_font = CreateFontW(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
-                                    DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
-    HFONT oldn = static_cast<HFONT>(SelectObject(hdc, notice_font));
-    SetTextColor(hdc, RGB(255, 200, 90));
-    const std::wstring wt = utf8_to_wide_hud(title);
-    TextOutW(hdc, pad, bar_h > 40 ? bar_h - 22 : 36, wt.c_str(), static_cast<int>(wt.size()));
-    SelectObject(hdc, oldn);
-    DeleteObject(notice_font);
-  }
 }
 
 void paint_hdmi_hold_card_hdc(HDC hdc, const RECT& rc, const OverlayState& overlay) {
@@ -920,24 +1010,21 @@ void paint_hdmi_hold_card_hdc(HDC hdc, const RECT& rc, const OverlayState& overl
   const std::wstring detail = utf8_to_wide_hud(
       overlay.hdmi_notice_detail.empty() ? session_hdmi_notice_detail() : overlay.hdmi_notice_detail);
 
-  HFONT big = CreateFontW(32, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HFONT big = g_hud_fonts.hold_big.get(32, FW_SEMIBOLD, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS,
+                                       L"Segoe UI");
   HFONT old = static_cast<HFONT>(SelectObject(hdc, big));
   SetTextColor(hdc, RGB(255, 210, 110));
   RECT tr{rc.left + 24, rc.top + 18, rc.right - 24, rc.top + 62};
   DrawTextW(hdc, title.c_str(), -1, &tr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
   SelectObject(hdc, old);
-  DeleteObject(big);
 
-  HFONT small_font = CreateFontW(20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                 OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                 DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+  HFONT small_font = g_hud_fonts.hold_small.get(20, FW_NORMAL, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS,
+                                                L"Segoe UI");
   old = static_cast<HFONT>(SelectObject(hdc, small_font));
   SetTextColor(hdc, RGB(205, 225, 250));
   RECT dr{rc.left + 24, rc.top + 68, rc.right - 24, rc.bottom - 16};
   DrawTextW(hdc, detail.c_str(), -1, &dr, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
   SelectObject(hdc, old);
-  DeleteObject(small_font);
 }
 
 }  // namespace
@@ -967,6 +1054,29 @@ bool RendererD3D11::ensure_hud_tex(int w, int h) {
   return true;
 }
 
+bool RendererD3D11::ensure_toast_tex(int w, int h) {
+  if (!impl_ || !impl_->device || w < 8 || h < 8) return false;
+  if (impl_->toastTex && impl_->toast_w == w && impl_->toast_h == h) return true;
+  impl_->toastSrv.Reset();
+  impl_->toastTex.Reset();
+  D3D11_TEXTURE2D_DESC td{};
+  td.Width = static_cast<UINT>(w);
+  td.Height = static_cast<UINT>(h);
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_DYNAMIC;
+  td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  if (FAILED(impl_->device->CreateTexture2D(&td, nullptr, &impl_->toastTex))) return false;
+  impl_->device->CreateShaderResourceView(impl_->toastTex.Get(), nullptr, &impl_->toastSrv);
+  impl_->toast_w = w;
+  impl_->toast_h = h;
+  impl_->toast_last_tick = 0;
+  return true;
+}
+
 void RendererD3D11::upload_hud_bits(const void* bits, int w, int h) {
   if (!impl_ || !impl_->ctx || !impl_->hudTex || !bits || w < 1 || h < 1) return;
   D3D11_MAPPED_SUBRESOURCE map{};
@@ -980,8 +1090,21 @@ void RendererD3D11::upload_hud_bits(const void* bits, int w, int h) {
   impl_->ctx->Unmap(impl_->hudTex.Get(), 0);
 }
 
-void RendererD3D11::blit_hud(int x, int y, int w, int h) {
-  if (!impl_ || !impl_->ctx || !impl_->rtv || !impl_->hudSrv) return;
+void RendererD3D11::upload_toast_bits(const void* bits, int w, int h) {
+  if (!impl_ || !impl_->ctx || !impl_->toastTex || !bits || w < 1 || h < 1) return;
+  D3D11_MAPPED_SUBRESOURCE map{};
+  if (FAILED(impl_->ctx->Map(impl_->toastTex.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) return;
+  const auto* src = static_cast<const uint8_t*>(bits);
+  auto* dst = static_cast<uint8_t*>(map.pData);
+  const size_t row_bytes = static_cast<size_t>(w) * 4u;
+  for (int y = 0; y < h; ++y) {
+    std::memcpy(dst + static_cast<size_t>(y) * map.RowPitch, src + static_cast<size_t>(y) * row_bytes, row_bytes);
+  }
+  impl_->ctx->Unmap(impl_->toastTex.Get(), 0);
+}
+
+void RendererD3D11::blit_overlay_srv(ID3D11ShaderResourceView* srv, int x, int y, int w, int h) {
+  if (!impl_ || !impl_->ctx || !impl_->rtv || !srv) return;
   if (!impl_->hudBlend) {
     D3D11_BLEND_DESC bd{};
     bd.RenderTarget[0].BlendEnable = TRUE;
@@ -1007,8 +1130,8 @@ void RendererD3D11::blit_hud(int x, int y, int w, int h) {
   if (impl_->hudBlend) impl_->ctx->OMSetBlendState(impl_->hudBlend.Get(), bf, 0xffffffff);
   impl_->ctx->VSSetShader(impl_->blitVs.Get(), nullptr, 0);
   impl_->ctx->PSSetShader(impl_->blitPs.Get(), nullptr, 0);
-  ID3D11ShaderResourceView* srv[] = {impl_->hudSrv.Get()};
-  impl_->ctx->PSSetShaderResources(0, 1, srv);
+  ID3D11ShaderResourceView* srvs[] = {srv};
+  impl_->ctx->PSSetShaderResources(0, 1, srvs);
   ID3D11SamplerState* samp[] = {impl_->sampler.Get()};
   impl_->ctx->PSSetSamplers(0, 1, samp);
   impl_->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1018,17 +1141,17 @@ void RendererD3D11::blit_hud(int x, int y, int w, int h) {
   impl_->ctx->OMSetBlendState(nullptr, bf, 0xffffffff);
 }
 
+void RendererD3D11::blit_hud(int x, int y, int w, int h) {
+  if (!impl_ || !impl_->hudSrv) return;
+  blit_overlay_srv(impl_->hudSrv.Get(), x, y, w, h);
+}
+
 void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
   if (!impl_ || !impl_->ctx || !impl_->rtv || back_w_ < 64 || back_h_ < 32) return;
 
   const int gap = 8;
   int bar_w = (std::max)(200, back_w_ - gap * 2);
   int bar_h = hud_mini_overlay_height();
-  if (!overlay.session_notice.empty()) {
-    std::string t, d;
-    session_notice_split(overlay.session_notice, t, d);
-    bar_h += d.empty() ? 33 : 60;
-  }
   if (bar_w > back_w_) bar_w = back_w_;
   if (bar_h > back_h_) bar_h = back_h_;
 
@@ -1155,9 +1278,6 @@ void RendererD3D11::burn_panel_overlay(const OverlayState& overlay) {
   int bar_w = (std::min)(hud_panel_width(overlay.advanced_metrics), (std::max)(160, back_w_ - margin * 2));
   int bar_h = (std::min)(hud_panel_height(overlay.advanced_metrics, overlay.hw_info),
                          (std::max)(80, back_h_ - margin * 2));
-  if (!overlay.session_notice.empty()) {
-    bar_h = (std::min)(bar_h + 56, (std::max)(80, back_h_ - margin * 2));
-  }
   if (!ensure_hud_tex(bar_w, bar_h)) return;
 
   const DWORD now = GetTickCount();
@@ -1209,68 +1329,70 @@ void RendererD3D11::burn_panel_overlay(const OverlayState& overlay) {
 void RendererD3D11::burn_live_overlay(const OverlayState& overlay) {
   if (!impl_ || !impl_->ctx || !impl_->rtv || back_w_ < 64 || back_h_ < 32) return;
 
-  UINT dpi = 96;
-  if (hwnd_) {
-    using Fn = UINT(WINAPI*)(HWND);
-    static Fn get_dpi =
-        reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
-    if (get_dpi) {
-      const UINT d = get_dpi(hwnd_);
-      if (d >= 96) dpi = d;
-    }
-  }
-  auto md = [&](int v) { return MulDiv(v, static_cast<int>(dpi), 96); };
-  const int font_px = md(16);
-  const int hh = md(26);
-  const int spark_w = md(104);
-  const int gap = md(12);
-  const int pad_x = md(8);
-  const int margin = md(10);
-
-  const LiveConsole cons = clamp_live_console(overlay.live_console);
-  const double show_fps = overlay.fps_smooth > 0 ? overlay.fps_smooth : overlay.fps;
-  LiveStripLines strip{};
-  fill_live_strip_lines(strip, overlay.overlay_console, cons, overlay.renodx_on || overlay.dlss_on,
-                        overlay.nr_pass_count, overlay.fg_on, overlay.fg_multiplier, show_fps,
-                        overlay.fps_fg_est, overlay.ft_stable, overlay.fg_queue);
-  const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
-  const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
-  const std::wstring fg_w = utf8_to_wide_hud(strip.fg);
-  const std::wstring fps_lab_w = utf8_to_wide_hud(strip.fps_lab.text);
-  const std::wstring fps_cap_w = utf8_to_wide_hud(strip.fps_cap.text);
-  const std::wstring fps_sep_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_sep.text) : std::wstring{};
-  const std::wstring fps_fg_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_fg.text) : std::wstring{};
-
-  HDC screen = GetDC(nullptr);
-  HDC measure = CreateCompatibleDC(screen);
-  HFONT font = CreateFontW(font_px, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
-                           CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
-  HFONT old_m = static_cast<HFONT>(SelectObject(measure, font));
-  auto measure_w = [&](const std::wstring& s) -> int {
-    if (s.empty()) return 0;
-    SIZE sz{};
-    GetTextExtentPoint32W(measure, s.c_str(), static_cast<int>(s.size()), &sz);
-    return sz.cx;
-  };
-  const int sz_cons = measure_w(cons_w);
-  int ww = pad_x + sz_cons + (sz_cons > 0 ? gap : 0) + measure_w(dlss_w) + gap + measure_w(fg_w) + gap +
-           measure_w(fps_lab_w) + measure_w(fps_cap_w) + measure_w(fps_sep_w) + measure_w(fps_fg_w) + gap +
-           spark_w + pad_x;
-  SelectObject(measure, old_m);
-  DeleteDC(measure);
-  if (ww < 80) ww = 80;
-  const int bar_h = hh;
-  const int bar_w = (std::min)(back_w_ - margin * 2, (std::max)(ww, (std::min)(960, back_w_ / 2)));
-  const int content_w = (std::min)(ww, bar_w);
-  if (!ensure_hud_tex(bar_w, bar_h)) {
-    DeleteObject(font);
-    ReleaseDC(nullptr, screen);
-    return;
-  }
-
   const DWORD now = GetTickCount();
-  const bool refresh = (impl_->hud_last_tick == 0) || (now - impl_->hud_last_tick) >= 33;
+  const bool refresh =
+      (impl_->hud_last_tick == 0) || (now - impl_->hud_last_tick) >= 33 || impl_->live_blit_w <= 0;
   if (refresh) {
+    UINT dpi = 96;
+    if (hwnd_) {
+      using Fn = UINT(WINAPI*)(HWND);
+      static Fn get_dpi =
+          reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+      if (get_dpi) {
+        const UINT d = get_dpi(hwnd_);
+        if (d >= 96) dpi = d;
+      }
+    }
+    auto md = [&](int v) { return MulDiv(v, static_cast<int>(dpi), 96); };
+    const int font_px = md(16);
+    const int hh = md(26);
+    const int spark_w = md(104);
+    const int gap = md(12);
+    const int pad_x = md(8);
+    const int margin = md(10);
+
+    const LiveConsole cons = clamp_live_console(overlay.live_console);
+    const double show_fps = overlay.fps_smooth > 0 ? overlay.fps_smooth : overlay.fps;
+    LiveStripLines strip{};
+    fill_live_strip_lines(strip, overlay.overlay_console, cons, overlay.renodx_on || overlay.dlss_on,
+                          overlay.nr_pass_count, overlay.fg_on, overlay.fg_multiplier, show_fps,
+                          overlay.fps_fg_est, overlay.ft_stable, overlay.fg_queue, overlay.frame_ms,
+                          overlay.fg_adaptive, overlay.fg_target_fps);
+    const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
+    const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
+    const std::wstring fg_w = utf8_to_wide_hud(strip.fg);
+    const std::wstring fps_lab_w = utf8_to_wide_hud(strip.fps_lab.text);
+    const std::wstring fps_cap_w = utf8_to_wide_hud(strip.fps_cap.text);
+    const std::wstring fps_sep_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_sep.text) : std::wstring{};
+    const std::wstring fps_fg_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_fg.text) : std::wstring{};
+    const std::wstring ft_w = strip.ft[0] ? utf8_to_wide_hud(strip.ft) : std::wstring{};
+
+    HDC screen = GetDC(nullptr);
+    HDC measure = CreateCompatibleDC(screen);
+    HFONT font = g_hud_fonts.live.get(font_px, FW_BOLD, ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
+                                      L"Consolas");
+    HFONT old_m = static_cast<HFONT>(SelectObject(measure, font));
+    auto measure_w = [&](const std::wstring& s) -> int {
+      if (s.empty()) return 0;
+      SIZE sz{};
+      GetTextExtentPoint32W(measure, s.c_str(), static_cast<int>(s.size()), &sz);
+      return sz.cx;
+    };
+    const int sz_cons = measure_w(cons_w);
+    int ww = pad_x + sz_cons + (sz_cons > 0 ? gap : 0) + measure_w(dlss_w) + gap + measure_w(fg_w) + gap +
+             measure_w(fps_lab_w) + measure_w(fps_cap_w) + measure_w(fps_sep_w) + measure_w(fps_fg_w) +
+             (ft_w.empty() ? 0 : gap + measure_w(ft_w)) + gap + spark_w + pad_x;
+    SelectObject(measure, old_m);
+    DeleteDC(measure);
+    if (ww < 80) ww = 80;
+    const int bar_h = hh;
+    const int bar_w = (std::min)(back_w_ - margin * 2, (std::max)(ww, (std::min)(960, back_w_ / 2)));
+    const int content_w = (std::min)(ww, bar_w);
+    if (!ensure_hud_tex(bar_w, bar_h)) {
+      ReleaseDC(nullptr, screen);
+      return;
+    }
+
     impl_->hud_last_tick = now;
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -1285,7 +1407,6 @@ void RendererD3D11::burn_live_overlay(const OverlayState& overlay) {
     if (!dib || !bits) {
       if (dib) DeleteObject(dib);
       if (mem) DeleteDC(mem);
-      DeleteObject(font);
       ReleaseDC(nullptr, screen);
       return;
     }
@@ -1329,6 +1450,13 @@ void RendererD3D11::burn_live_overlay(const OverlayState& overlay) {
     draw_join(fps_sep_w, RGB(strip.fps_sep.r, strip.fps_sep.g, strip.fps_sep.b));
     draw_join(fps_fg_w, RGB(strip.fps_fg.r, strip.fps_fg.g, strip.fps_fg.b));
     x += gap;
+    if (!ft_w.empty()) {
+      const OverlayFtStatus ft_st =
+          overlay_ft_status(overlay.ft_stable, overlay.fg_on, overlay.fg_multiplier, show_fps,
+                            overlay.target_fps, overlay.fps_fg_est);
+      const FgFtRgb ft_rgb = overlay_ft_status_rgb(ft_st);
+      draw_seg(ft_w, RGB(ft_rgb.r, ft_rgb.g, ft_rgb.b));
+    }
     {
       const int gx = x;
       const int gw = (std::min)(spark_w, bar_w - gx - pad_x);
@@ -1357,10 +1485,76 @@ void RendererD3D11::burn_live_overlay(const OverlayState& overlay) {
     SelectObject(mem, old_bmp);
     DeleteObject(dib);
     DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    impl_->live_blit_w = bar_w;
+    impl_->live_blit_h = bar_h;
+    impl_->live_blit_x = (std::max)(margin, back_w_ - margin - bar_w);
+    impl_->live_blit_y = margin;
   }
-  DeleteObject(font);
-  ReleaseDC(nullptr, screen);
-  blit_hud((std::max)(margin, back_w_ - margin - bar_w), margin, bar_w, bar_h);
+  if (impl_->live_blit_w > 0) {
+    blit_hud(impl_->live_blit_x, impl_->live_blit_y, impl_->live_blit_w, impl_->live_blit_h);
+  }
+}
+
+void RendererD3D11::burn_session_notice(const OverlayState& overlay) {
+  if (!impl_ || !impl_->ctx || !impl_->rtv || overlay.session_notice.empty()) return;
+  if (back_w_ < 64 || back_h_ < 32) return;
+  const int margin = 40;
+  const int scale = session_notice_toast_scale();
+  int bar_h = session_notice_band_px(overlay.session_notice, scale);
+  int bar_w = (std::min)(960, (std::max)(560, back_w_ - margin * 2));
+  if (bar_w > back_w_) bar_w = back_w_;
+  if (bar_h > back_h_) bar_h = back_h_;
+  if (bar_h < 8 || bar_w < 8) return;
+  if (!ensure_toast_tex(bar_w, bar_h)) return;
+
+  const DWORD now = GetTickCount();
+  const bool refresh = (impl_->toast_last_tick == 0) || (now - impl_->toast_last_tick) >= 33;
+  if (refresh) {
+    impl_->toast_last_tick = now;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = bar_w;
+    bmi.bmiHeader.biHeight = -bar_h;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    HBITMAP dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, screen);
+    if (!dib || !bits) {
+      if (dib) DeleteObject(dib);
+      if (mem) DeleteDC(mem);
+      return;
+    }
+    HGDIOBJ old_bmp = SelectObject(mem, dib);
+    RECT rc{0, 0, bar_w, bar_h};
+    if (overlay.overlay_no_bg && bits) {
+      std::memset(bits, 0, static_cast<size_t>(bar_w) * static_cast<size_t>(bar_h) * 4u);
+    }
+    paint_session_notice_band(mem, rc, overlay, true, scale);
+    auto* px = static_cast<uint32_t*>(bits);
+    const int n = bar_w * bar_h;
+    if (overlay.overlay_no_bg) {
+      for (int i = 0; i < n; ++i) {
+        const uint32_t rgb = px[i] & 0x00FFFFFFu;
+        px[i] = rgb ? (rgb | 0xFF000000u) : 0;
+      }
+    } else {
+      constexpr uint32_t kA = 220u << 24;
+      for (int i = 0; i < n; ++i) px[i] = (px[i] & 0x00FFFFFFu) | kA;
+    }
+    upload_toast_bits(bits, bar_w, bar_h);
+    SelectObject(mem, old_bmp);
+    DeleteObject(dib);
+    DeleteDC(mem);
+  }
+  int nx = 0;
+  int ny = 0;
+  overlay_notice_center(bar_w, bar_h, back_w_, back_h_, nx, ny);
+  blit_overlay_srv(impl_->toastSrv.Get(), nx, ny, bar_w, bar_h);
 }
 
 void RendererD3D11::burn_hdmi_hold_notice(const OverlayState& overlay) {
@@ -1513,23 +1707,12 @@ void MetricsHud::reposition() {
     const int owner_w = static_cast<int>(r.right - r.left);
     const int ww = (std::max)(200, owner_w - gap * 2);
     int hh = hud_mini_overlay_height();
-    if (!state_.session_notice.empty()) {
-      std::string t, d;
-      session_notice_split(state_.session_notice, t, d);
-      hh += d.empty() ? 33 : 60;
-    }
     SetWindowPos(hwnd_, HWND_TOPMOST, r.left + gap, r.top + gap, ww, hh,
                  SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     return;
   }
-  const int ww = (std::max)(hud_panel_width(state_.advanced_metrics),
-                            state_.session_notice.empty() ? 0 : 720);
+  const int ww = hud_panel_width(state_.advanced_metrics);
   int hh = hud_panel_height(state_.advanced_metrics, state_.hw_info);
-  if (!state_.session_notice.empty()) {
-    std::string t, d;
-    session_notice_split(state_.session_notice, t, d);
-    hh += d.empty() ? 32 : 56;
-  }
   SetWindowPos(hwnd_, HWND_TOPMOST, r.left + 24, r.top + 24, ww, hh,
                SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
 }
@@ -1572,9 +1755,8 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   }
   SetBkMode(hdc, TRANSPARENT);
 
-  HFONT font = CreateFontW(26, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
-                           FIXED_PITCH | FF_MODERN, L"Consolas");
+  HFONT font = g_hud_fonts.panel.get(26, FW_SEMIBOLD, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
+                                     L"Consolas");
   HFONT old = static_cast<HFONT>(SelectObject(hdc, font));
 
   const wchar_t* mode = o.fake_capture ? L"FAKE" : L"LIVE";
@@ -1587,20 +1769,34 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     int n = 0;
     swprintf(lines[n++], 180, L"NexusCap  [%s]  ", mode);
     swprintf(lines[n++], 180, L"%dx%d @ %.0f", o.capture_w, o.capture_h, o.target_fps);
+    const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
     HudFpsParts fps_parts{};
     {
-      const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
       fill_session_hud_fps_parts(fps_parts, show_fps, o.fps_fg_est, o.fg_on, o.fg_multiplier, true,
-                                o.ft_stable);
+                                o.ft_stable, o.fg_adaptive, o.fg_target_fps);
       char fps_line[128]{};
       join_hud_fps_parts(fps_line, sizeof(fps_line), fps_parts);
       swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
     }
-    if (fg_frametime_trace_count(o.fg_on, o.fg_multiplier) >= 2) {
-      swprintf(lines[n++], 180, L"frametime  %.2f ms   FG %.2f   present %.2f", o.frame_ms,
-               fg_frametime_trace_ms(o.frame_ms, o.fg_multiplier), o.present_ms);
-    } else {
-      swprintf(lines[n++], 180, L"frametime  %.2f ms   present %.2f", o.frame_ms, o.present_ms);
+    const OverlayFtStatus ft_st =
+        overlay_ft_status(o.ft_stable, o.fg_on, o.fg_multiplier, show_fps, o.target_fps, o.fps_fg_est);
+    int i_ft = -1;
+    int i_lat = -1;
+    int i_fg = -1;
+    int i_sync = -1;
+    {
+      char ft_line[180]{};
+      format_overlay_frametime_line(ft_line, sizeof(ft_line), o.frame_ms, o.ft_avg_ms, o.ft_p95_ms, o.ft_stable,
+                                   o.fg_on, o.fg_multiplier, show_fps, o.target_fps, o.fps_fg_est);
+      i_ft = n;
+      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(ft_line).c_str());
+    }
+    {
+      const bool nr_on = o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos;
+      char lat_line[180]{};
+      format_overlay_latency_line(lat_line, sizeof(lat_line), o.e2e_ms, o.present_ms, nr_on);
+      i_lat = n;
+      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(lat_line).c_str());
     }
     {
       char stack[96]{};
@@ -1611,37 +1807,30 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       char fg_line[160]{};
       format_session_hud_fg_status_line(fg_line, sizeof(fg_line), o.fg_on, o.fg_multiplier, o.fg_backend.c_str(),
                                         o.fg_flow_scale, o.fg_capture_api.c_str(), o.fg_status.c_str(),
-                                        o.fps_smooth > 0 ? o.fps_smooth : o.fps, o.fps_fg_est, o.fg_queue);
+                                        show_fps, o.fps_fg_est, o.fg_queue, o.fg_adaptive, o.fg_target_fps);
+      i_fg = n;
       swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(fg_line).c_str());
     }
+    i_sync = n;
     swprintf(lines[n++], 180, L"%s  Present(%u)", o.sync_image ? L"SYNC VSYNC" : L"SYNC TEAR",
              o.sync_image ? 1u : 0u);
     const int hw_start = n;
     if (o.hw_info) n = append_hw_metric_lines(lines, n, 15, o);
     const int hotkey_i = n;
     swprintf(lines[n++], 180, L"F3 HUD  PgDn FG  Delete NR  Esc");
-    int notice_i = -1;
-    int notice_i2 = -1;
-    if (!o.session_notice.empty() && n < 15) {
-      std::string title, detail;
-      session_notice_split(o.session_notice, title, detail);
-      notice_i = n;
-      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(title.empty() ? o.session_notice : title).c_str());
-      if (!detail.empty() && n < 16) {
-        notice_i2 = n;
-        swprintf(lines[n++], 180, L"  %s", utf8_to_wide_hud(detail).c_str());
-      }
-    }
     for (int i = 0; i < n; ++i) {
       COLORREF c = RGB(200, 200, 210);
       if (i == 0) c = RGB(255, 210, 70);
       else if (i == 1) c = RGB(120, 220, 255);
       else if (i == 2) c = RGB(120, 255, 160);
-      else if (i == 5) c = o.fg_on ? RGB(120, 255, 200) : RGB(160, 170, 180);
-      else if (i == 6) c = o.sync_image ? RGB(120, 220, 255) : RGB(255, 160, 90);
+      else if (i == i_ft) {
+        const FgFtRgb rgb = overlay_ft_status_rgb(ft_st);
+        c = RGB(rgb.r, rgb.g, rgb.b);
+      } else if (i == i_lat) c = RGB(120, 255, 160);
+      else if (i == i_fg) c = o.fg_on ? RGB(120, 255, 200) : RGB(160, 170, 180);
+      else if (i == i_sync) c = o.sync_image ? RGB(120, 220, 255) : RGB(255, 160, 90);
       else if (o.hw_info && i >= hw_start && i < hotkey_i) c = RGB(140, 255, 180);
       else if (i == hotkey_i) c = RGB(150, 150, 160);
-      else if (i == notice_i || i == notice_i2) c = RGB(255, 200, 120);
       const int y = 10 + i * 28;
       if (i == 0) {
         hud_draw_title_with_console(hdc, 14, y, lines[i], o);
@@ -1660,7 +1849,6 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     const int gh = (std::max)(72, static_cast<int>(rc.bottom - rc.top) - gy - 10);
     paint_frametime_graph(hdc, gx, gy, gw, gh, o, 2);
     SelectObject(hdc, old);
-    DeleteObject(font);
     return;
   }
 
@@ -1680,7 +1868,7 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   }
   HudFpsParts fps_parts{};
   fill_session_hud_fps_parts(fps_parts, o.fps_smooth, o.fps_fg_est, o.fg_on, o.fg_multiplier, false,
-                            o.ft_stable);
+                            o.ft_stable, o.fg_adaptive, o.fg_target_fps);
   {
     char fps_line[128]{};
     join_hud_fps_parts(fps_line, sizeof(fps_line), fps_parts);
@@ -1689,19 +1877,19 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   const OverlayFtStatus ft_st = overlay_ft_status(
       o.ft_stable, o.fg_on, o.fg_multiplier, o.fps_smooth > 0 ? o.fps_smooth : o.fps, o.target_fps, o.fps_fg_est);
   {
-    const char* hint = overlay_ft_status_hint(ft_st);
-    if (hint[0]) {
-      swprintf(lines[4], 180, L"frametime  %.2f ms   avg %.2f  p95 %.2f  max %.2f  %s  %s", o.frame_ms,
-               o.ft_avg_ms, o.ft_p95_ms, o.ft_max_ms, utf8_to_wide_hud(overlay_ft_status_label(ft_st)).c_str(),
-               utf8_to_wide_hud(hint).c_str());
-    } else {
-      swprintf(lines[4], 180, L"frametime  %.2f ms   avg %.2f  p95 %.2f  max %.2f  %s", o.frame_ms, o.ft_avg_ms,
-               o.ft_p95_ms, o.ft_max_ms, utf8_to_wide_hud(overlay_ft_status_label(ft_st)).c_str());
-    }
+    char ft_line[180]{};
+    format_overlay_frametime_line(ft_line, sizeof(ft_line), o.frame_ms, o.ft_avg_ms, o.ft_p95_ms, o.ft_stable,
+                                 o.fg_on, o.fg_multiplier, o.fps_smooth > 0 ? o.fps_smooth : o.fps, o.target_fps,
+                                 o.fps_fg_est);
+    swprintf(lines[4], 180, L"%s", utf8_to_wide_hud(ft_line).c_str());
   }
-  swprintf(lines[5], 180, L"latencia  cap %.2f ms   present %.2f ms%s   %s", o.e2e_ms, o.present_ms,
-           (o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos) ? L" (+NR/DLSS5)" : L"",
-           o.sync_image ? L"VSYNC" : L"TEAR");
+  {
+    const bool nr_on = o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos;
+    char lat_line[180]{};
+    format_overlay_latency_line(lat_line, sizeof(lat_line), o.e2e_ms, o.present_ms, nr_on,
+                               o.sync_image ? "VSYNC" : "TEAR");
+    swprintf(lines[5], 180, L"%s", utf8_to_wide_hud(lat_line).c_str());
+  }
   if (o.renodx_on || o.dlss_backend.find("renodx") != std::string::npos) {
     char stack[96]{};
     format_dlss5_stack_hud_line(stack, sizeof(stack), o.renodx_on, o.feed_on, o.nr_pass_count);
@@ -1716,7 +1904,7 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     char fg_line[160]{};
     format_session_hud_fg_status_line(fg_line, sizeof(fg_line), o.fg_on, o.fg_multiplier, o.fg_backend.c_str(),
                                       o.fg_flow_scale, o.fg_capture_api.c_str(), o.fg_status.c_str(), o.fps_smooth,
-                                      o.fps_fg_est, o.fg_queue);
+                                      o.fps_fg_est, o.fg_queue, o.fg_adaptive, o.fg_target_fps);
     swprintf(lines[7], 180, L"%s", utf8_to_wide_hud(fg_line).c_str());
   }
 
@@ -1736,18 +1924,6 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     swprintf(lines[idx++], 180, L"last600 (aguardando ~10s de frames...)");
   }
   swprintf(lines[idx++], 180, L"F3 HUD  F4 analyze  PgDn FG  Delete NR  Home RenoDX  Esc");
-  int notice_i = -1;
-  int notice_i2 = -1;
-  if (!o.session_notice.empty() && idx < 18) {
-    std::string title, detail;
-    session_notice_split(o.session_notice, title, detail);
-    notice_i = idx;
-    swprintf(lines[idx++], 180, L"%s", utf8_to_wide_hud(title.empty() ? o.session_notice : title).c_str());
-    if (!detail.empty() && idx < 20) {
-      notice_i2 = idx;
-      swprintf(lines[idx++], 180, L"  %s", utf8_to_wide_hud(detail).c_str());
-    }
-  }
   const int nlines = idx;
 
   auto color_for_adv = [&](int i) -> COLORREF {
@@ -1763,10 +1939,8 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     if (i == 6) return RGB(180, 160, 255);
     if (i == 7) return o.fg_on ? RGB(120, 255, 200) : RGB(160, 170, 180);
     if (o.hw_info && i >= hw_start && i < hw_end) return RGB(140, 255, 180);
-    if (i == notice_i || i == notice_i2) return RGB(255, 200, 120);
-    if (notice_i >= 0 && i == notice_i - 1) return RGB(150, 150, 160);
-    if (i == nlines - 1 && notice_i < 0) return RGB(150, 150, 160);
-    if (i == nlines - 2 && notice_i < 0) return RGB(255, 140, 140);
+    if (i == nlines - 1) return RGB(150, 150, 160);
+    if (i == nlines - 2) return RGB(255, 140, 140);
     return RGB(255, 180, 120);
   };
 
@@ -1808,7 +1982,6 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   }
 
   SelectObject(hdc, old);
-  DeleteObject(font);
 }
 
 LRESULT CALLBACK MetricsHud::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -2282,7 +2455,8 @@ void LiveOverlay::present() const {
   LiveStripLines strip{};
   fill_live_strip_lines(strip, state_.overlay_console, cons, state_.renodx_on || state_.dlss_on,
                         state_.nr_pass_count, state_.fg_on, state_.fg_multiplier, show_fps, state_.fps_fg_est,
-                        state_.ft_stable, state_.fg_queue);
+                        state_.ft_stable, state_.fg_queue, state_.frame_ms, state_.fg_adaptive,
+                        state_.fg_target_fps);
   const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
   const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
   const std::wstring fg_w = utf8_to_wide_hud(strip.fg);
@@ -2290,6 +2464,7 @@ void LiveOverlay::present() const {
   const std::wstring fps_cap_w = utf8_to_wide_hud(strip.fps_cap.text);
   const std::wstring fps_sep_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_sep.text) : std::wstring{};
   const std::wstring fps_fg_w = strip.has_fg_fps ? utf8_to_wide_hud(strip.fps_fg.text) : std::wstring{};
+  const std::wstring ft_w = strip.ft[0] ? utf8_to_wide_hud(strip.ft) : std::wstring{};
 
   auto measure_w = [&](const std::wstring& s) -> int {
     if (s.empty()) return 0;
@@ -2301,11 +2476,12 @@ void LiveOverlay::present() const {
   const int sz_dlss = measure_w(dlss_w);
   const int sz_fg = measure_w(fg_w);
   const int sz_fps = measure_w(fps_lab_w) + measure_w(fps_cap_w) + measure_w(fps_sep_w) + measure_w(fps_fg_w);
+  const int sz_ft = measure_w(ft_w);
   SelectObject(measure, old_m);
   DeleteDC(measure);
 
-  const int ww = pad_x + sz_cons + (sz_cons > 0 ? gap : 0) + sz_dlss + gap + sz_fg + gap + sz_fps + gap + spark_w +
-                 pad_x;
+  const int ww = pad_x + sz_cons + (sz_cons > 0 ? gap : 0) + sz_dlss + gap + sz_fg + gap + sz_fps +
+                 (sz_ft > 0 ? gap + sz_ft : 0) + gap + spark_w + pad_x;
   layout_w_ = ww;
   layout_h_ = hh;
 
@@ -2368,6 +2544,12 @@ void LiveOverlay::present() const {
   draw_join(fps_sep_w, RGB(strip.fps_sep.r, strip.fps_sep.g, strip.fps_sep.b));
   draw_join(fps_fg_w, RGB(strip.fps_fg.r, strip.fps_fg.g, strip.fps_fg.b));
   x += gap;
+  if (!ft_w.empty()) {
+    const OverlayFtStatus ft_st = overlay_ft_status(state_.ft_stable, state_.fg_on, state_.fg_multiplier,
+                                                   show_fps, state_.target_fps, state_.fps_fg_est);
+    const FgFtRgb ft_rgb = overlay_ft_status_rgb(ft_st);
+    draw_seg(ft_w, RGB(ft_rgb.r, ft_rgb.g, ft_rgb.b));
+  }
 
   {
     const int gx = x;

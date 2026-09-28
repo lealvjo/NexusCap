@@ -69,6 +69,8 @@ struct AppConfig {
   // Lossless Scaling FG (Steam install, never bundled): 1=off, 2/3/4=multiplier ready
   int fg_multiplier = 1;
   int fg_queue = 0;  // Lossless QueueTarget: 0 menor latência (validado)
+  bool fg_adaptive = false;  // default FIXED (mira-lock validado)
+  int fg_target_fps = 60;    // Adaptive LSFG3Target; teto = Hz do monitor
   // When true, session auto-toggles FG on open. False = armed for PageDn only (default).
   bool fg_auto_start = false;
   std::string fg_path;  // optional override of LosslessScaling.exe
@@ -117,9 +119,9 @@ inline unsigned present_interval_for_target(bool sync_image, double target_fps, 
 // Compact vs advanced metrics panel size (MetricsHud).
 // Advanced needs room for long signal/hotkey lines; HW adds 5 stacked rows.
 // Mini overlay: thin Steam Deck-style top bar (height only; width follows owner).
-inline int hud_panel_width(bool advanced_metrics) { return advanced_metrics ? 920 : 560; }
+inline int hud_panel_width(bool advanced_metrics) { return advanced_metrics ? 920 : 880; }
 inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
-  int h = advanced_metrics ? 640 : 320;  // compact inclui grafico FT + linhas FG
+  int h = advanced_metrics ? 640 : 348;  // compact: FT partilhado + latencia + grafico
   // 5 lines: CPU / GPU / RAM / VRAM / PWR
   if (hw_info) h += 5 * 28;
   return h;
@@ -341,7 +343,8 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
         scaled_extent(s.width, scale), scaled_extent(s.height, scale), s.width, s.height, scale, false, 0, 0,
         0, 0, renodx_visual_preset_name(s.renodx_preset, s.nr_pass_count), hw_compact, /*dlss_ms=*/0, /*frames=*/0,
         /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps, s.nr_pass_count,
-        overlay_console_label_or_null(s.ui.overlay_console, cons), false, cr, cg, cb, s.fg_queue);
+        overlay_console_label_or_null(s.ui.overlay_console, cons), false, cr, cg, cb, s.fg_queue,
+        s.fg_adaptive, s.fg_target_fps);
     out.count = out.line[1][0] ? 2 : 1;
     return out;
   }
@@ -363,13 +366,17 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       std::snprintf(out.line[n++], 128, "signal  %dx%d @ %.0f  work 100%%", s.width, s.height, s.fps);
     }
     if (s.fg_enabled) {
-      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx, s.fg_adaptive, s.fg_target_fps);
     } else {
-      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx, s.fg_adaptive, s.fg_target_fps);
     }
-    std::snprintf(out.line[n++], 128, "frametime  %.1f ms", ft);
-    std::snprintf(out.line[n++], 128, "FG  %s  x%d  fila%d   scale %d%%", s.fg_enabled ? "ON" : "off", fgx,
-                  clamp_fg_queue(s.fg_queue), scale);
+    format_overlay_frametime_line(out.line[n++], 128, ft, ft, ft, true, false, fgx, fps, s.fps, 0);
+    {
+      char tag[24]{};
+      format_fg_mode_tag(tag, sizeof(tag), s.fg_adaptive, fgx, s.fg_target_fps);
+      std::snprintf(out.line[n++], 128, "FG  %s  %s  fila%d   scale %d%%", s.fg_enabled ? "ON" : "off", tag,
+                    clamp_fg_queue(s.fg_queue), scale);
+    }
     {
       char stack[96]{};
       format_dlss5_stack_hud_line(stack, sizeof(stack), s.enhance_renodx && s.neural_rendering, s.enhance_renodx,
@@ -404,13 +411,17 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     }
     std::snprintf(out.line[n++], 128, "%dx%d @ %.0f", s.width, s.height, s.fps);
     if (s.fg_enabled) {
-      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx, s.fg_adaptive, s.fg_target_fps);
     } else {
-      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx, s.fg_adaptive, s.fg_target_fps);
     }
-    std::snprintf(out.line[n++], 128, "frametime  %.1f ms", ft);
-    std::snprintf(out.line[n++], 128, "FG %s x%d  fila%d  scale %d%%", s.fg_enabled ? "ON" : "off", fgx,
-                  clamp_fg_queue(s.fg_queue), scale);
+    format_overlay_frametime_line(out.line[n++], 128, ft, ft, ft, true, false, fgx, fps, s.fps, 0);
+    {
+      char tag[24]{};
+      format_fg_mode_tag(tag, sizeof(tag), s.fg_adaptive, fgx, s.fg_target_fps);
+      std::snprintf(out.line[n++], 128, "FG %s %s  fila%d  scale %d%%", s.fg_enabled ? "ON" : "off", tag,
+                    clamp_fg_queue(s.fg_queue), scale);
+    }
     {
       char stack[96]{};
       format_dlss5_stack_hud_line(stack, sizeof(stack), s.enhance_renodx && s.neural_rendering, s.enhance_renodx,
@@ -608,7 +619,7 @@ inline std::string session_notice_hdmi_recover() {
   return session_hdmi_notice_title() + " — " + session_hdmi_notice_detail();
 }
 inline std::string session_notice_fg_on() {
-  return "Frame Gen ON — latencia / artefatos podem subir";
+  return "Frame Gen ON";
 }
 inline std::string session_notice_fg_multiplier_up(int mult) {
   mult = clamp_fg_multiplier(mult);
@@ -618,6 +629,15 @@ inline std::string session_notice_fg_queue_apply(int queue, bool restarting) {
   const int q = clamp_fg_queue(queue);
   if (restarting) return "Perfil FG fila" + std::to_string(q) + " — reabrindo o Lossless";
   return "Perfil FG fila" + std::to_string(q) + " — na proxima abertura";
+}
+inline std::string session_notice_fg_adaptive_apply(bool adaptive, int target, int monitor_hz, bool restarting,
+                                                    double capture_fps = 0) {
+  if (!adaptive) {
+    return restarting ? "Frame Gen Fixo — reabrindo o Lossless" : "Frame Gen Fixo — na proxima abertura";
+  }
+  const int t = clamp_fg_adaptive_target(target, monitor_hz, capture_fps);
+  if (restarting) return "Frame Gen Adaptive " + std::to_string(t) + " — reabrindo o Lossless";
+  return "Frame Gen Adaptive " + std::to_string(t) + " — na proxima abertura";
 }
 inline std::string session_notice_fg_missing() {
   return "Frame Gen — Lossless Scaling nao encontrado (CFG → Pasta)";
@@ -699,6 +719,41 @@ inline void session_notice_split(const std::string& msg, std::string& title, std
   detail = msg.substr(pos + 3);
 }
 
+inline int session_notice_extra_px(const std::string& msg) {
+  if (msg.empty()) return 0;
+  std::string t, d;
+  session_notice_split(msg, t, d);
+  return d.empty() ? 36 : 60;
+}
+
+// Live toast is a thin 16px band. 3x so FG ON is readable next to the strip.
+inline int session_notice_live_scale() { return 3; }
+
+inline int session_notice_toast_scale() { return session_notice_live_scale(); }
+
+inline int session_notice_band_px(const std::string& msg, int scale) {
+  if (scale < 1) scale = 1;
+  const int extra = session_notice_extra_px(msg);
+  if (extra <= 0) return 0;
+  return extra * scale + 12 * scale;
+}
+
+// HUD off still burns the FG/NR toast into Present (no compact panel flash).
+inline bool overlay_notice_only(bool hud_on, bool has_notice) { return !hud_on && has_notice; }
+
+inline bool overlay_notice_burn(bool has_notice) { return has_notice; }
+
+// Kept for tests: toast no longer depends on live. Any HUD with a notice burns it.
+inline bool overlay_notice_with_live(bool /*hud_on*/, bool /*live*/, bool has_notice) { return has_notice; }
+
+// Toast no centro, fora do overlay (live/mini/compacto/ADV).
+inline void overlay_notice_center(int bar_w, int bar_h, int back_w, int back_h, int& x, int& y) {
+  x = 0;
+  y = 0;
+  if (back_w > bar_w) x = (back_w - bar_w) / 2;
+  if (back_h > bar_h) y = (back_h - bar_h) / 2;
+}
+
 // Warn when enabling FG; when cycling, only if multiplier went up (2→3→4).
 inline bool session_notice_for_fg_toggle(bool now_active) { return now_active; }
 inline bool session_notice_for_fg_cycle(int prev_mult, int next_mult) {
@@ -763,6 +818,8 @@ inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettin
   s.ui.overlay_no_bg = cfg.overlay_no_bg;
   apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, s);
   s.fg_queue = clamp_fg_queue(cfg.fg_queue);
+  s.fg_adaptive = cfg.fg_adaptive;
+  s.fg_target_fps = clamp_fg_adaptive_target_stored(cfg.fg_target_fps);
   apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == EnhanceBackend::Renodx, s);
 }
 

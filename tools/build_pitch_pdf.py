@@ -306,7 +306,7 @@ def main() -> None:
     c.drawString(36, H - 78, "A engrenagem CFG. Pipeline, overlay e reports sem sair do preview.")
     cfg_copy = [
         ("Overlay Nexus Cap", "HUD próprio: FPS, frametime, GPU, STABLE. Sem Afterburner."),
-        ("Frame Gen", "Se tiver Lossless Scaling, liga sozinho. Até 4x."),
+        ("Frame Gen", "Fixo x2/x3/x4 ou Adaptive (teto FPS). Até 4x."),
         ("Escala e Pass", "Onde o DLSS trabalha. 1,5x é o modo justo. 2x usa o otimizado."),
         ("Neural Rendering", "RenoDX no Present. Presets Default, Natural, Cinematic."),
     ]
@@ -423,7 +423,7 @@ def main() -> None:
         regular,
         [
             "Se a pessoa tiver o Lossless Scaling na Steam, o NexusCap integra automaticamente.",
-            "Geração de frames até 4x no Present, sem recapturar a mesa, sem segundo capturador.",
+            "Fixo x2/x3/x4, ou Adaptive: gera frames ate o que voce definiu. Ate 4x no Present.",
             "Otimizações nossas para latência e ghosting, embutidas no perfil que gravamos.",
             "O ponto crítico: menos ghost na mira e no HUD, não o default genérico da Steam.",
             "Demo: DLSS 5 em 1x  +  FG x4  ·  captura ~60 fps  ·  saída ~240.",
@@ -437,6 +437,43 @@ def main() -> None:
         c.setFont(bold, 10)
         c.drawString(36, 218, "Overlay ao vivo  ·  cap|FG x4 ON  ·  DLSS5 1x  ·  1440p nativo")
         fit(c, hud, 36, 40, W - 72, 168)
+    c.showPage()
+
+    # Fixo vs Adaptive: prints do Modo FG no lobby CFG
+    fill(c)
+    kicker(c, regular, scene)
+    title(c, bold, "Fixo ou Adaptive")
+    body_lines(
+        c,
+        regular,
+        [
+            "No lobby (engrenagem) e no Ctrl+M. Overlay mostra FG Fixo x2 ou FG Adaptive 75.",
+            "Fixo multiplica a captura (x2, x3 ou x4). Adaptive gera frames ate o que voce definiu.",
+            "Exemplo: captura 40, alvo 75. O Adaptive sobe ate 75. Piso = captura. Teto = Hz do monitor.",
+        ],
+        H - 88,
+        16,
+    )
+    card(c, 36, 40, 430, 268)
+    card(c, 494, 40, 430, 268)
+    c.setFillColorRGB(*ACCENT)
+    c.setFont(bold, 12)
+    c.drawString(56, 282, "Fixo (x2/x3/x4)")
+    c.drawString(514, 282, "Adaptive (teto FPS)")
+    c.setFillColorRGB(*MUTED)
+    c.setFont(regular, 10)
+    c.drawString(56, 262, "Sempre x2, x3 ou x4. Vale na hora.")
+    c.drawString(514, 262, "Gera frames ate o alvo. Aplicar Adaptive.")
+    fito = PITCH / "print_fg_fixo.png"
+    adp = PITCH / "print_fg_adaptive.png"
+    if fito.is_file():
+        fit(c, fito, 52, 72, 398, 176)
+    if adp.is_file():
+        fit(c, adp, 510, 72, 398, 176)
+    c.setFillColorRGB(*GOOD)
+    c.setFont(bold, 10)
+    c.drawString(56, 52, "Vale na hora")
+    c.drawString(514, 52, "Alvo 75  ·  Aplicar")
     c.showPage()
 
     if (PITCH / "print_fg4x.jpg").is_file():

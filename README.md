@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `5.0.0` · instalador + zip portable via `tools\make_installer.ps1` |
+| **Versão** | `5.0.1` · instalador + zip portable via `tools\make_installer.ps1` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,16 +20,16 @@
 
 Distribua o **instalador** ou o **zip portable** — sem pasta manual, sem código:
 
-**[NexusCap-Setup-5.0.0.exe](https://github.com/lealvjo/NexusCap/releases)** — instala na conta, sem admin.
+**[NexusCap-Setup-5.0.1.exe](https://github.com/lealvjo/NexusCap/releases)** — instala na conta, sem admin.
 
-**[NexusCap-Portable-5.0.0.zip](https://github.com/lealvjo/NexusCap/releases)** — extrai e roda. Settings e presets viajam com a pasta.
+**[NexusCap-Portable-5.0.1.zip](https://github.com/lealvjo/NexusCap/releases)** — extrai e roda. Settings e presets viajam com a pasta.
 
 O setup e o zip **não ficam no git**; sobem na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. **Setup:** instalar `NexusCap-Setup-5.0.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
-   **Portable:** extrair `NexusCap-Portable-5.0.0.zip` numa pasta gravável (SSD; não use Program Files).
+1. **Setup:** instalar `NexusCap-Setup-5.0.1.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+   **Portable:** extrair `NexusCap-Portable-5.0.1.zip` numa pasta gravável (SSD; não use Program Files).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup nem no zip). Page Down no CFG.
 
@@ -54,7 +54,7 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-5.0.0.exe` **ou** `NexusCap-Portable-5.0.0.zip` na Release do GitHub.
+1. Baixe `NexusCap-Setup-5.0.1.exe` **ou** `NexusCap-Portable-5.0.1.zip` na Release do GitHub.
 2. Setup: execute (instala em `%LOCALAPPDATA%\NexusCap`, sem admin). Portable: extraia numa pasta gravável e abra `NexusCap.exe` — o `portable.txt` faz settings/presets/logs ficarem nessa pasta.
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -71,6 +71,15 @@ Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que a
 **Ctrl+M** na captura ou **F12** no lobby — a mesma lista. Um nome (até 50). Aplicar devolve o look inteiro: escala, FG, NR, cena, Pass, HUD.
 
 O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
+
+### Novidades 5.0.1
+
+- **Modo FG Adaptive** no lobby e no `Ctrl+M`: teto de FPS (piso = captura, teto = Hz do monitor), **Aplicar Adaptive**, Fixo vale na hora. Overlay mostra `Fixo x2` ou `Adaptive 70`.
+- Adaptive gera frames até o que você definiu. Fixo continua x2/x3/x4. Default Fixo. No Benchmark o Iniciar já carrega o plano.
+- Aviso de Frame Gen ON / xN: toast grande no **centro da tela** em todos os overlays, sem misturar com a faixa. Sem aviso de artefatos.
+- Overlay live deixa de partir quando o toast aparece (textura própria). Analyze só com Reportar bug / Insert.
+- Frametime igual em compacto, ADV e mini (`ft / avg / p95 / FG est`). `present` fica na latência. Live mostra last + FG est.
+- Teste de contrato FG ON (F24 ou superfície → HUD).
 
 ### Novidades 5.0.0
 
@@ -420,7 +429,7 @@ Placa HDMI (DShow)
 | **Dispositivo / Modo** | Combos DirectShow reais (é aqui que se escolhe a placa). |
 | **Formato / Cor / Range / Buffer** | Estilo OBS; NV12 + BT.709 + Limitado por default. |
 | **Escala** | 25–100% — com RenoDX: só Feed; sem RenoDX: trabalho GPU do app. |
-| **Frame Gen** | x2/x3/x4; **Pasta** se o Steam não achar o exe; **Auto** limpa override. |
+| **Frame Gen** | x2/x3/x4; **Modo** Fixo ou Adaptive; **Pasta** se o Steam não achar o exe; **Auto** limpa override. |
 | **RenoDX / Neural Rendering** | Checkbox + presets Default / Natural / Cinematic; Delete liga/desliga NR. |
 | **Sincronizar imagem** | Default **ON** (VSYNC). Off = TEAR / Present livre. |
 | **Abrir logs** | Pasta `%LOCALAPPDATA%\NexusCap\logs`. |
@@ -449,8 +458,27 @@ Setup: `tools\setup_renodx.ps1` copia `dxgi.dll`, addons, shaders/preset. O `nvn
 ## Frame Gen (Lossless Scaling)
 
 - Instala pelo Steam. Busca: caminho da CFG / `--fg-path` → pasta Steam padrão → registro Steam.
-- Perfil **mira-lock**: `LSFGFlowScale=100`, WGC, LSFG3 FIXED, BALANCED (menos ghost na mira).
-- Page Down = on/off · Page Up = ciclo x2→x3→x4.
+- Perfil **mira-lock**: Flow 80, WGC, LSFG3 **FIXED** por default, F24. O NexusCap não embute o LS.
+- Page Down = on/off · Page Up = ciclo x2→x3→x4 (só no **Fixo**).
+
+### Fixo vs Adaptive
+
+No lobby (engrenagem) e no CFG da sessão (`Ctrl+M`): combo **Modo FG**.
+
+| Fixo | Adaptive |
+|---|---|
+| ![Fixo](assets/pitch/print_fg_fixo.png) | ![Adaptive](assets/pitch/print_fg_adaptive.png) |
+
+| Modo | O que faz | Como aplica |
+|------|-----------|-------------|
+| **Fixo (x2/x3/x4)** | Sempre multiplica a captura: 40 fps ×2 = 80, ×3 = 120, ×4 = 160. | Vale na hora. Grava FIXED e reabre o LS. Radios x2/x3/x4 só neste modo. |
+| **Adaptive (teto FPS)** | Gera frames extra até o que você definiu. Captura 40, alvo 75: sobe até 75. | No lobby/sessão: escreve o alvo e **Aplicar Adaptive**. Sem Aplicar, fechar não muda o default (Fixo). No **Benchmark** o Iniciar já carrega o plano, sem botão Aplicar. |
+
+**Alvo FPS:** o valor que você definiu na saída. Digita o número (sem + e −). Piso = FPS da captura **sem** FG (HDMI a 40 não pode 30). Teto = Hz do monitor. **Hz do monitor** preenche o máximo.
+
+O overlay (HUD, mini e live) mostra o modo ao vivo: `FG Fixo x2` ou `FG Adaptive 75`.
+
+Fixo é um multiplicador fechado. Adaptive gera frames até atingir o alvo. Default continua Fixo. Adaptive é opcional.
 
 ---
 

@@ -116,6 +116,13 @@ AppConfig parse_args(int argc, char** argv) {
         c.fg_multiplier = m;
         c.perf_cli_override = true;
       }
+    } else if (a == "--fg-adaptive" && i + 1 < argc) {
+      const std::string v = argv[++i];
+      c.fg_adaptive = (v == "1" || v == "true" || v == "ADAPTIVE" || v == "adaptive");
+      c.perf_cli_override = true;
+    } else if (a == "--fg-target" && i + 1 < argc) {
+      c.fg_target_fps = clamp_fg_adaptive_target_stored(std::atoi(argv[++i]));
+      c.perf_cli_override = true;
     } else if (a == "--fg-path" && i + 1 < argc) {
       next(c.fg_path);
     } else if (a == "--perf-test") {
@@ -201,6 +208,8 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   // Keep preferred x2/x3/x4 armed even when checkbox is off (PageDn can enable).
   cfg.fg_multiplier = armed_fg_multiplier(s.fg_enabled, s.fg_multiplier);
   cfg.fg_queue = clamp_fg_queue(s.fg_queue);
+  cfg.fg_adaptive = s.fg_adaptive;
+  cfg.fg_target_fps = clamp_fg_adaptive_target_stored(s.fg_target_fps);
   cfg.fg_auto_start = s.fg_enabled;
   cfg.fg_path = s.fg_path;
   if (s.enhance_renodx) {

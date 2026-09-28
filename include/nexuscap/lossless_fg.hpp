@@ -7,8 +7,10 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 
+#include "nexuscap/display_geom.hpp"
 #include "nexuscap/settings_store.hpp"
 
 namespace nexuscap {
@@ -72,10 +74,76 @@ inline const char* fg_queue_label(int q) {
   }
 }
 
+// Adaptive LSFG3Target: digitado. Teto = Hz do monitor. Piso = FPS da captura sem FG
+// (se a captura vai a 40, o alvo nao pode ser 30). Sem captura conhecida, piso 30.
+inline constexpr int kFgAdaptiveTargetMin = 30;
+inline constexpr int kFgAdaptiveTargetDefault = 60;
+
+inline int clamp_fg_adaptive_target_stored(int want) {
+  if (want < kFgAdaptiveTargetMin) return kFgAdaptiveTargetMin;
+  if (want > 360) return 360;
+  return want;
+}
+
+inline int fg_adaptive_capture_floor(double capture_fps) {
+  if (capture_fps < 1.0) return kFgAdaptiveTargetMin;
+  int lo = static_cast<int>(capture_fps + 0.5);
+  if (lo < 1) lo = 1;
+  return lo;
+}
+
+inline int clamp_fg_adaptive_target(int want, int monitor_hz, double capture_fps = 0) {
+  const int hi = clamp_display_refresh_hz(monitor_hz);
+  int lo = fg_adaptive_capture_floor(capture_fps);
+  if (lo > hi) lo = hi;
+  int t = want;
+  if (t < lo) t = lo;
+  if (t > hi) t = hi;
+  return t;
+}
+
+inline const char* lsfg3_mode1_xml(bool adaptive) { return adaptive ? "ADAPTIVE" : "FIXED"; }
+
+inline const char* fg_mode_label(bool adaptive) {
+  return adaptive ? "Adaptive (teto FPS)" : "Fixo (x2/x3/x4)";
+}
+
+inline bool fg_adaptive_apply_dirty(bool live_adaptive, int live_target, bool draft_adaptive, int draft_target) {
+  return live_adaptive != draft_adaptive || live_target != draft_target;
+}
+
+// Aplicar so existe no Adaptive. Trocar para Fixo grava na hora (x2/x3/x4 sem leftover Adaptive).
+inline bool fg_adaptive_apply_enabled(bool draft_adaptive, bool live_adaptive, int live_target,
+                                     int draft_target) {
+  return draft_adaptive && fg_adaptive_apply_dirty(live_adaptive, live_target, true, draft_target);
+}
+
+inline const char* fg_adaptive_ghost_hint() {
+  return "Fixo multiplica a captura (x2, x3 ou x4). Adaptive gera frames ate o que voce definiu.";
+}
+
+inline bool parse_fg_adaptive_ini(const std::string& val) {
+  return val == "1" || val == "true" || val == "TRUE" || val == "adaptive" || val == "ADAPTIVE";
+}
+
+// Hz do modo atual do ecrã onde está a janela (EnumDisplaySettings). Sem HWND = primário.
+int display_refresh_hz(HWND hwnd = nullptr);
+
 inline int clamp_fg_multiplier(int m) {
   if (m < 1) return 1;
   if (m > 4) return 4;
   return m;
+}
+
+// Overlay: "Fixo x2" vs "Adaptive 70" — mesmo texto no HUD, mini e live.
+inline void format_fg_mode_tag(char* out, size_t n, bool adaptive, int mult,
+                               int target = kFgAdaptiveTargetDefault) {
+  if (!out || n == 0) return;
+  if (adaptive) {
+    std::snprintf(out, n, "Adaptive %d", clamp_fg_adaptive_target_stored(target));
+  } else {
+    std::snprintf(out, n, "Fixo x%d", clamp_fg_multiplier(mult));
+  }
 }
 
 // Page Up cycle: 2 → 3 → 4 → 2 (x1 is off, not part of cycle).
@@ -193,6 +261,49 @@ inline FgFtRgb overlay_ft_status_rgb(OverlayFtStatus s) {
   }
 }
 
+// Compact / ADV / mini: same capture last/avg/p95. FG est = captura÷xN (not LS-measured).
+inline void format_overlay_frametime_line(char* out, size_t n, double frame_ms, double ft_avg_ms,
+                                         double ft_p95_ms, bool ft_stable, bool fg_on, int fg_mult,
+                                         double fps_cap, double target_fps, double fps_fg_est = 0) {
+  if (!out || n == 0) return;
+  const OverlayFtStatus st =
+      overlay_ft_status(ft_stable, fg_on, fg_mult, fps_cap, target_fps, fps_fg_est);
+  const int m = clamp_fg_multiplier(fg_mult);
+  if (fg_on && m >= 2) {
+    std::snprintf(out, n, "ft %.2f  avg %.2f  p95 %.2f  FG est %.2f  %s", frame_ms, ft_avg_ms, ft_p95_ms,
+                  fg_frametime_trace_ms(frame_ms, m), overlay_ft_status_label(st));
+  } else {
+    std::snprintf(out, n, "ft %.2f  avg %.2f  p95 %.2f  %s", frame_ms, ft_avg_ms, ft_p95_ms,
+                  overlay_ft_status_label(st));
+  }
+}
+
+inline void format_overlay_latency_line(char* out, size_t n, double e2e_ms, double present_ms, bool nr_on,
+                                        const char* sync_label = nullptr) {
+  if (!out || n == 0) return;
+  if (nr_on && sync_label && sync_label[0]) {
+    std::snprintf(out, n, "latencia  cap %.2f ms   present %.2f ms (+NR/DLSS5)   %s", e2e_ms, present_ms,
+                  sync_label);
+  } else if (nr_on) {
+    std::snprintf(out, n, "latencia  cap %.2f ms   present %.2f ms (+NR/DLSS5)", e2e_ms, present_ms);
+  } else if (sync_label && sync_label[0]) {
+    std::snprintf(out, n, "latencia  cap %.2f ms   present %.2f ms   %s", e2e_ms, present_ms, sync_label);
+  } else {
+    std::snprintf(out, n, "latencia  cap %.2f ms   present %.2f ms", e2e_ms, present_ms);
+  }
+}
+
+// Live strip: last + FG est only (no avg/p95).
+inline void format_overlay_frametime_live(char* out, size_t n, double frame_ms, bool fg_on, int fg_mult) {
+  if (!out || n == 0) return;
+  const int m = clamp_fg_multiplier(fg_mult);
+  if (fg_on && m >= 2) {
+    std::snprintf(out, n, "%.2f · FG %.2f", frame_ms, fg_frametime_trace_ms(frame_ms, m));
+  } else {
+    std::snprintf(out, n, "%.2f", frame_ms);
+  }
+}
+
 // Colored FPS chips — same RGB as the frametime sparkline (cap / x2 / x3 / x4).
 struct HudFpsPart {
   char text[48]{};
@@ -229,7 +340,8 @@ inline void join_hud_fps_parts(char* out, size_t out_n, const HudFpsParts& p) {
 }
 
 inline void fill_session_hud_fps_parts(HudFpsParts& o, double fps_cap, double fps_fg_est, bool fg_on,
-                                       int fg_mult, bool compact, bool ft_stable = true) {
+                                       int fg_mult, bool compact, bool ft_stable = true,
+                                       bool fg_adaptive = false, int fg_target = kFgAdaptiveTargetDefault) {
   o = HudFpsParts{};
   const int m = clamp_fg_multiplier(fg_mult);
   const FgFtRgb cap = fg_frametime_trace_rgb(1, ft_stable);
@@ -237,33 +349,37 @@ inline void fill_session_hud_fps_parts(HudFpsParts& o, double fps_cap, double fp
   char num[24]{};
   std::snprintf(num, sizeof(num), "%.1f", fps_cap);
   hud_fps_push(o, num, cap.r, cap.g, cap.b);
+  char tag[24]{};
+  format_fg_mode_tag(tag, sizeof(tag), fg_adaptive, m, fg_target);
   if (fg_on && m >= 2) {
-    const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap * static_cast<double>(m));
+    const double fg = fps_fg_est > 0 ? fps_fg_est
+                                    : (fg_adaptive ? static_cast<double>(clamp_fg_adaptive_target_stored(fg_target))
+                                                   : (fps_cap * static_cast<double>(m)));
     hud_fps_push(o, " | ", 140, 144, 150);
     std::snprintf(num, sizeof(num), "%.1f", fg);
     const FgFtRgb fgc = fg_frametime_trace_rgb(m, ft_stable);
     hud_fps_push(o, num, fgc.r, fgc.g, fgc.b);
-    char suf[40]{};
+    char suf[48]{};
     if (compact) {
-      std::snprintf(suf, sizeof(suf), "  cap|FG x%d ON", m);
+      std::snprintf(suf, sizeof(suf), "  cap|FG %s ON", tag);
     } else {
-      std::snprintf(suf, sizeof(suf), "   cap|FG x%d ON", m);
+      std::snprintf(suf, sizeof(suf), "   cap|FG %s ON", tag);
     }
     hud_fps_push(o, suf, fgc.r, fgc.g, fgc.b);
   } else if (m >= 2) {
-    // Prefer "off" over "pronto" — pronto looked like FG was already running.
-    char suf[40]{};
+    char suf[48]{};
     if (compact) {
-      std::snprintf(suf, sizeof(suf), "   FG x%d off", m);
+      std::snprintf(suf, sizeof(suf), "   FG %s off", tag);
     } else {
-      std::snprintf(suf, sizeof(suf), "   FG x%d off (PageDn)", m);
+      std::snprintf(suf, sizeof(suf), "   FG %s off (PageDn)", tag);
     }
     hud_fps_push(o, suf, 160, 170, 180);
   }
 }
 
 inline void fill_lobby_hud_fps_parts(HudFpsParts& o, double fps, bool fg_enabled, int fg_mult,
-                                     bool ft_stable = true) {
+                                     bool ft_stable = true, bool fg_adaptive = false,
+                                     int fg_target = kFgAdaptiveTargetDefault) {
   o = HudFpsParts{};
   const int m = clamp_fg_multiplier(fg_mult);
   const FgFtRgb cap = fg_frametime_trace_rgb(1, ft_stable);
@@ -272,25 +388,29 @@ inline void fill_lobby_hud_fps_parts(HudFpsParts& o, double fps, bool fg_enabled
   std::snprintf(num, sizeof(num), "%.0f", fps);
   hud_fps_push(o, num, cap.r, cap.g, cap.b);
   if (fg_enabled && m >= 2) {
-    char suf[32]{};
-    std::snprintf(suf, sizeof(suf), "   FG x%d off", m);
+    char tag[24]{};
+    format_fg_mode_tag(tag, sizeof(tag), fg_adaptive, m, fg_target);
+    char suf[48]{};
+    std::snprintf(suf, sizeof(suf), "   FG %s off", tag);
     const FgFtRgb fgc = fg_frametime_trace_rgb(m, ft_stable);
     hud_fps_push(o, suf, fgc.r, fgc.g, fgc.b);
   }
 }
 
 // Lobby HUD: checkbox on = "off" until session PageDn (never imply running dual FPS).
-inline void format_lobby_hud_fps_line(char* out, size_t out_n, double fps, bool fg_enabled, int fg_mult) {
+inline void format_lobby_hud_fps_line(char* out, size_t out_n, double fps, bool fg_enabled, int fg_mult,
+                                      bool fg_adaptive = false, int fg_target = kFgAdaptiveTargetDefault) {
   HudFpsParts parts{};
-  fill_lobby_hud_fps_parts(parts, fps, fg_enabled, fg_mult);
+  fill_lobby_hud_fps_parts(parts, fps, fg_enabled, fg_mult, true, fg_adaptive, fg_target);
   join_hud_fps_parts(out, out_n, parts);
 }
 
 // Session stats when FG is ON: real capture FPS | estimated FG output FPS.
 inline void format_session_hud_fps_line(char* out, size_t out_n, double fps_cap, double fps_fg_est, bool fg_on,
-                                       int fg_mult, bool compact) {
+                                       int fg_mult, bool compact, bool fg_adaptive = false,
+                                       int fg_target = kFgAdaptiveTargetDefault) {
   HudFpsParts parts{};
-  fill_session_hud_fps_parts(parts, fps_cap, fps_fg_est, fg_on, fg_mult, compact);
+  fill_session_hud_fps_parts(parts, fps_cap, fps_fg_est, fg_on, fg_mult, compact, true, fg_adaptive, fg_target);
   join_hud_fps_parts(out, out_n, parts);
 }
 
@@ -387,7 +507,8 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                                         int nr_pass_count = 1, const char* console_label = nullptr,
                                         bool console_flag = true, unsigned char cons_r = 0,
                                         unsigned char cons_g = 55, unsigned char cons_b = 145,
-                                        int fg_queue = 0) {
+                                        int fg_queue = 0, bool fg_adaptive = false,
+                                        int fg_target = kFgAdaptiveTargetDefault) {
   if (line0 && n0) line0[0] = '\0';
   if (line1 && n1) line1[0] = '\0';
   int n = 0;
@@ -407,7 +528,8 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   (void)console_flag;
 
   HudFpsParts fps_parts{};
-  fill_session_hud_fps_parts(fps_parts, fps_cap, fps_fg_est, fg_on, fg_mult, true, ft_stable);
+  fill_session_hud_fps_parts(fps_parts, fps_cap, fps_fg_est, fg_on, fg_mult, true, ft_stable, fg_adaptive,
+                            fg_target);
   for (int i = 0; i < fps_parts.count; ++i) {
     push(fps_parts.parts[i].text, fps_parts.parts[i].r, fps_parts.parts[i].g, fps_parts.parts[i].b);
   }
@@ -484,12 +606,13 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   push(cnt, 255, 180, 120);
 
   push_sep();
+  (void)ft_max_ms;
   const OverlayFtStatus ft_st =
       overlay_ft_status(ft_stable, fg_on, fg_mult, fps_cap, target_fps, fps_fg_est);
   const FgFtRgb ft_rgb = overlay_ft_status_rgb(ft_st);
   char ft_part[128]{};
-  std::snprintf(ft_part, sizeof(ft_part), "ft %.1f avg %.1f p95 %.1f max %.1f %s", frame_ms, ft_avg_ms,
-                ft_p95_ms, ft_max_ms, overlay_ft_status_label(ft_st));
+  format_overlay_frametime_line(ft_part, sizeof(ft_part), frame_ms, ft_avg_ms, ft_p95_ms, ft_stable, fg_on,
+                               fg_mult, fps_cap, target_fps, fps_fg_est);
   push(ft_part, ft_rgb.r, ft_rgb.g, ft_rgb.b);
 
   push_sep();
@@ -578,7 +701,8 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                       int nr_pass_count = 1, const char* console_label = nullptr,
                                       bool console_flag = true, unsigned char cons_r = 0,
                                       unsigned char cons_g = 55, unsigned char cons_b = 145,
-                                      int fg_queue = 0) {
+                                      int fg_queue = 0, bool fg_adaptive = false,
+                                      int fg_target = kFgAdaptiveTargetDefault) {
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
   format_mini_overlay_segments(segs, kMiniOverlayMaxSegs, line0, n0, line1, n1, fps_cap, fps_fg_est, fg_on,
                                fg_mult, dlss5_on, sync_image, frame_ms, ft_avg_ms, ft_p95_ms, ft_max_ms,
@@ -586,7 +710,7 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                work_w, work_h, output_w, output_h, scale_percent, has_stats600, s600_fps,
                                s600_p95_e2e, s600_p95_present, s600_stalls, renodx_preset, hw_compact, dlss_ms,
                                frames, s600_max_interval, fg_backend, target_fps, nr_pass_count, console_label,
-                               console_flag, cons_r, cons_g, cons_b, fg_queue);
+                               console_flag, cons_r, cons_g, cons_b, fg_queue, fg_adaptive, fg_target);
 }
 
 // Back-compat one-liner.
@@ -608,23 +732,29 @@ inline void format_mini_overlay_line(char* out, size_t out_n, double fps_cap, do
 inline void format_session_hud_fg_status_line(char* out, size_t out_n, bool fg_on, int fg_mult,
                                              const char* backend, int flow_scale, const char* capture_api,
                                              const char* status, double fps_cap = 0, double fps_fg_est = 0,
-                                             int queue = 0) {
+                                             int queue = 0, bool adaptive = false,
+                                             int target = kFgAdaptiveTargetDefault) {
   if (!out || out_n == 0) return;
   const int m = clamp_fg_multiplier(fg_mult);
   const int q = clamp_fg_queue(queue);
   const char* be = backend && backend[0] ? backend : "lsfg3";
   const char* api = capture_api && capture_api[0] ? capture_api : "WGC";
   const char* st = status && status[0] ? status : (fg_on ? "On" : "Ready");
+  char tag[24]{};
+  format_fg_mode_tag(tag, sizeof(tag), adaptive, m, target);
   if (fg_on && m >= 2) {
-    const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap > 0 ? fps_cap * static_cast<double>(m) : 0);
+    const double fg = fps_fg_est > 0
+                          ? fps_fg_est
+                          : (adaptive ? static_cast<double>(clamp_fg_adaptive_target_stored(target))
+                                      : (fps_cap > 0 ? fps_cap * static_cast<double>(m) : 0));
     if (fps_cap > 0 && fg > 0) {
-      std::snprintf(out, out_n, "FG      ON   x%d  %s  flow%d  %s  fila%d  |  %.0f->%.0f", m, be, flow_scale,
+      std::snprintf(out, out_n, "FG      ON   %s  %s  flow%d  %s  fila%d  |  %.0f->%.0f", tag, be, flow_scale,
                     api, q, fps_cap, fg);
     } else {
-      std::snprintf(out, out_n, "FG      ON   x%d  %s  flow%d  %s  fila%d", m, be, flow_scale, api, q);
+      std::snprintf(out, out_n, "FG      ON   %s  %s  flow%d  %s  fila%d", tag, be, flow_scale, api, q);
     }
   } else {
-    std::snprintf(out, out_n, "FG      %s  x%d  %s  flow%d  %s  fila%d  [%s]", fg_on ? "ON" : "off", m, be,
+    std::snprintf(out, out_n, "FG      %s  %s  %s  flow%d  %s  fila%d  [%s]", fg_on ? "ON" : "off", tag, be,
                   flow_scale, api, q, st);
   }
 }
@@ -734,10 +864,13 @@ inline bool mira_lock_ini_ok(const std::string& ini) {
 }
 
 // Patch or inject mira-lock tags into existing Settings.xml text. Never writes Flow 70.
-std::string patch_mira_settings_xml(const std::string& xml, int multiplier, int queue = 0);
+std::string patch_mira_settings_xml(const std::string& xml, int multiplier, int queue = 0,
+                                    bool adaptive = false, int target_fps = kFgAdaptiveTargetDefault,
+                                    int monitor_hz = 60);
 
-// Build a minimal valid Settings.xml with mira lock + LSFG3 FIXED.
-std::string build_mira_settings_xml(int multiplier, int queue = 0);
+// Build a minimal valid Settings.xml with mira lock + LSFG3 FIXED (default) or Adaptive.
+std::string build_mira_settings_xml(int multiplier, int queue = 0, bool adaptive = false,
+                                    int target_fps = kFgAdaptiveTargetDefault, int monitor_hz = 60);
 // Read LSFG3Multiplier from Settings.xml text; 0 = missing/invalid.
 inline int parse_lsfg3_multiplier_from_xml(const std::string& xml) {
   const std::string open = "<LSFG3Multiplier>";
@@ -750,6 +883,32 @@ inline int parse_lsfg3_multiplier_from_xml(const std::string& xml) {
   int m = 0;
   if (!parse_fg_multiplier(raw, m)) return 0;
   return clamp_fg_multiplier(m);
+}
+
+inline bool parse_lsfg3_adaptive_from_xml(const std::string& xml) {
+  return xml.find("<LSFG3Mode1>ADAPTIVE</LSFG3Mode1>") != std::string::npos;
+}
+
+inline bool parse_lsfg3_fixed_from_xml(const std::string& xml) {
+  return xml.find("<LSFG3Mode1>FIXED</LSFG3Mode1>") != std::string::npos;
+}
+
+inline int parse_lsfg3_target_from_xml(const std::string& xml) {
+  const std::string open = "<LSFG3Target>";
+  const std::string close = "</LSFG3Target>";
+  const auto a = xml.find(open);
+  if (a == std::string::npos) return 0;
+  const auto b = xml.find(close, a + open.size());
+  if (b == std::string::npos) return 0;
+  const int t = std::atoi(xml.substr(a + open.size(), b - (a + open.size())).c_str());
+  return t > 0 ? t : 0;
+}
+
+inline bool fg_adaptive_confirmed_on_disk(bool want_adaptive, int want_target, const std::string& xml) {
+  if (want_adaptive) {
+    return parse_lsfg3_adaptive_from_xml(xml) && parse_lsfg3_target_from_xml(xml) == want_target;
+  }
+  return parse_lsfg3_fixed_from_xml(xml);
 }
 
 inline bool ls_exe_is_lossless(const wchar_t* exe) {
@@ -775,6 +934,12 @@ inline bool fg_multiplier_confirmed_on_disk(int want_mult, const std::string& se
   return parse_lsfg3_multiplier_from_xml(settings_xml) == want;
 }
 
+inline bool fg_ls_profile_confirmed_on_disk(int want_mult, bool adaptive, int target,
+                                           const std::string& xml) {
+  if (!fg_multiplier_confirmed_on_disk(want_mult, xml)) return false;
+  return fg_adaptive_confirmed_on_disk(adaptive, target, xml);
+}
+
 // Patch [lsfg] section in config.ini text for mira lock.
 std::string patch_lsfg_ini(const std::string& ini);
 
@@ -786,6 +951,10 @@ struct FgState {
   FgStatus status = FgStatus::Off;
   int multiplier = 1;
   int queue_target = 0;  // 0 menor latência, 1 equilibrado, 2 maior estabilidade
+  bool adaptive = false;  // LSFG3Mode1 ADAPTIVE; default FIXED
+  int target_fps = kFgAdaptiveTargetDefault;
+  int monitor_hz = 60;
+  double capture_fps = 0;
   int flow_scale = 80;
   std::string capture_api = "WGC";
   std::string backend = "lsfg3";
@@ -807,7 +976,8 @@ public:
   LosslessFgController& operator=(const LosslessFgController&) = delete;
 
   // Configure before use. multiplier 1 = off semantics.
-  void configure(int multiplier, const std::string& exe_override = {}, int queue = -1);
+  void configure(int multiplier, const std::string& exe_override = {}, int queue = -1, int adaptive = -1,
+                 int target_fps = -1, int monitor_hz = -1, double capture_fps = -1);
 
   const FgState& state() const { return state_; }
   bool busy() const { return pending_ != FgPending::None; }
@@ -817,7 +987,8 @@ public:
 
   // Lobby / pos-Benchmark: mata LS leftover, grava mira HDMI, nao lanca processo.
   bool apply_hdmi_profile_without_launch(bool fg_enabled, int fg_mult, const std::string& path,
-                                         std::string& err, int queue = 0);
+                                         std::string& err, int queue = 0, bool adaptive = false,
+                                         int target_fps = kFgAdaptiveTargetDefault, int monitor_hz = 60);
 
   // Esc/fim do teste: F24 off se estiver gerando, TerminateProcess em todo LS, espera count=0.
   // Nao usa WM_CLOSE (tray). Chamar com a janela da sessao ainda viva.

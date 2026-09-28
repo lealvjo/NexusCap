@@ -25,6 +25,13 @@ struct SessionCfgState {
   bool fg_on = false;
   int fg_multiplier = 2;
   int fg_queue = 0;
+  bool fg_adaptive = false;
+  int fg_target_fps = 60;
+  int monitor_hz = 60;
+  double capture_fps = 0;  // captura sem FG; piso do alvo Adaptive
+  bool fg_adaptive_draft = false;
+  int fg_target_draft = 60;
+  bool fg_target_editing = false;
   bool fg_busy = false;
   bool hud_visible = true;
   bool overlay_no_bg = false;
@@ -47,6 +54,8 @@ struct SessionCfgActions {
   bool toggle_fg = false;
   bool fg_multiplier_changed = false;
   bool fg_queue_changed = false;
+  bool fg_adaptive_changed = false;
+  bool fg_target_changed = false;
   bool hud_changed = false;
   bool overlay_no_bg_changed = false;
   bool volume_changed = false;
@@ -65,6 +74,8 @@ struct SessionCfgActions {
   bool apply_fg_on = false;
   int apply_fg_multiplier = 2;
   int apply_fg_queue = 0;
+  bool apply_fg_adaptive = false;
+  int apply_fg_target_fps = 60;
   int apply_scale_percent = 100;
 };
 
@@ -138,6 +149,7 @@ private:
   bool confirm_delete_ = false;
   bool confirm_import_ow_ = false;
   std::string pending_import_text_;
+  bool fg_draft_sync_ = false;
 };
 
 void draw_user_preset_name_field_hint(const char* buf);

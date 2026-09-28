@@ -204,6 +204,8 @@ struct PersistedSettings {
   bool fg_enabled = false;     // default OFF
   int fg_multiplier = 2;       // used when fg_enabled
   int fg_queue = 0;            // 0 menor latência, 1 equilibrado, 2 maior estabilidade
+  bool fg_adaptive = false;    // LSFG3Mode1 Adaptive; default FIXED
+  int fg_target_fps = 60;      // LSFG3Target; clamp ao Hz do monitor na hora de gravar
   // Optional override of LosslessScaling.exe; empty = auto (Steam path / registry).
   std::string fg_path;
   std::string device_name = "auto";

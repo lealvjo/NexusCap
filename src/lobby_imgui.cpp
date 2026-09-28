@@ -618,9 +618,11 @@ void draw_live_preview_strip(const PersistedSettings& settings, const LobbyPrevi
   const bool dlss5 = settings.enhance_renodx && settings.neural_rendering;
   const int fgx = settings.fg_enabled ? (settings.fg_multiplier >= 2 ? settings.fg_multiplier : 2) : 1;
   const double fps = preview.fps_ema > 1.0 ? preview.fps_ema : settings.fps;
+  const double ft = fps > 1.0 ? 1000.0 / fps : 0.0;
   LiveStripLines strip{};
   fill_live_strip_lines(strip, settings.ui.overlay_console, cons, dlss5, settings.nr_pass_count,
-                        settings.fg_enabled, fgx, fps);
+                        settings.fg_enabled, fgx, fps, 0.0, true, settings.fg_queue, ft, settings.fg_adaptive,
+                        settings.fg_target_fps);
 
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const float font_sz = 18.f;
@@ -635,6 +637,7 @@ void draw_live_preview_strip(const PersistedSettings& settings, const LobbyPrevi
   float content_w = text_w(strip.dlss) + gap + text_w(strip.fg) + gap + text_w(strip.fps_lab.text) +
                     text_w(strip.fps_cap.text);
   if (strip.has_fg_fps) content_w += text_w(strip.fps_sep.text) + text_w(strip.fps_fg.text);
+  if (strip.ft[0]) content_w += gap + text_w(strip.ft);
   if (strip.has_console) content_w += text_w(strip.console) + gap;
   const float bar_w = content_w + pad_x * 2.f;
   const float x1 = img_max.x - 8.f;
@@ -671,6 +674,11 @@ void draw_live_preview_strip(const PersistedSettings& settings, const LobbyPrevi
     paint(strip.fps_sep.text, IM_COL32(strip.fps_sep.r, strip.fps_sep.g, strip.fps_sep.b, 255));
     x -= gap;
     paint(strip.fps_fg.text, IM_COL32(strip.fps_fg.r, strip.fps_fg.g, strip.fps_fg.b, 255));
+  }
+  if (strip.ft[0]) {
+    const OverlayFtStatus st = overlay_ft_status(true, settings.fg_enabled, fgx, fps, settings.fps, 0);
+    const FgFtRgb rgb = overlay_ft_status_rgb(st);
+    paint(strip.ft, IM_COL32(rgb.r, rgb.g, rgb.b, 255));
   }
 }
 
@@ -723,7 +731,8 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
         scaled_extent(settings.height, scale), settings.width, settings.height, scale, false, 0, 0, 0, 0,
         renodx_visual_preset_name(settings.renodx_preset, settings.nr_pass_count), hw_compact[0] ? hw_compact : nullptr, 0, 0, 0,
         nullptr, settings.fps, settings.nr_pass_count,
-        overlay_console_label_or_null(settings.ui.overlay_console, cons), false, cr, cg, cb);
+        overlay_console_label_or_null(settings.ui.overlay_console, cons), false, cr, cg, cb, settings.fg_queue,
+        settings.fg_adaptive, settings.fg_target_fps);
 
     const float font_sz = static_cast<float>(hud_mini_overlay_font_px());
     const float line_gap = 2.f;
@@ -820,7 +829,8 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
     const float y = p0.y + pad + line_h * static_cast<float>(row);
     if (std::strncmp(hud.line[i], "FPS", 3) == 0) {
       HudFpsParts parts{};
-      fill_lobby_hud_fps_parts(parts, prev_fps, settings.fg_enabled, prev_fgx, true);
+      fill_lobby_hud_fps_parts(parts, prev_fps, settings.fg_enabled, prev_fgx, true, settings.fg_adaptive,
+                              settings.fg_target_fps);
       float x = p0.x + 2.f;
       for (int p = 0; p < parts.count; ++p) {
         if (!parts.parts[p].text[0]) continue;
@@ -917,7 +927,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     LosslessFgController fg;
     std::string ferr;
     (void)fg.apply_hdmi_profile_without_launch(settings.fg_enabled, settings.fg_multiplier, settings.fg_path,
-                                               ferr, settings.fg_queue);
+                                               ferr, settings.fg_queue, settings.fg_adaptive,
+                                               settings.fg_target_fps, display_refresh_hz(g_hwnd));
   }
 
   WNDCLASSEXW wc{sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hi, nullptr, nullptr,
@@ -960,6 +971,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   LobbyPreview preview;
   AudioMonitor lobby_audio;
   bool lobby_audio_want = false;
+  bool fg_adp_committed = settings.fg_adaptive;
+  int fg_tgt_committed = settings.fg_target_fps;
+  bool fg_adp_draft = fg_adp_committed;
+  int fg_tgt_draft = fg_tgt_committed;
 
   std::vector<std::string> devices = list_video_capture_devices();
   int device_idx = 0;
@@ -1108,6 +1123,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
     std::string serr;
     save_settings(settings, settings_default_path(), serr);
+    fg_adp_committed = settings.fg_adaptive;
+    fg_tgt_committed = settings.fg_target_fps;
+    fg_adp_draft = fg_adp_committed;
+    fg_tgt_draft = fg_tgt_committed;
     const bool live = lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
     const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
     if (plan.pass_relaunch && live) {
@@ -1716,6 +1735,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           settings.fps = modes[static_cast<size_t>(mode_idx)].fps;
         }
         settings.scale_percent = clamp_scale_percent(static_cast<int>(std::lround(scale_f)));
+        settings.fg_adaptive = fg_adp_committed;
+        settings.fg_target_fps = fg_tgt_committed;
         if (!settings.enhance_renodx) settings.neural_rendering = false;
         const int session_scale = clamp_scale_percent(settings.scale_percent);
         {
@@ -1786,13 +1807,72 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         const bool fg_was = settings.fg_enabled;
         const int fg_mult_was = settings.fg_multiplier;
         ImGui::Checkbox("Habilitar Frame Gen", &settings.fg_enabled);
-        ImGui::BeginDisabled(!settings.fg_enabled);
+        ImGui::BeginDisabled(!settings.fg_enabled || fg_adp_draft);
         ImGui::RadioButton("x2", &settings.fg_multiplier, 2);
         ImGui::SameLine();
         ImGui::RadioButton("x3", &settings.fg_multiplier, 3);
         ImGui::SameLine();
         ImGui::RadioButton("x4", &settings.fg_multiplier, 4);
         ImGui::EndDisabled();
+        const int lobby_hz = display_refresh_hz(g_hwnd);
+        const double lobby_cap = preview.fps_ema > 1.0 ? preview.fps_ema : settings.fps;
+        auto commit_lobby_fg_mode = [&](bool adaptive, int target) {
+          settings.fg_adaptive = adaptive;
+          settings.fg_target_fps = target;
+          fg_adp_committed = adaptive;
+          fg_tgt_committed = target;
+          fg_adp_draft = adaptive;
+          fg_tgt_draft = target;
+          std::string serr;
+          save_settings(settings, settings_default_path(), serr);
+          LosslessFgController lfg;
+          std::string ferr;
+          if (!lfg.apply_hdmi_profile_without_launch(settings.fg_enabled, settings.fg_multiplier, settings.fg_path,
+                                                     ferr, settings.fg_queue, settings.fg_adaptive,
+                                                     settings.fg_target_fps, lobby_hz)) {
+            push_lobby_toast(ferr.empty() ? session_notice_fg_missing() : ferr);
+          } else {
+            push_lobby_toast(session_notice_fg_adaptive_apply(settings.fg_adaptive, settings.fg_target_fps, lobby_hz,
+                                                             false, lobby_cap));
+          }
+        };
+        ImGui::TextUnformatted("Modo FG");
+        if (ImGui::BeginCombo("##fg_mode", fg_mode_label(fg_adp_draft))) {
+          if (ImGui::Selectable(fg_mode_label(false), !fg_adp_draft)) {
+            fg_adp_draft = false;
+            if (fg_adp_committed) commit_lobby_fg_mode(false, fg_tgt_committed);
+          }
+          if (!fg_adp_draft) ImGui::SetItemDefaultFocus();
+          if (ImGui::Selectable(fg_mode_label(true), fg_adp_draft)) fg_adp_draft = true;
+          ImGui::EndCombo();
+        }
+        ImGui::BeginDisabled(!settings.fg_enabled || !fg_adp_draft);
+        int lobby_tgt = fg_tgt_draft;
+        if (ImGui::InputInt("Alvo FPS##fg_tgt", &lobby_tgt, 0, 0)) fg_tgt_draft = lobby_tgt;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          fg_tgt_draft = clamp_fg_adaptive_target(fg_tgt_draft, lobby_hz, lobby_cap);
+        }
+        if (ImGui::Button("Hz do monitor##fg_hz")) {
+          fg_tgt_draft = clamp_fg_adaptive_target(lobby_hz, lobby_hz, lobby_cap);
+        }
+        ImGui::EndDisabled();
+        {
+          const int draft_clamped = clamp_fg_adaptive_target(fg_tgt_draft, lobby_hz, lobby_cap);
+          const int lo = clamp_fg_adaptive_target(1, lobby_hz, lobby_cap);
+          const bool apply_on =
+              fg_adaptive_apply_enabled(fg_adp_draft, fg_adp_committed, fg_tgt_committed, draft_clamped);
+          ImGui::BeginDisabled(!settings.fg_enabled || !apply_on);
+          if (ImGui::Button("Aplicar Adaptive##fg_apply")) {
+            fg_tgt_draft = draft_clamped;
+            commit_lobby_fg_mode(true, draft_clamped);
+          }
+          ImGui::EndDisabled();
+          char hz_hint[176]{};
+          std::snprintf(hz_hint, sizeof(hz_hint),
+                        "No Adaptive, escreve o alvo (%d a %d) e carrega Aplicar. Fixo vale na hora.", lo, lobby_hz);
+          ImGui::TextDisabled("%s", hz_hint);
+          ImGui::TextDisabled("%s", fg_adaptive_ghost_hint());
+        }
         ImGui::TextUnformatted("Perfil FG");
         settings.fg_queue = clamp_fg_queue(settings.fg_queue);
         if (ImGui::BeginCombo("##fg_queue", fg_queue_label(settings.fg_queue))) {
@@ -2485,14 +2565,36 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextUnformatted("Frame Gen");
         int fg_i = clamp_fg_multiplier(g_perf_plan.fg_multiplier);
         if (ImGui::RadioButton("off##perffg", fg_i < 2)) fg_i = 1;
+        ImGui::BeginDisabled(g_perf_plan.fg_adaptive);
         ImGui::SameLine();
         if (ImGui::RadioButton("x2##perffg", fg_i == 2)) fg_i = 2;
         ImGui::SameLine();
         if (ImGui::RadioButton("x3##perffg", fg_i == 3)) fg_i = 3;
         ImGui::SameLine();
         if (ImGui::RadioButton("x4##perffg", fg_i == 4)) fg_i = 4;
+        ImGui::EndDisabled();
         g_perf_plan.fg_multiplier = clamp_fg_multiplier(fg_i);
         g_perf_plan.fg_queue = clamp_fg_queue(g_perf_plan.fg_queue);
+        const int perf_hz = display_refresh_hz(g_hwnd);
+        ImGui::TextUnformatted("Modo FG");
+        if (ImGui::BeginCombo("##perf_fg_mode", fg_mode_label(g_perf_plan.fg_adaptive))) {
+          if (ImGui::Selectable(fg_mode_label(false), !g_perf_plan.fg_adaptive)) g_perf_plan.fg_adaptive = false;
+          if (!g_perf_plan.fg_adaptive) ImGui::SetItemDefaultFocus();
+          if (ImGui::Selectable(fg_mode_label(true), g_perf_plan.fg_adaptive)) g_perf_plan.fg_adaptive = true;
+          ImGui::EndCombo();
+        }
+        ImGui::BeginDisabled(g_perf_plan.fg_multiplier < 2 || !g_perf_plan.fg_adaptive);
+        int perf_tgt = g_perf_plan.fg_target_fps;
+        if (ImGui::InputInt("Alvo FPS##perf_fg_tgt", &perf_tgt, 0, 0)) g_perf_plan.fg_target_fps = perf_tgt;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          g_perf_plan.fg_target_fps = clamp_fg_adaptive_target(g_perf_plan.fg_target_fps, perf_hz, g_perf_plan.fps);
+        }
+        if (ImGui::Button("Hz do monitor##perf_fg_hz")) {
+          g_perf_plan.fg_target_fps = clamp_fg_adaptive_target(perf_hz, perf_hz, g_perf_plan.fps);
+        }
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Iniciar ja carrega modo e alvo. Sem Aplicar. Padrao Fixo.");
+        ImGui::TextDisabled("%s", fg_adaptive_ghost_hint());
         ImGui::TextUnformatted("Perfil FG");
         if (ImGui::BeginCombo("##perf_fg_queue", fg_queue_label(g_perf_plan.fg_queue))) {
           for (int q = 0; q < 3; ++q) {

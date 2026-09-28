@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 
+#include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/settings_store.hpp"
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -188,14 +189,17 @@ inline void format_live_dlss5_line(char* out, size_t out_n, bool dlss5_on, int p
 }
 
 // Frame Gen on the live strip. FG is always uppercase: "FG x2" / "FG x3" / "FG x4" / "FG off".
-inline void format_live_fg_line(char* out, size_t out_n, bool fg_on, int fg_mult, int queue = 0) {
+inline void format_live_fg_line(char* out, size_t out_n, bool fg_on, int fg_mult, int queue = 0,
+                               bool adaptive = false, int target = kFgAdaptiveTargetDefault) {
   if (!out || out_n == 0) return;
   int m = fg_mult;
   if (m < 1) m = 1;
   if (m > 4) m = 4;
   const int q = queue < 0 ? 0 : (queue > 2 ? 2 : queue);
   if (fg_on && m >= 2) {
-    std::snprintf(out, out_n, "FG x%d f%d", m, q);
+    char tag[24]{};
+    format_fg_mode_tag(tag, sizeof(tag), adaptive, m, target);
+    std::snprintf(out, out_n, "FG %s f%d", tag, q);
   } else {
     std::snprintf(out, out_n, "FG off f%d", q);
   }
@@ -243,23 +247,25 @@ struct LiveFpsPart {
 struct LiveStripLines {
   char console[48]{};
   char dlss[32]{};
-  char fg[32]{};
+  char fg[40]{};
   LiveFpsPart fps_lab;
   LiveFpsPart fps_cap;
   LiveFpsPart fps_sep;
   LiveFpsPart fps_fg;
+  char ft[40]{};
   bool has_console = false;
   bool has_fg_fps = false;
 };
 
 inline void fill_live_strip_lines(LiveStripLines& o, bool show_console, LiveConsole cons, bool dlss_on,
                                  int pass_count, bool fg_on, int fg_mult, double fps_cap,
-                                 double fps_fg_est = 0.0, bool ft_stable = true, int fg_queue = 0) {
+                                 double fps_fg_est = 0.0, bool ft_stable = true, int fg_queue = 0,
+                                 double frame_ms = -1.0, bool fg_adaptive = false, int fg_target = 60) {
   o = LiveStripLines{};
   o.has_console = show_console;
   if (show_console) format_overlay_console_chip(o.console, sizeof(o.console), cons);
   format_live_dlss5_line(o.dlss, sizeof(o.dlss), dlss_on, pass_count, true);
-  format_live_fg_line(o.fg, sizeof(o.fg), fg_on, fg_mult, fg_queue);
+  format_live_fg_line(o.fg, sizeof(o.fg), fg_on, fg_mult, fg_queue, fg_adaptive, fg_target);
   std::snprintf(o.fps_lab.text, sizeof(o.fps_lab.text), "FPS  ");
   o.fps_lab.r = 180;
   o.fps_lab.g = 184;
@@ -275,10 +281,13 @@ inline void fill_live_strip_lines(LiveStripLines& o, bool show_console, LiveCons
     o.fps_sep.r = 140;
     o.fps_sep.g = 144;
     o.fps_sep.b = 150;
-    const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap * static_cast<double>(m));
+    const double fg = fps_fg_est > 0 ? fps_fg_est
+                                     : (fg_adaptive ? static_cast<double>(clamp_fg_adaptive_target_stored(fg_target))
+                                                    : (fps_cap * static_cast<double>(m)));
     std::snprintf(o.fps_fg.text, sizeof(o.fps_fg.text), "%.1f", fg);
     live_fps_ft_rgb(m, ft_stable, o.fps_fg.r, o.fps_fg.g, o.fps_fg.b);
   }
+  if (frame_ms >= 0.0) format_overlay_frametime_live(o.ft, sizeof(o.ft), frame_ms, fg_on, fg_mult);
 }
 
 }  // namespace nexuscap

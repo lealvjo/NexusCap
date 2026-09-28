@@ -145,6 +145,8 @@ struct PerfTestPlan {
   int renodx_preset = 0;
   int fg_multiplier = 1;  // 1 = off
   int fg_queue = 0;       // 0 menor latência (validado); só neste plano
+  bool fg_adaptive = false;
+  int fg_target_fps = 60;
   bool audio = true;      // som do clipe; so no plano do teste, nao no CFG HDMI
   std::string video;
 };
@@ -253,6 +255,7 @@ inline PerfTestPlan clamp_perf_test_plan(PerfTestPlan p) {
   p.renodx_preset = clamp_renodx_visual_preset(p.renodx_preset);
   p.fg_multiplier = clamp_fg_multiplier(p.fg_multiplier);
   p.fg_queue = clamp_fg_queue(p.fg_queue);
+  p.fg_target_fps = clamp_fg_adaptive_target_stored(p.fg_target_fps);
   return p;
 }
 
@@ -714,6 +717,8 @@ inline std::string serialize_perf_test_plan(const PerfTestPlan& raw) {
   o << "renodx_preset=" << p.renodx_preset << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
   o << "fg_queue=" << p.fg_queue << "\n";
+  o << "fg_adaptive=" << (p.fg_adaptive ? 1 : 0) << "\n";
+  o << "fg_target_fps=" << p.fg_target_fps << "\n";
   o << "audio=" << (p.audio ? 1 : 0) << "\n";
   o << "video=" << p.video << "\n";
   return o.str();
@@ -739,6 +744,8 @@ inline bool parse_perf_test_plan(const std::string& text, PerfTestPlan& out) {
     else if (k == "renodx_preset") p.renodx_preset = std::atoi(v.c_str());
     else if (k == "fg_multiplier") p.fg_multiplier = std::atoi(v.c_str());
     else if (k == "fg_queue") p.fg_queue = std::atoi(v.c_str());
+    else if (k == "fg_adaptive") p.fg_adaptive = (v == "1" || v == "true" || v == "ADAPTIVE" || v == "adaptive");
+    else if (k == "fg_target_fps") p.fg_target_fps = std::atoi(v.c_str());
     else if (k == "audio") p.audio = (v == "1" || v == "true");
     else if (k == "video") p.video = v;
   }
@@ -772,11 +779,12 @@ inline bool read_perf_test_plan_file(const std::string& path, PerfTestPlan& out)
 
 inline std::string perf_test_cli_args(const PerfTestPlan& raw) {
   const PerfTestPlan p = clamp_perf_test_plan(raw);
-  char buf[256];
+  char buf[384];
   std::snprintf(buf, sizeof(buf),
-                "--perf-test --windowed --width %d --height %d --fps %.0f --scale %d --pass %d --preset %d --fg-x %d %s",
+                "--perf-test --windowed --width %d --height %d --fps %.0f --scale %d --pass %d --preset %d --fg-x %d "
+                "--fg-adaptive %d --fg-target %d %s",
                 p.width, p.height, p.fps, p.scale_percent, p.nr_pass_count, p.renodx_preset, p.fg_multiplier,
-                p.audio ? "--perf-audio" : "--no-perf-audio");
+                p.fg_adaptive ? 1 : 0, p.fg_target_fps, p.audio ? "--perf-audio" : "--no-perf-audio");
   return buf;
 }
 
@@ -797,6 +805,8 @@ inline std::string serialize_perf_test_result(const PerfTestResult& r) {
   o << "renodx_preset=" << p.renodx_preset << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
   o << "fg_queue=" << p.fg_queue << "\n";
+  o << "fg_adaptive=" << (p.fg_adaptive ? 1 : 0) << "\n";
+  o << "fg_target_fps=" << p.fg_target_fps << "\n";
   o << "video=" << p.video << "\n";
   o << "popup=" << (r.popup ? 1 : 0) << "\n";
   o << "hdmi_session=" << (r.hdmi_session ? 1 : 0) << "\n";
@@ -828,6 +838,8 @@ inline bool parse_perf_test_result(const std::string& text, PerfTestResult& out)
     else if (k == "renodx_preset") out.plan.renodx_preset = std::atoi(v.c_str());
     else if (k == "fg_multiplier") out.plan.fg_multiplier = std::atoi(v.c_str());
     else if (k == "fg_queue") out.plan.fg_queue = std::atoi(v.c_str());
+    else if (k == "fg_adaptive") out.plan.fg_adaptive = (v == "1" || v == "true");
+    else if (k == "fg_target_fps") out.plan.fg_target_fps = std::atoi(v.c_str());
     else if (k == "video") out.plan.video = v;
     else if (k == "popup") out.popup = (v == "1" || v == "true");
     else if (k == "hdmi_session") out.hdmi_session = (v == "1" || v == "true");
@@ -917,6 +929,8 @@ inline void apply_perf_test_plan_to_config(const PerfTestPlan& raw, AppConfig& c
   // Feature nova: todo Benchmark gera report de bug (nao grava no CFG HDMI).
   cfg.bug_report = true;
   cfg.fg_queue = clamp_fg_queue(p.fg_queue);
+  cfg.fg_adaptive = p.fg_adaptive;
+  cfg.fg_target_fps = clamp_fg_adaptive_target_stored(p.fg_target_fps);
   if (p.fg_multiplier >= 2) {
     cfg.fg_multiplier = p.fg_multiplier;
     cfg.fg_auto_start = true;
@@ -936,6 +950,8 @@ inline PerfTestPlan perf_test_plan_from_config(const AppConfig& cfg) {
   p.renodx_preset = cfg.renodx_preset;
   p.fg_multiplier = cfg.fg_auto_start ? cfg.fg_multiplier : 1;
   p.fg_queue = clamp_fg_queue(cfg.fg_queue);
+  p.fg_adaptive = cfg.fg_adaptive;
+  p.fg_target_fps = clamp_fg_adaptive_target_stored(cfg.fg_target_fps);
   p.audio = cfg.perf_test_audio;
   p.video = cfg.video_path;
   return clamp_perf_test_plan(p);

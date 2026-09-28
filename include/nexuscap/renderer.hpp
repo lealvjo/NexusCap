@@ -15,6 +15,7 @@ namespace nexuscap {
 
 struct OverlayState {
   bool visible = true;
+  bool hud_on = true;             // user HUD step; false = Off, toast still burns
   bool advanced_metrics = false;  // lobby "Metricas avancadas" → full HUD
   bool mini_overlay = false;      // lobby "Mini overlay" → single top bar
   bool overlay_no_bg = false;     // sem placa preta (compacto/mini/ADV/live)
@@ -73,6 +74,8 @@ struct OverlayState {
   std::string fg_backend = "none";
   int fg_flow_scale = 80;
   int fg_queue = 0;
+  bool fg_adaptive = false;
+  int fg_target_fps = 60;
   std::string fg_capture_api = "WGC";
   std::string session_notice;  // soft tip (FG / NR); empty = none
   bool hdmi_hold_notice = false;  // restart-style card burned into Present (exclusive FS)
@@ -235,10 +238,14 @@ private:
   void burn_mini_overlay(const OverlayState& overlay);
   void burn_live_overlay(const OverlayState& overlay);
   void burn_panel_overlay(const OverlayState& overlay);
+  void burn_session_notice(const OverlayState& overlay);
   void burn_hdmi_hold_notice(const OverlayState& overlay);
   bool ensure_hud_tex(int w, int h);
+  bool ensure_toast_tex(int w, int h);
   void upload_hud_bits(const void* bits, int w, int h);
+  void upload_toast_bits(const void* bits, int w, int h);
   void blit_hud(int x, int y, int w, int h);
+  void blit_overlay_srv(ID3D11ShaderResourceView* srv, int x, int y, int w, int h);
 
   HWND hwnd_ = nullptr;
   int back_w_ = 0;

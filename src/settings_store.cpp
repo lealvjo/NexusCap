@@ -202,6 +202,8 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "fg_enabled=" << (s.fg_enabled ? 1 : 0) << "\n";
   o << "fg_multiplier=" << s.fg_multiplier << "\n";
   o << "fg_queue=" << clamp_fg_queue(s.fg_queue) << "\n";
+  o << "fg_adaptive=" << (s.fg_adaptive ? 1 : 0) << "\n";
+  o << "fg_target_fps=" << clamp_fg_adaptive_target_stored(s.fg_target_fps) << "\n";
   o << "fg_path=" << s.fg_path << "\n";
   o << "enhance_renodx=" << (s.enhance_renodx ? 1 : 0) << "\n";
   o << "neural_rendering=" << (s.neural_rendering ? 1 : 0) << "\n";
@@ -278,6 +280,10 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
         s.fg_multiplier = m;
       } else if (key == "fg_queue") {
         s.fg_queue = clamp_fg_queue(std::atoi(val.c_str()));
+      } else if (key == "fg_adaptive") {
+        s.fg_adaptive = parse_fg_adaptive_ini(val) || val == "1" || val == "true";
+      } else if (key == "fg_target_fps") {
+        s.fg_target_fps = clamp_fg_adaptive_target_stored(std::atoi(val.c_str()));
       } else if (key == "fg_path") {
         s.fg_path = val;
       } else if (key == "enhance_renodx") s.enhance_renodx = (val != "0" && val != "false");

@@ -39,6 +39,8 @@ struct UserPreset {
   bool fg_enabled = false;
   int fg_multiplier = 2;
   int fg_queue = 0;
+  bool fg_adaptive = false;
+  int fg_target_fps = 60;
   int scale_percent = 100;
 };
 
@@ -155,6 +157,7 @@ inline void clamp_user_preset(UserPreset& p) {
   p.nr_pass_count = clamp_nr_pass_count(p.nr_pass_count);
   p.fg_multiplier = clamp_fg_multiplier(p.fg_multiplier >= 2 ? p.fg_multiplier : 2);
   p.fg_queue = clamp_fg_queue(p.fg_queue);
+  p.fg_target_fps = clamp_fg_adaptive_target_stored(p.fg_target_fps);
   p.scale_percent = clamp_scale_percent(p.scale_percent);
 }
 
@@ -162,8 +165,13 @@ inline std::string user_preset_list_summary(const UserPreset& p) {
   char b[72]{};
   const char* look = renodx_visual_preset_name(p.renodx_preset, p.nr_pass_count);
   if (p.fg_enabled) {
-    std::snprintf(b, sizeof(b), "%s  %s  FG x%d  %d%%", nr_pass_count_short(p.nr_pass_count), look,
-                  clamp_fg_multiplier(p.fg_multiplier), clamp_scale_percent(p.scale_percent));
+    if (p.fg_adaptive) {
+      std::snprintf(b, sizeof(b), "%s  %s  FG Adaptive %d  %d%%", nr_pass_count_short(p.nr_pass_count), look,
+                    clamp_fg_adaptive_target_stored(p.fg_target_fps), clamp_scale_percent(p.scale_percent));
+    } else {
+      std::snprintf(b, sizeof(b), "%s  %s  FG x%d  %d%%", nr_pass_count_short(p.nr_pass_count), look,
+                    clamp_fg_multiplier(p.fg_multiplier), clamp_scale_percent(p.scale_percent));
+    }
   } else {
     std::snprintf(b, sizeof(b), "%s  %s  FG off  %d%%", nr_pass_count_short(p.nr_pass_count), look,
                   clamp_scale_percent(p.scale_percent));
@@ -197,6 +205,8 @@ inline UserPreset user_preset_from_persisted(const std::string& name, const Pers
   p.fg_enabled = s.fg_enabled;
   p.fg_multiplier = s.fg_multiplier;
   p.fg_queue = s.fg_queue;
+  p.fg_adaptive = s.fg_adaptive;
+  p.fg_target_fps = s.fg_target_fps;
   p.scale_percent = s.scale_percent;
   clamp_user_preset(p);
   return p;
@@ -215,6 +225,8 @@ inline UserPreset user_preset_from_session(const std::string& name, const Sessio
   p.fg_enabled = s.fg_on;
   p.fg_multiplier = s.fg_multiplier;
   p.fg_queue = s.fg_queue;
+  p.fg_adaptive = s.fg_adaptive;
+  p.fg_target_fps = s.fg_target_fps;
   p.scale_percent = s.scale_percent;
   clamp_user_preset(p);
   return p;
@@ -236,6 +248,8 @@ inline std::string serialize_user_preset(const UserPreset& raw) {
   o << "fg_enabled=" << (p.fg_enabled ? 1 : 0) << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
   o << "fg_queue=" << p.fg_queue << "\n";
+  o << "fg_adaptive=" << (p.fg_adaptive ? 1 : 0) << "\n";
+  o << "fg_target_fps=" << p.fg_target_fps << "\n";
   o << "scale_percent=" << p.scale_percent << "\n";
   return o.str();
 }
@@ -275,6 +289,8 @@ inline bool parse_user_preset(const std::string& text, UserPreset& out) {
     else if (k == "fg_enabled") p.fg_enabled = parse_bool_01(v);
     else if (k == "fg_multiplier") p.fg_multiplier = std::atoi(v.c_str());
     else if (k == "fg_queue") p.fg_queue = std::atoi(v.c_str());
+    else if (k == "fg_adaptive") p.fg_adaptive = parse_bool_01(v) || parse_fg_adaptive_ini(v);
+    else if (k == "fg_target_fps") p.fg_target_fps = std::atoi(v.c_str());
     else if (k == "scale_percent") p.scale_percent = std::atoi(v.c_str());
   }
   if (!saw_magic) return false;
@@ -307,6 +323,8 @@ inline SessionCfgActions plan_user_preset_apply(const SessionCfgState& cur, cons
   if (cur.fg_on != want_fg) a.toggle_fg = true;
   if (want_fg && clamp_fg_multiplier(cur.fg_multiplier) != p.fg_multiplier) a.fg_multiplier_changed = true;
   if (clamp_fg_queue(cur.fg_queue) != p.fg_queue) a.fg_queue_changed = true;
+  if (cur.fg_adaptive != p.fg_adaptive) a.fg_adaptive_changed = true;
+  if (clamp_fg_adaptive_target_stored(cur.fg_target_fps) != p.fg_target_fps) a.fg_target_changed = true;
   if (clamp_scale_percent(cur.scale_percent) != p.scale_percent) {
     a.scale_apply = true;
     a.scale_before = clamp_scale_percent(cur.scale_percent);
@@ -322,6 +340,8 @@ inline SessionCfgActions plan_user_preset_apply(const SessionCfgState& cur, cons
   a.apply_fg_on = want_fg;
   a.apply_fg_multiplier = p.fg_multiplier;
   a.apply_fg_queue = p.fg_queue;
+  a.apply_fg_adaptive = p.fg_adaptive;
+  a.apply_fg_target_fps = p.fg_target_fps;
   a.apply_scale_percent = p.scale_percent;
   return a;
 }
@@ -339,6 +359,8 @@ inline void stamp_session_from_user_preset(SessionCfgState& cur, const UserPrese
   cur.fg_on = p.fg_enabled && fg_can_enable;
   cur.fg_multiplier = p.fg_multiplier;
   cur.fg_queue = p.fg_queue;
+  cur.fg_adaptive = p.fg_adaptive;
+  cur.fg_target_fps = p.fg_target_fps;
   cur.scale_percent = p.scale_percent;
 }
 
@@ -356,6 +378,8 @@ inline void apply_user_preset_to_persisted(PersistedSettings& s, const UserPrese
   s.fg_enabled = p.fg_enabled && fg_can_enable;
   s.fg_multiplier = p.fg_multiplier;
   s.fg_queue = p.fg_queue;
+  s.fg_adaptive = p.fg_adaptive;
+  s.fg_target_fps = p.fg_target_fps;
   s.scale_percent = p.scale_percent;
 }
 

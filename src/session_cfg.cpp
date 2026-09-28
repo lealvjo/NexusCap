@@ -159,6 +159,7 @@ void SessionCfgOverlay::set_open(bool open) {
     scale_slider_ = static_cast<float>(clamp_scale_percent(state.scale_percent));
     actions_ = SessionCfgActions{};
     force_pos_ = true;
+    fg_draft_sync_ = true;
     save_name_open_ = false;
     rename_open_ = false;
     confirm_overwrite_ = false;
@@ -346,17 +347,73 @@ void SessionCfgOverlay::draw_panel() {
     if (ImGui::Checkbox("Habilitar Frame Gen", &fg)) actions_.toggle_fg = true;
     const int mult_before = clamp_fg_multiplier(state.fg_multiplier);
     int mult = mult_before;
-    ImGui::BeginDisabled(!state.fg_on);
+    if (fg_draft_sync_) {
+      state.fg_adaptive_draft = state.fg_adaptive;
+      state.fg_target_draft = state.fg_target_fps;
+      fg_draft_sync_ = false;
+    }
+    ImGui::BeginDisabled(!state.fg_on || state.fg_adaptive_draft);
     if (ImGui::RadioButton("x2##fg", mult == 2)) mult = 2;
     ImGui::SameLine();
     if (ImGui::RadioButton("x3##fg", mult == 3)) mult = 3;
     ImGui::SameLine();
     if (ImGui::RadioButton("x4##fg", mult == 4)) mult = 4;
     ImGui::EndDisabled();
-    ImGui::EndDisabled();
     if (mult != mult_before) {
       state.fg_multiplier = clamp_fg_multiplier(mult);
       actions_.fg_multiplier_changed = true;
+    }
+    ImGui::TextUnformatted("Modo FG");
+    state.monitor_hz = clamp_display_refresh_hz(state.monitor_hz);
+    if (ImGui::BeginCombo("##sess_fg_mode", fg_mode_label(state.fg_adaptive_draft))) {
+      const bool sel_fixed = !state.fg_adaptive_draft;
+      if (ImGui::Selectable(fg_mode_label(false), sel_fixed)) {
+        state.fg_adaptive_draft = false;
+        if (state.fg_adaptive) {
+          state.fg_adaptive = false;
+          actions_.fg_adaptive_changed = true;
+        }
+      }
+      if (sel_fixed) ImGui::SetItemDefaultFocus();
+      if (ImGui::Selectable(fg_mode_label(true), state.fg_adaptive_draft)) state.fg_adaptive_draft = true;
+      ImGui::EndCombo();
+    }
+    ImGui::BeginDisabled(!state.fg_on || !state.fg_adaptive_draft);
+    int tgt = state.fg_target_draft;
+    if (ImGui::InputInt("Alvo FPS##sess_fg_tgt", &tgt, 0, 0)) state.fg_target_draft = tgt;
+    state.fg_target_editing = ImGui::IsItemActive();
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+      state.fg_target_draft =
+          clamp_fg_adaptive_target(state.fg_target_draft, state.monitor_hz, state.capture_fps);
+    }
+    if (ImGui::Button("Hz do monitor##sess_fg_hz")) {
+      state.fg_target_draft =
+          clamp_fg_adaptive_target(state.monitor_hz, state.monitor_hz, state.capture_fps);
+    }
+    ImGui::EndDisabled();
+    {
+      const int draft_clamped =
+          clamp_fg_adaptive_target(state.fg_target_draft, state.monitor_hz, state.capture_fps);
+      const int lo = clamp_fg_adaptive_target(1, state.monitor_hz, state.capture_fps);
+      const bool apply_on = fg_adaptive_apply_enabled(state.fg_adaptive_draft, state.fg_adaptive,
+                                                      state.fg_target_fps, draft_clamped);
+      ImGui::BeginDisabled(!apply_on || state.fg_busy);
+      if (ImGui::Button("Aplicar Adaptive##sess_fg_apply")) {
+        state.fg_target_draft = draft_clamped;
+        const bool mode_ch = !state.fg_adaptive;
+        const bool tgt_ch = draft_clamped != state.fg_target_fps;
+        state.fg_adaptive = true;
+        state.fg_target_fps = draft_clamped;
+        actions_.fg_adaptive_changed = mode_ch;
+        actions_.fg_target_changed = tgt_ch;
+      }
+      ImGui::EndDisabled();
+      char hz_hint[176]{};
+      std::snprintf(hz_hint, sizeof(hz_hint),
+                    "No Adaptive, escreve o alvo (%d a %d) e carrega Aplicar. Fixo vale na hora.", lo,
+                    state.monitor_hz);
+      ImGui::TextDisabled("%s", hz_hint);
+      ImGui::TextDisabled("%s", fg_adaptive_ghost_hint());
     }
     ImGui::TextUnformatted("Perfil FG");
     state.fg_queue = clamp_fg_queue(state.fg_queue);
@@ -373,6 +430,7 @@ void SessionCfgOverlay::draw_panel() {
     }
     ImGui::TextDisabled("0 menor latencia. Se o FG estiver ligado, reabre o Lossless.");
     ImGui::TextDisabled(state.fg_busy ? "Aplicando..." : "Nao reinicia o NexusCap.");
+    ImGui::EndDisabled();
 
     ImGui::Separator();
     ImGui::TextUnformatted("Escala de resolucao (trabalho GPU)");
@@ -497,6 +555,8 @@ void SessionCfgOverlay::commit_apply_preset() {
   actions_.toggle_fg = planned.toggle_fg;
   actions_.fg_multiplier_changed = planned.fg_multiplier_changed;
   actions_.fg_queue_changed = planned.fg_queue_changed;
+  actions_.fg_adaptive_changed = planned.fg_adaptive_changed;
+  actions_.fg_target_changed = planned.fg_target_changed;
   actions_.hud_changed = planned.hud_changed;
   actions_.overlay_no_bg_changed = planned.overlay_no_bg_changed;
   actions_.console_changed = planned.console_changed;
@@ -513,9 +573,12 @@ void SessionCfgOverlay::commit_apply_preset() {
   actions_.apply_fg_on = planned.apply_fg_on;
   actions_.apply_fg_multiplier = planned.apply_fg_multiplier;
   actions_.apply_fg_queue = planned.apply_fg_queue;
+  actions_.apply_fg_adaptive = planned.apply_fg_adaptive;
+  actions_.apply_fg_target_fps = planned.apply_fg_target_fps;
   actions_.apply_scale_percent = planned.apply_scale_percent;
   stamp_session_from_user_preset(state, p, fg_can_enable);
   scale_slider_ = static_cast<float>(state.scale_percent);
+  fg_draft_sync_ = true;
   if (p.fg_enabled && !fg_can_enable) {
     state.status = session_notice_fg_missing();
   } else {

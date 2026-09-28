@@ -176,10 +176,28 @@ std::string resolve_lossless_exe(const std::string& override_path) {
   return {};
 }
 
-std::string build_mira_settings_xml(int multiplier, int queue) {
+int display_refresh_hz(HWND hwnd) {
+  const HWND w = (hwnd && IsWindow(hwnd)) ? hwnd : GetDesktopWindow();
+  const HMONITOR mon = MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST);
+  MONITORINFOEXW mi{};
+  mi.cbSize = sizeof(mi);
+  if (!GetMonitorInfoW(mon, reinterpret_cast<MONITORINFO*>(&mi))) {
+    return clamp_display_refresh_hz(0);
+  }
+  DEVMODEW dm{};
+  dm.dmSize = sizeof(dm);
+  if (!EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
+    return clamp_display_refresh_hz(0);
+  }
+  return clamp_display_refresh_hz(static_cast<int>(dm.dmDisplayFrequency));
+}
+
+std::string build_mira_settings_xml(int multiplier, int queue, bool adaptive, int target_fps,
+                                    int monitor_hz) {
   multiplier = clamp_fg_multiplier(multiplier);
   queue = clamp_fg_queue(queue);
   if (multiplier < 2) multiplier = 2;  // profile template always stores a valid FG factor
+  const int tgt = clamp_fg_adaptive_target(target_fps, monitor_hz);
   std::ostringstream o;
   o << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
     << "<Settings xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" "
@@ -194,9 +212,9 @@ std::string build_mira_settings_xml(int multiplier, int queue) {
     << "      <Title>" << app_window_title_session() << "</Title>\n"
     << "      <ScalingType>Off</ScalingType>\n"
     << "      <LSFG2Mode>X2</LSFG2Mode>\n"
-    << "      <LSFG3Mode1>FIXED</LSFG3Mode1>\n"
+    << "      <LSFG3Mode1>" << lsfg3_mode1_xml(adaptive) << "</LSFG3Mode1>\n"
     << "      <LSFG3Multiplier>" << multiplier << "</LSFG3Multiplier>\n"
-    << "      <LSFG3Target>90</LSFG3Target>\n"
+    << "      <LSFG3Target>" << tgt << "</LSFG3Target>\n"
     << "      <LSFGFlowScale>80</LSFGFlowScale>\n"
     << "      <LSFGSize>BALANCED</LSFGSize>\n"
     << "      <FrameGeneration>LSFG3</FrameGeneration>\n"
@@ -213,11 +231,14 @@ std::string build_mira_settings_xml(int multiplier, int queue) {
   return o.str();
 }
 
-std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier, int queue) {
+std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier, int queue, bool adaptive,
+                                    int target_fps, int monitor_hz) {
   multiplier = clamp_fg_multiplier(multiplier);
   queue = clamp_fg_queue(queue);
   if (multiplier < 2) multiplier = 2;
-  std::string xml = xml_in.empty() ? build_mira_settings_xml(multiplier, queue) : xml_in;
+  const int tgt = clamp_fg_adaptive_target(target_fps, monitor_hz);
+  std::string xml = xml_in.empty() ? build_mira_settings_xml(multiplier, queue, adaptive, tgt, monitor_hz)
+                                   : xml_in;
 
   while (xml.find("<LSFGFlowScale>70</LSFGFlowScale>") != std::string::npos) {
     replace_tag(xml, "LSFGFlowScale", "80");
@@ -243,10 +264,10 @@ std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier, i
   };
 
   upsert("Title", app_window_title_session());
-  upsert("LSFG3Target", "90");
+  upsert("LSFG3Target", std::to_string(tgt));
   upsert("Hotkey", "F24");
   upsert("HotkeyModifierKeys", "None");
-  upsert("LSFG3Mode1", "FIXED");
+  upsert("LSFG3Mode1", lsfg3_mode1_xml(adaptive));
   upsert("LSFG3Multiplier", std::to_string(multiplier));
   upsert("LSFGFlowScale", "80");
   upsert("LSFGSize", "BALANCED");
@@ -260,7 +281,7 @@ std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier, i
   upsert("MultiDisplayMode", "true");
 
   if (xml.find("<LSFGFlowScale>") == std::string::npos) {
-    return build_mira_settings_xml(multiplier, queue);
+    return build_mira_settings_xml(multiplier, queue, adaptive, tgt, monitor_hz);
   }
   return xml;
 }
@@ -337,9 +358,16 @@ std::string patch_lsfg_ini_fps_counter_only(const std::string& ini_in) {
   return out;
 }
 
-void LosslessFgController::configure(int multiplier, const std::string& exe_override, int queue) {
+void LosslessFgController::configure(int multiplier, const std::string& exe_override, int queue,
+                                     int adaptive, int target_fps, int monitor_hz, double capture_fps) {
   state_.multiplier = clamp_fg_multiplier(multiplier);
   if (queue >= 0) state_.queue_target = clamp_fg_queue(queue);
+  if (adaptive >= 0) state_.adaptive = adaptive != 0;
+  if (monitor_hz >= 0) state_.monitor_hz = clamp_display_refresh_hz(monitor_hz);
+  if (capture_fps >= 0.0) state_.capture_fps = capture_fps;
+  if (target_fps >= 0) {
+    state_.target_fps = clamp_fg_adaptive_target(target_fps, state_.monitor_hz, state_.capture_fps);
+  }
   state_.flow_scale = 80;
   state_.capture_api = "WGC";
   state_.backend = "lsfg3";
@@ -464,10 +492,12 @@ void LosslessFgController::pulse_fg_hotkey() { (void)send_ls_hotkey(); }
 
 bool LosslessFgController::apply_hdmi_profile_without_launch(bool fg_enabled, int fg_mult,
                                                              const std::string& path, std::string& err,
-                                                             int queue) {
+                                                             int queue, bool adaptive, int target_fps,
+                                                             int monitor_hz) {
   if (confirmed_on_ || state_.active) pulse_fg_hotkey();
   (void)kill_all_lossless_and_wait(static_cast<DWORD>(fg_kill_wait_max_ms()));
-  configure(hdmi_lobby_fg_multiplier(fg_enabled, fg_mult), path, queue);
+  configure(hdmi_lobby_fg_multiplier(fg_enabled, fg_mult), path, queue, adaptive ? 1 : 0, target_fps,
+            monitor_hz);
   const bool ok = apply_profile(err);
   bool snap_ok = true;
   const unsigned left = count_running_lossless_processes(true, &snap_ok);
@@ -485,9 +515,11 @@ bool LosslessFgController::apply_profile(std::string& err) {
     return false;
   }
   const int m = state_.multiplier <= 1 ? 2 : state_.multiplier;
+  const int tgt = clamp_fg_adaptive_target(state_.target_fps, state_.monitor_hz, state_.capture_fps);
   const std::string path = localappdata_settings_path();
   std::string cur = path.empty() ? std::string() : read_file_utf8(path);
-  const std::string xml = patch_mira_settings_xml(cur, m, state_.queue_target);
+  const std::string xml =
+      patch_mira_settings_xml(cur, m, state_.queue_target, state_.adaptive, tgt, state_.monitor_hz);
   if (xml.find("LSFGFlowScale>80") == std::string::npos) {
     err = "mira profile missing FlowScale 80";
     state_.status = FgStatus::Error;
@@ -504,8 +536,9 @@ bool LosslessFgController::apply_profile(std::string& err) {
   }
   // Read-back: HUD xN must match disk (QA: no memory-only multiplier).
   const std::string on_disk = path.empty() ? std::string() : read_file_utf8(path);
-  if (!fg_multiplier_confirmed_on_disk(m, on_disk)) {
-    err = "Settings.xml LSFG3Multiplier != " + std::to_string(m) + " apos gravar";
+  if (!fg_ls_profile_confirmed_on_disk(m, state_.adaptive, tgt, on_disk)) {
+    err = state_.adaptive ? ("Settings.xml Adaptive/LSFG3Target != " + std::to_string(tgt) + " apos gravar")
+                          : ("Settings.xml LSFG3Multiplier/FIXED != " + std::to_string(m) + " apos gravar");
     state_.status = FgStatus::Error;
     state_.last_error = err;
     return false;

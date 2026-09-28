@@ -401,6 +401,13 @@ TEST_CASE("overlay ft_stable no false UNSTABLE at 30/120/144") {
   for (int i = 0; i < 60; ++i) w30.push(33.4);
   CHECK(w30.stable(1000.0 / 30.0));  // auto 1.5× target
   CHECK_FALSE(w30.stable(1000.0 / 30.0, 25.0));  // legacy fixed cap still fails
+  {
+    FrametimeWindow w(120);
+    for (int i = 0; i < 60; ++i) w.push(16.7);
+    const double p = w.p95();
+    CHECK(w.stable_with_p95(p, 16.67, 25.0) == w.stable(16.67, 25.0));
+    CHECK(w.stable_with_p95(p, 16.67, 25.0));
+  }
 }
 
 TEST_CASE("overlay ft status PLAYABLE FG matches Benchmark grade") {
@@ -465,6 +472,43 @@ TEST_CASE("overlay ft status PLAYABLE FG matches Benchmark grade") {
                             nullptr, nullptr, 0, 0, 0, nullptr, 60.0);
   CHECK(std::strstr(b, "PLAYABLE FG") != nullptr);
   CHECK(std::strstr(b, "UNSTABLE") == nullptr);
+}
+
+TEST_CASE("overlay frametime line is shared across HUDs") {
+  char line[160]{};
+  format_overlay_frametime_line(line, sizeof(line), 25.04, 24.82, 26.10, false, true, 2, 40.0, 60.0, 80.0);
+  CHECK(std::strstr(line, "ft 25.04") != nullptr);
+  CHECK(std::strstr(line, "avg 24.82") != nullptr);
+  CHECK(std::strstr(line, "p95 26.10") != nullptr);
+  CHECK(std::strstr(line, "FG est 12.52") != nullptr);
+  CHECK(std::strstr(line, "PLAYABLE FG") != nullptr);
+  CHECK(std::strstr(line, "max") == nullptr);
+  CHECK(std::strstr(line, "present") == nullptr);
+
+  format_overlay_frametime_line(line, sizeof(line), 16.67, 16.60, 17.00, true, false, 2, 60.0, 60.0, 0);
+  CHECK(std::strstr(line, "ft 16.67") != nullptr);
+  CHECK(std::strstr(line, "FG est") == nullptr);
+  CHECK(std::strstr(line, "STABLE") != nullptr);
+
+  format_overlay_frametime_live(line, sizeof(line), 25.04, true, 2);
+  CHECK(std::string(line) == "25.04 · FG 12.52");
+  format_overlay_frametime_live(line, sizeof(line), 16.67, false, 2);
+  CHECK(std::string(line) == "16.67");
+
+  format_overlay_latency_line(line, sizeof(line), 8.50, 2.20, true);
+  CHECK(std::strstr(line, "cap 8.50") != nullptr);
+  CHECK(std::strstr(line, "present 2.20") != nullptr);
+  CHECK(std::strstr(line, "+NR") != nullptr);
+  CHECK(std::strstr(line, "ft ") == nullptr);
+
+  PersistedSettings s = default_settings();
+  s.ui.show_fps = true;
+  auto hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "ft "));
+  CHECK(lobby_hud_contains(hud, "avg "));
+  CHECK(lobby_hud_contains(hud, "p95 "));
+  CHECK_FALSE(lobby_hud_contains(hud, "FG est"));
+  CHECK_FALSE(lobby_hud_contains(hud, "frametime  "));
 }
 
 TEST_CASE("ClusterDetector metronome gap") {
@@ -960,6 +1004,35 @@ TEST_CASE("parse --fg-x multipliers") {
   }
 }
 
+TEST_CASE("parse --fg-adaptive and --fg-target") {
+  {
+    char a0[] = "NexusCap";
+    char* argv[] = {a0};
+    auto c = parse_args(1, argv);
+    CHECK_FALSE(c.fg_adaptive);
+    CHECK(c.fg_target_fps == 60);
+  }
+  {
+    char a0[] = "NexusCap";
+    char a1[] = "--fg-adaptive";
+    char a2[] = "1";
+    char a3[] = "--fg-target";
+    char a4[] = "80";
+    char* argv[] = {a0, a1, a2, a3, a4};
+    auto c = parse_args(5, argv);
+    CHECK(c.fg_adaptive);
+    CHECK(c.fg_target_fps == 80);
+  }
+  {
+    char a0[] = "NexusCap";
+    char a1[] = "--fg-target";
+    char a2[] = "20";
+    char* argv[] = {a0, a1, a2};
+    auto c = parse_args(3, argv);
+    CHECK(c.fg_target_fps == 30);
+  }
+}
+
 TEST_CASE("parse --fg-path") {
   char a0[] = "NexusCap";
   char a1[] = "--fg-path";
@@ -1075,7 +1148,25 @@ TEST_CASE("session HUD shows real|FG dual FPS when FG on") {
   CHECK(std::strstr(line, "120.0") != nullptr);
   CHECK(std::strstr(line, "cap|FG") != nullptr);
   CHECK(std::strstr(line, "x2") != nullptr);
+  CHECK(std::strstr(line, "Fixo") != nullptr);
   CHECK(std::strstr(line, "ON") != nullptr);
+
+  format_session_hud_fps_line(line, sizeof(line), 40.0, 70.0, true, 2, true, true, 70);
+  CHECK(session_hud_fps_shows_cap_fg_split(line));
+  CHECK(std::strstr(line, "Adaptive 70") != nullptr);
+  CHECK(std::strstr(line, "Fixo") == nullptr);
+  char fg_adp[160]{};
+  format_session_hud_fg_status_line(fg_adp, sizeof(fg_adp), true, 2, "lsfg3", 80, "WGC", "On", 40.0, 70.0, 0,
+                                   true, 70);
+  CHECK(std::strstr(fg_adp, "Adaptive 70") != nullptr);
+  CHECK(std::strstr(fg_adp, "Fixo") == nullptr);
+  {
+    char tag[24]{};
+    format_fg_mode_tag(tag, sizeof(tag), false, 2);
+    CHECK(std::string(tag) == "Fixo x2");
+    format_fg_mode_tag(tag, sizeof(tag), true, 2, 70);
+    CHECK(std::string(tag) == "Adaptive 70");
+  }
 
   format_session_hud_fps_line(line, sizeof(line), 60.0, 180.0, true, 3, false);
   CHECK(session_hud_fps_shows_cap_fg_split(line));
@@ -1175,9 +1266,11 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(b, "clusters 1") != nullptr);
   CHECK(std::strstr(b, "frm 900") != nullptr);
   CHECK(std::strstr(b, "drop 5") != nullptr);
-  CHECK(std::strstr(b, "ft 16.7") != nullptr);
-  CHECK(std::strstr(b, "avg 16.6") != nullptr);
-  CHECK(std::strstr(b, "p95 17.0") != nullptr);
+  CHECK(std::strstr(b, "ft 16.70") != nullptr);
+  CHECK(std::strstr(b, "avg 16.60") != nullptr);
+  CHECK(std::strstr(b, "p95 17.00") != nullptr);
+  CHECK(std::strstr(b, "FG est 8.35") != nullptr);
+  CHECK(std::strstr(b, "max 18") == nullptr);
   CHECK(std::strstr(b, "STABLE") != nullptr);
   CHECK(std::strstr(b, "L600") != nullptr);
   CHECK(std::strstr(b, "i5-11400F") != nullptr);
@@ -1223,7 +1316,7 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(a, "NR off") != nullptr);
   CHECK(std::strstr(a, "DLSS5") != nullptr);
   CHECK(std::strstr(a, "TEAR") != nullptr);
-  CHECK(std::strstr(a, "FG x2 off") != nullptr);
+  CHECK(std::strstr(a, "FG Fixo x2 off") != nullptr);
   CHECK(std::strstr(a, "2560x1440>1280x720@50%>out 1:1") != nullptr);
   CHECK(std::strstr(b, "st0/cl0") == nullptr);
   CHECK(std::strstr(b, "stalls 0") != nullptr);
@@ -1330,6 +1423,8 @@ TEST_CASE("overlay sem fundo is a free toggle for every HUD style") {
 TEST_CASE("default FG off but multiplier stays armed for PageDn") {
   CHECK_FALSE(default_settings().fg_enabled);
   CHECK(default_settings().fg_multiplier == 2);
+  CHECK_FALSE(default_settings().fg_adaptive);
+  CHECK(default_settings().fg_target_fps == 60);
 
   PersistedSettings s = default_settings();
   s.fg_enabled = false;
@@ -1345,6 +1440,16 @@ TEST_CASE("default FG off but multiplier stays armed for PageDn") {
   apply_persisted_to_config(s, cfg);
   CHECK(cfg.fg_auto_start);
   CHECK(cfg.fg_multiplier == 3);
+
+  s.fg_adaptive = true;
+  s.fg_target_fps = 80;
+  apply_persisted_to_config(s, cfg);
+  CHECK(cfg.fg_adaptive);
+  CHECK(cfg.fg_target_fps == 80);
+  PersistedSettings back = default_settings();
+  apply_session_cfg_to_persisted(cfg, back);
+  CHECK(back.fg_adaptive);
+  CHECK(back.fg_target_fps == 80);
 }
 
 TEST_CASE("fresh install without Lossless cannot enable FG until Pasta or Auto finds exe") {
@@ -1421,6 +1526,77 @@ TEST_CASE("mira settings xml never writes Flow 70") {
   CHECK(parse_lsfg3_multiplier_from_xml("<nope>") == 0);
 }
 
+TEST_CASE("LSFG Adaptive XML 50/65/80 and clamp to monitor Hz") {
+  CHECK(std::string(lsfg3_mode1_xml(false)) == "FIXED");
+  CHECK(std::string(lsfg3_mode1_xml(true)) == "ADAPTIVE");
+  const std::string fixed = build_mira_settings_xml(2);
+  CHECK(mira_lock_xml_ok(fixed));
+  CHECK(parse_lsfg3_fixed_from_xml(fixed));
+  CHECK_FALSE(parse_lsfg3_adaptive_from_xml(fixed));
+  CHECK(fixed.find("<LSFG3Mode1>FIXED</LSFG3Mode1>") != std::string::npos);
+  CHECK(fixed.find("<Hotkey>F24</Hotkey>") != std::string::npos);
+  CHECK(fixed.find("LSFGFlowScale>80") != std::string::npos);
+  CHECK(fixed.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos);
+  CHECK(fg_adaptive_confirmed_on_disk(false, 60, fixed));
+  CHECK_FALSE(fg_adaptive_confirmed_on_disk(true, 60, fixed));
+
+  for (int tgt : {50, 65, 80}) {
+    const std::string xml = build_mira_settings_xml(2, 0, true, tgt, 144);
+    CHECK(mira_lock_xml_ok(xml));
+    CHECK(parse_lsfg3_adaptive_from_xml(xml));
+    CHECK_FALSE(parse_lsfg3_fixed_from_xml(xml));
+    CHECK(parse_lsfg3_target_from_xml(xml) == tgt);
+    CHECK(fg_adaptive_confirmed_on_disk(true, tgt, xml));
+    CHECK(fg_ls_profile_confirmed_on_disk(2, true, tgt, xml));
+    CHECK(xml.find("LSFGFlowScale>80") != std::string::npos);
+    CHECK(xml.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos);
+    CHECK(xml.find("<Hotkey>F24</Hotkey>") != std::string::npos);
+  }
+
+  const std::string clamped = build_mira_settings_xml(4, 0, true, 80, 60);
+  CHECK(parse_lsfg3_adaptive_from_xml(clamped));
+  CHECK(parse_lsfg3_target_from_xml(clamped) == 60);
+  CHECK(fg_adaptive_confirmed_on_disk(true, 60, clamped));
+  CHECK_FALSE(fg_adaptive_confirmed_on_disk(true, 80, clamped));
+
+  CHECK(session_notice_fg_adaptive_apply(true, 70, 144, true).find("Adaptive 70") != std::string::npos);
+  CHECK(session_notice_fg_adaptive_apply(false, 70, 144, false).find("Fixo") != std::string::npos);
+  CHECK(session_notice_fg_adaptive_apply(true, 80, 60, true).find("Adaptive 60") != std::string::npos);
+  CHECK_FALSE(fg_adaptive_apply_dirty(true, 70, true, 70));
+  CHECK(fg_adaptive_apply_dirty(true, 70, false, 70));
+  CHECK(fg_adaptive_apply_dirty(true, 70, true, 60));
+  CHECK(fg_adaptive_apply_enabled(true, false, 60, 70));
+  CHECK(fg_adaptive_apply_enabled(true, true, 70, 80));
+  CHECK_FALSE(fg_adaptive_apply_enabled(false, true, 70, 70));
+  CHECK_FALSE(fg_adaptive_apply_enabled(false, true, 70, 60));
+  CHECK_FALSE(fg_adaptive_apply_enabled(true, true, 70, 70));
+  CHECK(std::string(fg_adaptive_ghost_hint()).find("x2") != std::string::npos);
+  CHECK(std::string(fg_adaptive_ghost_hint()).find("definiu") != std::string::npos);
+
+  UserPreset up;
+  up.name = "Adaptive70";
+  up.fg_enabled = true;
+  up.fg_adaptive = true;
+  up.fg_target_fps = 70;
+  up.fg_multiplier = 2;
+  UserPreset up2;
+  REQUIRE(parse_user_preset(serialize_user_preset(up), up2));
+  CHECK(up2.fg_adaptive);
+  CHECK(up2.fg_target_fps == 70);
+  CHECK(user_preset_list_summary(up2).find("Adaptive 70") != std::string::npos);
+
+  const std::string dirty =
+      "<Settings><LSFG3Mode1>FIXED</LSFG3Mode1><LSFG3Target>90</LSFG3Target>"
+      "<LSFGFlowScale>80</LSFGFlowScale><LSFG3Multiplier>2</LSFG3Multiplier>"
+      "<CaptureApi>WGC</CaptureApi><QueueTarget>0</QueueTarget><DrawFps>false</DrawFps></Settings>";
+  const std::string patched = patch_mira_settings_xml(dirty, 2, 0, true, 65, 144);
+  CHECK(parse_lsfg3_adaptive_from_xml(patched));
+  CHECK(parse_lsfg3_target_from_xml(patched) == 65);
+  const std::string back = patch_mira_settings_xml(patched, 2, 0, false, 65, 144);
+  CHECK(parse_lsfg3_fixed_from_xml(back));
+  CHECK_FALSE(parse_lsfg3_adaptive_from_xml(back));
+}
+
 TEST_CASE("ls hide only settings ui not fg output overlay") {
   CHECK(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", 0));
   CHECK(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", WS_EX_TOPMOST));
@@ -1440,6 +1616,68 @@ TEST_CASE("ls hide only settings ui not fg output overlay") {
   CHECK(ls_output_covers_target(0, 0, 2560, 1440, 100, 80, 1920, 1080));
   CHECK_FALSE(ls_output_covers_target(0, 0, 800, 600, 2000, 0, 2560, 1440));
   CHECK_FALSE(ls_output_covers_target(0, 0, 180, 48, 0, 0, 2560, 1440));
+}
+
+TEST_CASE("FG ON contract: F24 or generating surface then HUD and frametime agree") {
+  // Processo vivo sem F24 / sem superficie = overlay nunca diz ON.
+  CHECK_FALSE(fg_overlay_on_confirmed(true, 0));
+  CHECK_FALSE(fg_overlay_reads_on(true, 2, true, 0, false, false));
+  CHECK_FALSE(fg_overlay_reads_on(true, 2, true, 1, false, false));
+  CHECK_FALSE(fg_overlay_reads_on(true, 1, true, 1, true, true));
+
+  const bool on_f24 = fg_overlay_reads_on(true, 2, true, 1, true, false);
+  CHECK(fg_overlay_on_confirmed(true, 1));
+  CHECK(on_f24);
+
+  const bool on_surface = fg_overlay_reads_on(false, 2, false, 0, false, true);
+  CHECK(on_surface);
+  CHECK(ls_is_generating_output(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 2560, 1440));
+  CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 2560, 1440));
+  CHECK_FALSE(ls_should_hide_window(L"", L"LosslessScaling", 0, 2560, 1440));
+
+  const std::string xml = build_mira_settings_xml(2);
+  CHECK(mira_lock_xml_ok(xml));
+  CHECK(xml.find("<Hotkey>F24</Hotkey>") != std::string::npos);
+  CHECK(fg_multiplier_confirmed_on_disk(2, xml));
+  CHECK_FALSE(fg_multiplier_confirmed_on_disk(3, xml));
+  CHECK(fg_frametime_trace_count(on_f24, 2) == 2);
+
+  char fps[128]{};
+  char ft[160]{};
+  char fg_line[160]{};
+  format_session_hud_fps_line(fps, sizeof(fps), 40.0, 80.0, on_f24, 2, true);
+  CHECK(session_hud_fps_shows_cap_fg_split(fps));
+  CHECK(std::strstr(fps, "x2 ON") != nullptr);
+  format_overlay_frametime_line(ft, sizeof(ft), 25.0, 25.0, 26.0, false, on_f24, 2, 40.0, 60.0, 80.0);
+  CHECK(std::strstr(ft, "FG est 12.50") != nullptr);
+  CHECK(std::strstr(ft, "PLAYABLE FG") != nullptr);
+  format_session_hud_fg_status_line(fg_line, sizeof(fg_line), on_f24, 2, "lsfg3", 80, "WGC", "On", 40.0, 80.0);
+  CHECK(std::strstr(fg_line, "FG      ON") != nullptr);
+  CHECK(std::strstr(fg_line, "flow80") != nullptr);
+  CHECK(std::strstr(fg_line, "WGC") != nullptr);
+
+  char a[512]{};
+  char b[512]{};
+  format_mini_overlay_lines(a, sizeof(a), b, sizeof(b), 40.0, 80.0, on_f24, 2, true, true, 25.0, 25.0, 26.0, 30.0,
+                            false, 8.5, 2.2, 0, 0, 0, 2560, 1440, 2560, 1440, 2560, 1440, 100, false, 0, 0, 0, 0,
+                            nullptr, nullptr, 0, 0, 0, "lsfg3", 60.0);
+  CHECK(std::strstr(a, "cap|FG") != nullptr);
+  CHECK(std::strstr(b, "FG est 12.50") != nullptr);
+
+  LiveStripLines strip{};
+  fill_live_strip_lines(strip, false, LiveConsole::Ps5, true, 5, on_f24, 2, 40.0, 80.0, false, 0, 25.0);
+  CHECK(strip.has_fg_fps);
+  CHECK(std::string(strip.ft) == "25.00 · FG 12.50");
+
+  const bool still_off = fg_overlay_reads_on(true, 2, true, 0, false, false);
+  CHECK_FALSE(still_off);
+  format_session_hud_fps_line(fps, sizeof(fps), 40.0, 80.0, still_off, 2, true);
+  CHECK_FALSE(session_hud_fps_shows_cap_fg_split(fps));
+  format_overlay_frametime_line(ft, sizeof(ft), 25.0, 25.0, 26.0, false, still_off, 2, 40.0, 60.0, 80.0);
+  CHECK(std::strstr(ft, "FG est") == nullptr);
+  format_session_hud_fg_status_line(fg_line, sizeof(fg_line), still_off, 2, "lsfg3", 80, "WGC", "Ready");
+  CHECK(std::strstr(fg_line, "off") != nullptr);
+  CHECK(std::strstr(fg_line, "FG      ON") == nullptr);
 }
 
 TEST_CASE("patch_lsfg_ini mira lock") {
@@ -1517,10 +1755,23 @@ TEST_CASE("fg_path persists in settings and reaches AppConfig") {
   REQUIRE(parse_settings_ini(ini, loaded));
   CHECK(loaded.fg_path == s.fg_path);
   CHECK(loaded.fg_multiplier == 3);
+  CHECK_FALSE(loaded.fg_adaptive);
+  CHECK(loaded.fg_target_fps == 60);
+  s.fg_adaptive = true;
+  s.fg_target_fps = 80;
+  const std::string ini2 = serialize_settings_ini(s);
+  CHECK(ini2.find("fg_adaptive=1") != std::string::npos);
+  CHECK(ini2.find("fg_target_fps=80") != std::string::npos);
+  PersistedSettings adp;
+  REQUIRE(parse_settings_ini(ini2, adp));
+  CHECK(adp.fg_adaptive);
+  CHECK(adp.fg_target_fps == 80);
   AppConfig cfg;
-  apply_persisted_to_config(loaded, cfg);
+  apply_persisted_to_config(adp, cfg);
   CHECK(cfg.fg_path == s.fg_path);
   CHECK(cfg.fg_multiplier == 3);
+  CHECK(cfg.fg_adaptive);
+  CHECK(cfg.fg_target_fps == 80);
   // Empty path = auto-detect (resolve may still find Steam install).
   loaded.fg_path.clear();
   apply_persisted_to_config(loaded, cfg);
@@ -1545,6 +1796,8 @@ TEST_CASE("session notices for FG enable/up and NR on/off") {
   CHECK_FALSE(session_notice_for_fg_cycle(3, 3));
 
   CHECK(session_notice_fg_on().find("Frame Gen ON") != std::string::npos);
+  CHECK(session_notice_fg_on().find("artefato") == std::string::npos);
+  CHECK(session_notice_fg_on().find("latencia") == std::string::npos);
   CHECK(session_notice_fg_multiplier_up(3).find("x3") != std::string::npos);
   CHECK(session_notice_nr_on().find("ON") != std::string::npos);
   CHECK(session_notice_nr_on().find("Confirmado") != std::string::npos);
@@ -1562,6 +1815,31 @@ TEST_CASE("session notices for FG enable/up and NR on/off") {
     session_notice_split(session_notice_nr_on(), t, d);
     CHECK(t.find("Neural Rendering ON") != std::string::npos);
     CHECK(d.find("imagem mais bonita") != std::string::npos);
+  }
+  CHECK(session_notice_extra_px(session_notice_fg_on()) == 36);
+  CHECK(session_notice_extra_px("so titulo") == 36);
+  CHECK(session_notice_extra_px("") == 0);
+  CHECK(session_notice_live_scale() == 3);
+  CHECK(session_notice_band_px(session_notice_fg_on(), 1) == 48);
+  CHECK(session_notice_band_px(session_notice_fg_on(), 3) == 144);
+  CHECK(session_notice_band_px("", 3) == 0);
+  CHECK(overlay_notice_only(false, true));
+  CHECK_FALSE(overlay_notice_only(true, true));
+  CHECK_FALSE(overlay_notice_only(false, false));
+  CHECK(overlay_notice_burn(true));
+  CHECK_FALSE(overlay_notice_burn(false));
+  CHECK(overlay_notice_with_live(true, true, true));
+  CHECK(overlay_notice_with_live(false, true, true));
+  CHECK(overlay_notice_with_live(true, false, true));
+  CHECK_FALSE(overlay_notice_with_live(true, true, false));
+  {
+    int x = 0, y = 0;
+    overlay_notice_center(720, 144, 1920, 1080, x, y);
+    CHECK(x == 600);
+    CHECK(y == 468);
+    overlay_notice_center(1920, 200, 1920, 1080, x, y);
+    CHECK(x == 0);
+    CHECK(y == 440);
   }
 
   SessionNotice n;
@@ -2924,6 +3202,23 @@ TEST_CASE("present interval locks perf test to meta not monitor Hz") {
   CHECK(present_interval_for_target(true, 60, 0) == 1u);
   CHECK(clamp_display_refresh_hz(0) == 60);
   CHECK(clamp_display_refresh_hz(120) == 120);
+  CHECK(clamp_fg_adaptive_target(50, 144) == 50);
+  CHECK(clamp_fg_adaptive_target(65, 144) == 65);
+  CHECK(clamp_fg_adaptive_target(80, 144) == 80);
+  CHECK(clamp_fg_adaptive_target(80, 60) == 60);
+  CHECK(clamp_fg_adaptive_target(50, 60) == 50);
+  CHECK(clamp_fg_adaptive_target(20, 144) == 30);
+  CHECK(clamp_fg_adaptive_target(400, 144) == 144);
+  CHECK(clamp_fg_adaptive_target(80, 0) == 60);
+  CHECK(fg_adaptive_capture_floor(0) == 30);
+  CHECK(fg_adaptive_capture_floor(40) == 40);
+  CHECK(clamp_fg_adaptive_target(30, 144, 40) == 40);
+  CHECK(clamp_fg_adaptive_target(50, 144, 40) == 50);
+  CHECK(clamp_fg_adaptive_target(80, 60, 40) == 60);
+  CHECK(clamp_fg_adaptive_target(20, 60, 40) == 40);
+  const int live_hz = display_refresh_hz(nullptr);
+  CHECK(live_hz >= 30);
+  CHECK(live_hz <= 360);
 }
 
 TEST_CASE("present_sync_interval maps sync_image to DXGI Present sync") {
@@ -2989,13 +3284,14 @@ TEST_CASE("hide_panel and sync_image are independent contracts") {
 }
 
 TEST_CASE("hud_panel size compact vs advanced metrics") {
-  CHECK(hud_panel_width(false) == 560);
-  CHECK(hud_panel_height(false) == 320);
+  CHECK(hud_panel_width(false) == 880);
+  CHECK(hud_panel_height(false) == 348);
   CHECK(hud_panel_width(true) == 920);
   CHECK(hud_panel_height(true) == 640);
   CHECK(hud_panel_width(true) > hud_panel_width(false));
   CHECK(hud_panel_height(true) > hud_panel_height(false));
   CHECK(hud_panel_height(true, true) == 780);
+  CHECK(hud_panel_height(false, true) == 488);
   CHECK(hud_mini_overlay_rows() == 3);
   CHECK(hud_mini_overlay_height() >= hud_mini_overlay_font_px() * 3 + 16);
   CHECK(hw_info_panel_width() == 360);
@@ -3487,17 +3783,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(5, 0, 0));
+  CHECK(app_version_is(5, 0, 1));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "5.0.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v5.0.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-5.0.0");
+  CHECK(std::string(kAppVersion) == "5.0.1");
+  CHECK(std::strstr(kAppNameWithVersion, "v5.0.1") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-5.0.1");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("5.0.0") != std::string::npos);
+  CHECK(lobby_t.find("5.0.1") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("5.0.0") != std::string::npos);
+  CHECK(sess_t.find("5.0.1") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -4583,25 +4879,30 @@ TEST_CASE("live fps line shows FG bar when on") {
   format_live_dlss5_line(line, sizeof(line), false, 2, true);
   CHECK(std::string(line) == "DLSS off");
   format_live_fg_line(line, sizeof(line), true, 2);
-  CHECK(std::string(line) == "FG x2 f0");
+  CHECK(std::string(line) == "FG Fixo x2 f0");
   format_live_fg_line(line, sizeof(line), true, 3);
-  CHECK(std::string(line) == "FG x3 f0");
+  CHECK(std::string(line) == "FG Fixo x3 f0");
   format_live_fg_line(line, sizeof(line), true, 4);
-  CHECK(std::string(line) == "FG x4 f0");
+  CHECK(std::string(line) == "FG Fixo x4 f0");
   format_live_fg_line(line, sizeof(line), false, 3);
   CHECK(std::string(line) == "FG off f0");
   format_live_fg_line(line, sizeof(line), true, 2, 2);
-  CHECK(std::string(line) == "FG x2 f2");
+  CHECK(std::string(line) == "FG Fixo x2 f2");
+  format_live_fg_line(line, sizeof(line), true, 2, 0, true, 70);
+  CHECK(std::string(line) == "FG Adaptive 70 f0");
   CHECK(std::strstr(line, "FG") == line);
   LiveStripLines strip{};
   fill_live_strip_lines(strip, true, LiveConsole::Ps5Pro, true, 5, true, 3, 60.0);
   CHECK(strip.has_console);
   CHECK(std::string(strip.console) == "PS5 Pro");
   CHECK(std::string(strip.dlss) == "DLSS 2x+");
-  CHECK(std::string(strip.fg) == "FG x3 f0");
+  CHECK(std::string(strip.fg) == "FG Fixo x3 f0");
   CHECK(std::string(strip.fps_cap.text) == "60.0");
   CHECK(strip.has_fg_fps);
   CHECK(std::string(strip.fps_fg.text) == "180.0");
+  CHECK(strip.ft[0] == '\0');
+  fill_live_strip_lines(strip, true, LiveConsole::Ps5Pro, true, 5, true, 3, 60.0, 180.0, true, 0, 16.67);
+  CHECK(std::string(strip.ft) == "16.67 · FG 5.56");
   {
     const FgFtRgb cap = fg_frametime_trace_rgb(1, true);
     CHECK(strip.fps_cap.r == cap.r);
@@ -5963,12 +6264,21 @@ TEST_CASE("perf test plan and result serialize") {
   CHECK(back.renodx_preset == 2);
   CHECK(back.fg_multiplier == 3);
   CHECK(back.fg_queue == 2);
+  CHECK_FALSE(back.fg_adaptive);
+  CHECK(back.fg_target_fps == 60);
   CHECK_FALSE(back.audio);
   CHECK(back.video == "C:\\vids\\last.mp4");
+  p.fg_adaptive = true;
+  p.fg_target_fps = 80;
+  CHECK(parse_perf_test_plan(serialize_perf_test_plan(p), back));
+  CHECK(back.fg_adaptive);
+  CHECK(back.fg_target_fps == 80);
   PerfTestPlan oldp;
   CHECK(parse_perf_test_plan("width=1920\nheight=1080\nplan_fps=60\n", oldp));
   CHECK(oldp.audio);
   CHECK(oldp.fg_queue == 0);
+  CHECK_FALSE(oldp.fg_adaptive);
+  CHECK(oldp.fg_target_fps == 60);
 
   PerfTestResult r;
   r.valid = true;

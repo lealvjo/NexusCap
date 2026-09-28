@@ -1007,10 +1007,8 @@ public:
   // Returns true when an async op just finished this frame (success or fail in last_error).
   bool tick(double now_ms);
 
-  // Sync wrappers (selftests). Prefer request_* + tick in the session loop.
+  // Sync wrapper (selftests / boot). Prefer request_* + tick in the session loop.
   bool toggle(HWND target, std::string& err);
-  bool set_multiplier(int multiplier, HWND target, std::string& err);
-  bool cycle_multiplier(HWND target, std::string& err);
 
   void shutdown(DWORD wait_ms = 800);
 

@@ -726,10 +726,7 @@ inline int session_notice_extra_px(const std::string& msg) {
   return d.empty() ? 36 : 60;
 }
 
-// Live toast is a thin 16px band. 3x so FG ON is readable next to the strip.
-inline int session_notice_live_scale() { return 3; }
-
-inline int session_notice_toast_scale() { return session_notice_live_scale(); }
+inline int session_notice_toast_scale() { return 3; }
 
 inline int session_notice_band_px(const std::string& msg, int scale) {
   if (scale < 1) scale = 1;
@@ -737,14 +734,6 @@ inline int session_notice_band_px(const std::string& msg, int scale) {
   if (extra <= 0) return 0;
   return extra * scale + 12 * scale;
 }
-
-// HUD off still burns the FG/NR toast into Present (no compact panel flash).
-inline bool overlay_notice_only(bool hud_on, bool has_notice) { return !hud_on && has_notice; }
-
-inline bool overlay_notice_burn(bool has_notice) { return has_notice; }
-
-// Kept for tests: toast no longer depends on live. Any HUD with a notice burns it.
-inline bool overlay_notice_with_live(bool /*hud_on*/, bool /*live*/, bool has_notice) { return has_notice; }
 
 // Toast no centro, fora do overlay (live/mini/compacto/ADV).
 inline void overlay_notice_center(int bar_w, int bar_h, int back_w, int back_h, int& x, int& y) {

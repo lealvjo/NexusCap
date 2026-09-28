@@ -1819,19 +1819,10 @@ TEST_CASE("session notices for FG enable/up and NR on/off") {
   CHECK(session_notice_extra_px(session_notice_fg_on()) == 36);
   CHECK(session_notice_extra_px("so titulo") == 36);
   CHECK(session_notice_extra_px("") == 0);
-  CHECK(session_notice_live_scale() == 3);
+  CHECK(session_notice_toast_scale() == 3);
   CHECK(session_notice_band_px(session_notice_fg_on(), 1) == 48);
   CHECK(session_notice_band_px(session_notice_fg_on(), 3) == 144);
   CHECK(session_notice_band_px("", 3) == 0);
-  CHECK(overlay_notice_only(false, true));
-  CHECK_FALSE(overlay_notice_only(true, true));
-  CHECK_FALSE(overlay_notice_only(false, false));
-  CHECK(overlay_notice_burn(true));
-  CHECK_FALSE(overlay_notice_burn(false));
-  CHECK(overlay_notice_with_live(true, true, true));
-  CHECK(overlay_notice_with_live(false, true, true));
-  CHECK(overlay_notice_with_live(true, false, true));
-  CHECK_FALSE(overlay_notice_with_live(true, true, false));
   {
     int x = 0, y = 0;
     overlay_notice_center(720, 144, 1920, 1080, x, y);
@@ -3783,17 +3774,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(5, 0, 1));
+  CHECK(app_version_is(5, 0, 2));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "5.0.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v5.0.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-5.0.1");
+  CHECK(std::string(kAppVersion) == "5.0.2");
+  CHECK(std::strstr(kAppNameWithVersion, "v5.0.2") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-5.0.2");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("5.0.1") != std::string::npos);
+  CHECK(lobby_t.find("5.0.2") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("5.0.1") != std::string::npos);
+  CHECK(sess_t.find("5.0.2") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 

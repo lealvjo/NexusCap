@@ -120,8 +120,6 @@ private:
   HWND owner_ = nullptr;
   OverlayState state_{};
   bool visible_ = true;
-  DWORD last_paint_tick_ = 0;
-  std::string last_notice_;
 };
 
 // "Otimizando o pipeline" — janela sem owner que sobrevive ao teardown da sessão e
@@ -142,27 +140,6 @@ private:
   HWND hwnd_ = nullptr;
   std::wstring title_;
   std::wstring detail_;
-};
-
-// Painel "Infos GPU / CPU" — aparece só quando o toggle do lobby está ligado.
-class HwInfoPanel {
-public:
-  ~HwInfoPanel() { destroy(); }
-  bool create(HWND owner, HINSTANCE hi);
-  void destroy();
-  void update(const OverlayState& state);
-  void set_visible(bool visible);
-  void reposition();
-  bool visible() const { return visible_; }
-
-private:
-  static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
-  void paint(HDC hdc) const;
-
-  HWND hwnd_ = nullptr;
-  HWND owner_ = nullptr;
-  OverlayState state_{};
-  bool visible_ = false;
 };
 
 // Right-edge live strip: console / DLSS 1x–3x+ / FG x2-x4|off / FPS / frametime sparkline.
@@ -192,7 +169,6 @@ private:
   int console_ = 0;
   bool console_changed_ = false;
   bool visible_ = false;
-  DWORD last_paint_tick_ = 0;
   mutable int layout_w_ = 420;
   mutable int layout_h_ = 26;
 };

@@ -739,7 +739,7 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
     } else if (overlay.hud_on) {
       burn_panel_overlay(overlay);
     }
-    if (overlay_notice_burn(!overlay.session_notice.empty())) {
+    if (!overlay.session_notice.empty()) {
       burn_session_notice(overlay);
     }
   }
@@ -776,15 +776,6 @@ void RendererD3D11::present_black() {
 namespace {
 
 constexpr wchar_t kHudClass[] = L"NexusCapHud";
-
-void apply_overlay_layered_attrs(HWND hwnd, bool overlay_no_bg) {
-  if (!hwnd) return;
-  if (overlay_draws_plate(overlay_no_bg)) {
-    SetLayeredWindowAttributes(hwnd, 0, 220, LWA_ALPHA);
-  } else {
-    SetLayeredWindowAttributes(hwnd, RGB(0, 0, 0), 255, LWA_COLORKEY);
-  }
-}
 
 std::wstring utf8_to_wide_hud(const std::string& s) {
   if (s.empty()) return L"";
@@ -1719,7 +1710,6 @@ void MetricsHud::reposition() {
 
 void MetricsHud::update(const OverlayState& state) {
   state_ = state;
-  last_notice_ = state.session_notice;
   if (!hwnd_) return;
   // Compact / Mini / ADV / Live are burned into Present so OBS window capture sees them.
   set_visible(false);
@@ -2105,124 +2095,6 @@ LRESULT CALLBACK RestartNotice::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     return 0;
   }
   if (msg == WM_CLOSE) return 0;  // nunca fecha por clique: o relaunch decide
-  return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-namespace {
-constexpr wchar_t kHwInfoClass[] = L"NexusCapHwInfo";
-}  // namespace
-
-bool HwInfoPanel::create(HWND owner, HINSTANCE hi) {
-  destroy();
-  owner_ = owner;
-  WNDCLASSW wc{};
-  wc.lpfnWndProc = HwInfoPanel::WndProc;
-  wc.hInstance = hi;
-  wc.lpszClassName = kHwInfoClass;
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
-  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  RegisterClassW(&wc);
-
-  hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED, kHwInfoClass,
-                          L"NexusCap HW info", WS_POPUP, 0, 0, hw_info_panel_width(), hw_info_panel_height(),
-                          owner, nullptr, hi, this);
-  if (!hwnd_) return false;
-  SetLayeredWindowAttributes(hwnd_, 0, 220, LWA_ALPHA);
-  visible_ = false;
-  return true;
-}
-
-void HwInfoPanel::destroy() {
-  if (hwnd_) {
-    DestroyWindow(hwnd_);
-    hwnd_ = nullptr;
-  }
-  owner_ = nullptr;
-  visible_ = false;
-}
-
-void HwInfoPanel::set_visible(bool visible) {
-  visible_ = visible;
-  if (!hwnd_) return;
-  if (visible) reposition();
-  ShowWindow(hwnd_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
-}
-
-void HwInfoPanel::reposition() {
-  if (!hwnd_ || !owner_) return;
-  RECT r{};
-  GetWindowRect(owner_, &r);
-  const int ww = hw_info_panel_width();
-  const int hh = hw_info_panel_height();
-  // Below the metrics HUD (top-left +24,+24,+h) → sit under it.
-  SetWindowPos(hwnd_, HWND_TOPMOST, r.left + 24, r.top + 24 + hud_panel_height(state_.advanced_metrics, state_.hw_info) + 8,
-               ww, hh, SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
-}
-
-void HwInfoPanel::update(const OverlayState& state) {
-  state_ = state;
-  if (!hwnd_) return;
-  set_visible(state.hw_info);
-  if (!state.hw_info) return;
-  apply_overlay_layered_attrs(hwnd_, state.overlay_no_bg);
-  reposition();
-  InvalidateRect(hwnd_, nullptr, FALSE);
-  UpdateWindow(hwnd_);
-}
-
-void HwInfoPanel::paint(HDC hdc) const {
-  RECT rc{};
-  GetClientRect(hwnd_, &rc);
-  if (overlay_draws_plate(state_.overlay_no_bg)) {
-    HBRUSH bg = CreateSolidBrush(RGB(14, 18, 24));
-    FillRect(hdc, &rc, bg);
-    DeleteObject(bg);
-  } else {
-    FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
-  }
-  HPEN edge = CreatePen(PS_SOLID, 1, RGB(80, 180, 120));
-  HGDIOBJ old_pen = SelectObject(hdc, edge);
-  Rectangle(hdc, 0, 0, rc.right, rc.bottom);
-  SelectObject(hdc, old_pen);
-  DeleteObject(edge);
-
-  SetBkMode(hdc, TRANSPARENT);
-  HFONT font = CreateFontW(20, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                           OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, NONANTIALIASED_QUALITY,
-                           FIXED_PITCH | FF_MODERN, L"Consolas");
-  HFONT old = static_cast<HFONT>(SelectObject(hdc, font));
-
-  const auto& o = state_;
-  char hw[kSysMetricsLineCount][64]{};
-  const int hn = format_sys_metrics_lines(hw, kSysMetricsLineCount, metrics_from_overlay(o));
-  const COLORREF cols[5] = {RGB(255, 230, 90), RGB(160, 240, 255), RGB(120, 255, 180), RGB(255, 255, 255),
-                            RGB(140, 255, 220)};
-  for (int i = 0; i < hn; ++i) {
-    SetTextColor(hdc, cols[i % 5]);
-    const std::wstring w = utf8_to_wide_hud(hw[i]);
-    TextOutW(hdc, 12, 10 + i * 28, w.c_str(), static_cast<int>(w.size()));
-  }
-
-  SelectObject(hdc, old);
-  DeleteObject(font);
-}
-
-LRESULT CALLBACK HwInfoPanel::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-  if (msg == WM_NCCREATE) {
-    auto* cs = reinterpret_cast<CREATESTRUCTW*>(lp);
-    SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
-    return TRUE;
-  }
-  auto* self = reinterpret_cast<HwInfoPanel*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-  if (msg == WM_PAINT && self) {
-    PAINTSTRUCT ps;
-    HDC hdc = BeginPaint(hwnd, &ps);
-    self->paint(hdc);
-    EndPaint(hwnd, &ps);
-    return 0;
-  }
-  if (msg == WM_NCHITTEST) return HTTRANSPARENT;
-  if (msg == WM_ERASEBKGND) return 1;
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
 

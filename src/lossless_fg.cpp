@@ -989,16 +989,6 @@ bool LosslessFgController::toggle(HWND target, std::string& err) {
   return run_sync_until_idle(err);
 }
 
-bool LosslessFgController::set_multiplier(int multiplier, HWND target, std::string& err) {
-  if (!request_set_multiplier(multiplier, target, err)) return false;
-  if (!busy()) return true;
-  return run_sync_until_idle(err);
-}
-
-bool LosslessFgController::cycle_multiplier(HWND target, std::string& err) {
-  return set_multiplier(next_fg_multiplier(state_.multiplier), target, err);
-}
-
 void LosslessFgController::hide_ls_windows() { EnumWindows(enum_hide_ls, 0); }
 
 bool LosslessFgController::focus_window(HWND hwnd) {

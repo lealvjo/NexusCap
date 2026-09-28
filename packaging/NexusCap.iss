@@ -5,7 +5,7 @@
 ; Instala em %LOCALAPPDATA%\NexusCap (gravável) — RenoDX precisa escrever ini/cfg/cache.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "4.1.8"
+  #define MyAppVersion "5.0.0"
 #endif
 #ifndef StageDir
   #define StageDir "..\dist\stage"
@@ -60,6 +60,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Se o usuario escolher Program Files (via dialogo elevacao), libera escrita.
 Name: "{app}"; Permissions: users-modify
 Name: "{app}\reshade-cache"; Permissions: users-modify
+
+[InstallDelete]
+; 1x agora roda no addons-multipass; tira o motor antigo de instalacoes anteriores.
+Type: filesandordirs; Name: "{app}\addons-stable"
 
 [Files]
 ; Staging limpo gerado por make_installer.ps1 (sem logs / dumps / LS).

@@ -68,6 +68,7 @@ struct AppConfig {
 
   // Lossless Scaling FG (Steam install, never bundled): 1=off, 2/3/4=multiplier ready
   int fg_multiplier = 1;
+  int fg_queue = 0;  // Lossless QueueTarget: 0 menor latência (validado)
   // When true, session auto-toggles FG on open. False = armed for PageDn only (default).
   bool fg_auto_start = false;
   std::string fg_path;  // optional override of LosslessScaling.exe
@@ -340,7 +341,7 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
         scaled_extent(s.width, scale), scaled_extent(s.height, scale), s.width, s.height, scale, false, 0, 0,
         0, 0, renodx_visual_preset_name(s.renodx_preset, s.nr_pass_count), hw_compact, /*dlss_ms=*/0, /*frames=*/0,
         /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps, s.nr_pass_count,
-        overlay_console_label_or_null(s.ui.overlay_console, cons), false, cr, cg, cb);
+        overlay_console_label_or_null(s.ui.overlay_console, cons), false, cr, cg, cb, s.fg_queue);
     out.count = out.line[1][0] ? 2 : 1;
     return out;
   }
@@ -367,7 +368,8 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx);
     }
     std::snprintf(out.line[n++], 128, "frametime  %.1f ms", ft);
-    std::snprintf(out.line[n++], 128, "FG  %s  x%d   scale %d%%", s.fg_enabled ? "ON" : "off", fgx, scale);
+    std::snprintf(out.line[n++], 128, "FG  %s  x%d  fila%d   scale %d%%", s.fg_enabled ? "ON" : "off", fgx,
+                  clamp_fg_queue(s.fg_queue), scale);
     {
       char stack[96]{};
       format_dlss5_stack_hud_line(stack, sizeof(stack), s.enhance_renodx && s.neural_rendering, s.enhance_renodx,
@@ -407,7 +409,8 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx);
     }
     std::snprintf(out.line[n++], 128, "frametime  %.1f ms", ft);
-    std::snprintf(out.line[n++], 128, "FG %s x%d  scale %d%%", s.fg_enabled ? "ON" : "off", fgx, scale);
+    std::snprintf(out.line[n++], 128, "FG %s x%d  fila%d  scale %d%%", s.fg_enabled ? "ON" : "off", fgx,
+                  clamp_fg_queue(s.fg_queue), scale);
     {
       char stack[96]{};
       format_dlss5_stack_hud_line(stack, sizeof(stack), s.enhance_renodx && s.neural_rendering, s.enhance_renodx,
@@ -611,6 +614,11 @@ inline std::string session_notice_fg_multiplier_up(int mult) {
   mult = clamp_fg_multiplier(mult);
   return "Frame Gen x" + std::to_string(mult) + " — mais FPS, mais carga GPU";
 }
+inline std::string session_notice_fg_queue_apply(int queue, bool restarting) {
+  const int q = clamp_fg_queue(queue);
+  if (restarting) return "Perfil FG fila" + std::to_string(q) + " — reabrindo o Lossless";
+  return "Perfil FG fila" + std::to_string(q) + " — na proxima abertura";
+}
 inline std::string session_notice_fg_missing() {
   return "Frame Gen — Lossless Scaling nao encontrado (CFG → Pasta)";
 }
@@ -754,6 +762,7 @@ inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettin
   s.ui.overlay_console = cfg.overlay_console;
   s.ui.overlay_no_bg = cfg.overlay_no_bg;
   apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, s);
+  s.fg_queue = clamp_fg_queue(cfg.fg_queue);
   apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == EnhanceBackend::Renodx, s);
 }
 

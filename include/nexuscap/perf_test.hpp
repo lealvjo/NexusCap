@@ -144,6 +144,7 @@ struct PerfTestPlan {
   int nr_pass_count = 1;
   int renodx_preset = 0;
   int fg_multiplier = 1;  // 1 = off
+  int fg_queue = 0;       // 0 menor latência (validado); só neste plano
   bool audio = true;      // som do clipe; so no plano do teste, nao no CFG HDMI
   std::string video;
 };
@@ -251,6 +252,7 @@ inline PerfTestPlan clamp_perf_test_plan(PerfTestPlan p) {
   p.nr_pass_count = clamp_nr_pass_count(p.nr_pass_count);
   p.renodx_preset = clamp_renodx_visual_preset(p.renodx_preset);
   p.fg_multiplier = clamp_fg_multiplier(p.fg_multiplier);
+  p.fg_queue = clamp_fg_queue(p.fg_queue);
   return p;
 }
 
@@ -711,6 +713,7 @@ inline std::string serialize_perf_test_plan(const PerfTestPlan& raw) {
   o << "nr_pass_count=" << p.nr_pass_count << "\n";
   o << "renodx_preset=" << p.renodx_preset << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
+  o << "fg_queue=" << p.fg_queue << "\n";
   o << "audio=" << (p.audio ? 1 : 0) << "\n";
   o << "video=" << p.video << "\n";
   return o.str();
@@ -735,6 +738,7 @@ inline bool parse_perf_test_plan(const std::string& text, PerfTestPlan& out) {
     else if (k == "nr_pass_count") p.nr_pass_count = std::atoi(v.c_str());
     else if (k == "renodx_preset") p.renodx_preset = std::atoi(v.c_str());
     else if (k == "fg_multiplier") p.fg_multiplier = std::atoi(v.c_str());
+    else if (k == "fg_queue") p.fg_queue = std::atoi(v.c_str());
     else if (k == "audio") p.audio = (v == "1" || v == "true");
     else if (k == "video") p.video = v;
   }
@@ -792,6 +796,7 @@ inline std::string serialize_perf_test_result(const PerfTestResult& r) {
   o << "nr_pass_count=" << p.nr_pass_count << "\n";
   o << "renodx_preset=" << p.renodx_preset << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
+  o << "fg_queue=" << p.fg_queue << "\n";
   o << "video=" << p.video << "\n";
   o << "popup=" << (r.popup ? 1 : 0) << "\n";
   o << "hdmi_session=" << (r.hdmi_session ? 1 : 0) << "\n";
@@ -822,6 +827,7 @@ inline bool parse_perf_test_result(const std::string& text, PerfTestResult& out)
     else if (k == "nr_pass_count") out.plan.nr_pass_count = std::atoi(v.c_str());
     else if (k == "renodx_preset") out.plan.renodx_preset = std::atoi(v.c_str());
     else if (k == "fg_multiplier") out.plan.fg_multiplier = std::atoi(v.c_str());
+    else if (k == "fg_queue") out.plan.fg_queue = std::atoi(v.c_str());
     else if (k == "video") out.plan.video = v;
     else if (k == "popup") out.popup = (v == "1" || v == "true");
     else if (k == "hdmi_session") out.hdmi_session = (v == "1" || v == "true");
@@ -910,6 +916,7 @@ inline void apply_perf_test_plan_to_config(const PerfTestPlan& raw, AppConfig& c
   // Volume is settings.ini, not the Benchmark plan. apply_perf_test_plan_to_config must not touch it.
   // Feature nova: todo Benchmark gera report de bug (nao grava no CFG HDMI).
   cfg.bug_report = true;
+  cfg.fg_queue = clamp_fg_queue(p.fg_queue);
   if (p.fg_multiplier >= 2) {
     cfg.fg_multiplier = p.fg_multiplier;
     cfg.fg_auto_start = true;
@@ -928,6 +935,7 @@ inline PerfTestPlan perf_test_plan_from_config(const AppConfig& cfg) {
   p.nr_pass_count = cfg.nr_pass_count;
   p.renodx_preset = cfg.renodx_preset;
   p.fg_multiplier = cfg.fg_auto_start ? cfg.fg_multiplier : 1;
+  p.fg_queue = clamp_fg_queue(cfg.fg_queue);
   p.audio = cfg.perf_test_audio;
   p.video = cfg.video_path;
   return clamp_perf_test_plan(p);

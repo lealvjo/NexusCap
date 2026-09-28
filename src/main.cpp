@@ -136,7 +136,7 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_return_to_lobby = g_session_from_lobby;
         g_running = false;
         if (!g_session_from_lobby) {
-          PostQuitMessage(0);
+        PostQuitMessage(0);
         }
         return 0;
       }
@@ -227,16 +227,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     // Do NOT resync from ReShade.log here: a prior process leaves "NR toggled OFF" on disk and
     // a boot enable-pulse would flip NeuralUplift's already-ON runtime back to OFF.
     {
-      const bool mp = renodx_active_addon_is_multipass(exe_dir.string());
       const NeuralRuntimePlan boot = plan_neural_runtime(want_nr, g_nr_runtime_on);
       if (cfg.perf_test && want_nr) {
         // Multipass nao loga EvaluateFeature succeeded — o wait travava o Benchmark.
         // Ficheiros NR=ON + techniques ja gravados: mesmo trust do HDMI.
-        g_nr_boot_retries = mp ? 0 : 180;
+        g_nr_boot_retries = 0;
         g_nr_runtime_on = true;
         cfg.nr_runtime_on = true;
-        append_log(cfg.log_dir, mp ? "nr boot: perf-test trust NeuralUplift ON (no EvaluateFeature wait)"
-                                   : "nr boot: perf-test pulse then trust NeuralUplift");
+        append_log(cfg.log_dir, "nr boot: perf-test trust NeuralUplift ON (no EvaluateFeature wait)");
       } else if (cfg.perf_test) {
         cfg.nr_runtime_on = false;
         g_nr_runtime_on = false;
@@ -255,8 +253,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     if (cfg.enhance == EnhanceBackend::Renodx) {
       const fs::path feed_cfg = exe_dir / "dlss5-feed.cfg";
-      const bool any_feed = fs::exists(feed_cfg) || fs::exists(exe_dir / "addons-stable" / "dlss5-feed.cfg") ||
-                            fs::exists(exe_dir / "addons-multipass" / "dlss5-feed.cfg");
+      const bool any_feed = fs::exists(feed_cfg) || fs::exists(exe_dir / "addons-multipass" / "dlss5-feed.cfg");
       if (any_feed) {
         int before = 100;
         if (fs::exists(feed_cfg)) {
@@ -362,12 +359,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   renderer.set_vsync(cfg.sync_image);
   // v2.0: RenoDX → Present native; UI scale only drives Feed work_resolution.
   const bool renodx_stack = (cfg.enhance == EnhanceBackend::Renodx);
-  {
-    wchar_t exe_path_stack[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, exe_path_stack, MAX_PATH);
-    g_renodx_multipass =
-        renodx_stack && renodx_active_addon_is_multipass(fs::path(exe_path_stack).parent_path().string());
-  }
+  g_renodx_multipass = renodx_stack;
   renderer.set_scale_percent(app_present_scale_percent(renodx_stack, cfg.scale_percent));
   // RenoDX: app RT native, Feed does the scaling — HUD must show the Feed resolution.
   renderer.set_hud_work_scale_percent(renodx_stack ? effective_scale_percent(true, cfg.scale_percent) : 0);
@@ -393,13 +385,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
       fs::path exe_dir = fs::path(exe_path).parent_path();
       const bool has_dxgi = fs::exists(exe_dir / "dxgi.dll");
-      const auto has_renodx_stack = [&](const char* sub) {
-        return fs::exists(exe_dir / sub / "renodx-dlss5.addon64");
-      };
-      const bool has_renodx = has_renodx_stack("addons-stable") || has_renodx_stack("addons-multipass") ||
+      const bool has_renodx = fs::exists(exe_dir / "addons-multipass" / "renodx-dlss5.addon64") ||
                               fs::exists(exe_dir / "renodx-dlss5.addon64");
       const bool has_feed = fs::exists(exe_dir / "dlss5-feed.addon64") ||
-                            fs::exists(exe_dir / "addons-stable" / "dlss5-feed.addon64") ||
                             fs::exists(exe_dir / "addons-multipass" / "dlss5-feed.addon64");
       std::printf("enhance: backend=renodx (ReShade) dxgi=%d renodx=%d feed=%d\n", has_dxgi ? 1 : 0,
                   has_renodx ? 1 : 0, has_feed ? 1 : 0);
@@ -598,15 +586,15 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   info.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
 
   LosslessFgController fg;
-  fg.configure(cfg.fg_multiplier, cfg.fg_path);
+  fg.configure(cfg.fg_multiplier, cfg.fg_path, cfg.fg_queue);
   {
     std::string ferr;
-    // Sempre grava mira-lock (Flow 100 / WGC), auto Steam ou Pasta — mesmo com FG off.
+    // Sempre grava mira-lock (Flow 80 / WGC), auto Steam ou Pasta — mesmo com FG off.
     if (!fg.apply_profile(ferr)) {
       std::fprintf(stderr, "fg profile: %s\n", ferr.c_str());
     } else {
       const char* src = fg.state().exe_path.empty() ? "exe missing" : (cfg.fg_path.empty() ? "auto" : "manual");
-      std::printf("fg: LSFG profile mira-lock flow100 WGC x%d (%s)\n", fg.state().multiplier, src);
+      std::printf("fg: LSFG profile mira-lock flow80 WGC x%d (%s)\n", fg.state().multiplier, src);
     }
   }
   info.fg_enabled = fg.state().active;
@@ -1120,6 +1108,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         std::printf("fg %s x%d\n", fg.state().active ? "ON" : "off", fg.state().multiplier);
         append_log(cfg.log_dir, std::string("fg ") + (fg.state().active ? "ON" : "off") + " x" +
                                     std::to_string(fg.state().multiplier) + " (async confirm)");
+        // Contador do LS: FG segue valendo, mas o hide falhado nao fica invisivel no log.
+        if (!fg.state().ini_hide_error.empty()) {
+          append_log(cfg.log_dir, "fg ls fps counter hide: " + fg.state().ini_hide_error);
+        }
         if (session_notice_for_fg_toggle(fg.state().active)) {
           session_notice.push(session_notice_fg_on(), clock.now_ms());
         } else if (fg.state().active) {
@@ -1251,8 +1243,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     bool file_repeat = false;
     if (app_relaunching) {
       if (!have_new) {
-        Sleep(1);
-        continue;
+      Sleep(1);
+      continue;
       }
     } else if (!have_new || hdmi_act == HdmiRecoverAction::Hold) {
       if (synthetic_capture && file_cap_repeat_ok(file_last.width, file_last.height, file_last.nv12)) {
@@ -1358,6 +1350,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.fg_status = fg_status_name(fg.state().status);
     overlay.fg_backend = fg.state().backend;
     overlay.fg_flow_scale = fg.state().flow_scale;
+    overlay.fg_queue = fg.state().queue_target;
     overlay.fg_capture_api = fg.state().capture_api;
     overlay.session_notice = session_notice.visible(now);
     overlay.hdmi_hold_notice =
@@ -1391,6 +1384,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.feed_loaded_scale = feed_locked_scale;
       ui.fg_on = fg.state().active;
       ui.fg_multiplier = fg.state().multiplier >= 2 ? fg.state().multiplier : cfg.fg_multiplier;
+      ui.fg_queue = clamp_fg_queue(fg.state().queue_target);
       ui.fg_busy = fg.busy();
       ui.hud_visible = g_overlay.load();
       ui.overlay_no_bg = cfg.overlay_no_bg;
@@ -1456,10 +1450,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         ui.scale_percent = act.apply_scale_percent;
         ui.fg_on = act.apply_fg_on;
         ui.fg_multiplier = act.apply_fg_multiplier;
+        ui.fg_queue = clamp_fg_queue(act.apply_fg_queue);
         // Restart do Pass/look grava cfg no settings.ini. Sem isto, escala/FG/NR
         // do preset perdem para o valor antigo da sessao.
         cfg.scale_percent = clamp_scale_percent(act.apply_scale_percent);
         apply_session_fg_to_config(act.apply_fg_on, act.apply_fg_multiplier, cfg);
+        cfg.fg_queue = clamp_fg_queue(act.apply_fg_queue);
         cfg.neural_rendering = act.apply_nr_on;
         cfg.renodx_preset = clamp_renodx_visual_preset(act.apply_renodx_preset);
         cfg.nr_pass_count = clamp_nr_pass_count(act.apply_nr_pass_count);
@@ -1522,6 +1518,39 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           append_log(cfg.log_dir, "cfg fg multiplier fail: " + ferr);
         } else {
           session_notice.push(session_notice_fg_multiplier_up(ui.fg_multiplier), now);
+        }
+      }
+      if (act.fg_queue_changed) {
+        cfg.fg_queue = clamp_fg_queue(ui.fg_queue);
+        const int keep_mult = fg.state().multiplier >= 2 ? fg.state().multiplier : cfg.fg_multiplier;
+        fg.configure(keep_mult, cfg.fg_path, cfg.fg_queue);
+        overlay.fg_queue = cfg.fg_queue;
+        if (!cfg.perf_test) {
+          PersistedSettings ps = default_settings();
+          std::string serr;
+          load_settings(ps, settings_default_path(), serr);
+          ps.fg_queue = cfg.fg_queue;
+          save_settings(ps, settings_default_path(), serr);
+        }
+        const bool fg_live = fg.overlay_reads_on(hwnd) || fg.state().active;
+        if (act.fg_multiplier_changed) {
+          // xN ja vai reabrir o LS; apply_profile la pega a fila nova.
+        } else if (fg.busy()) {
+          append_log(cfg.log_dir, "cfg fg queue ignored (op pending)");
+        } else if (fg_live) {
+          std::string ferr;
+          if (!fg.request_set_multiplier(keep_mult, hwnd, ferr)) {
+            std::printf("cfg fg fila%d: %s\n", cfg.fg_queue, ferr.c_str());
+            append_log(cfg.log_dir, "cfg fg queue restart fail: " + ferr);
+          } else {
+            session_notice.push(session_notice_fg_queue_apply(cfg.fg_queue, true), now);
+          }
+        } else {
+          std::string ferr;
+          if (!fg.apply_profile(ferr)) {
+            append_log(cfg.log_dir, "cfg fg queue write fail: " + ferr);
+          }
+          session_notice.push(session_notice_fg_queue_apply(cfg.fg_queue, false), now);
         }
       }
 
@@ -1638,6 +1667,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         snap.nr_pass_count = act.apply_nr_pass_count;
         snap.fg_enabled = act.apply_fg_on;
         snap.fg_multiplier = act.apply_fg_multiplier;
+        snap.fg_queue = act.apply_fg_queue;
         snap.scale_percent = act.apply_scale_percent;
         apply_user_preset_to_persisted(ps, snap, cfg_ui.fg_can_enable);
         save_settings(ps, settings_default_path(), serr);
@@ -1834,8 +1864,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     if (stats_frame_counts_toward_window(presented) && (!cfg.perf_test || perf_scoring)) {
       ++steady_presented;
-      if (auto s = stats600.push(interval, overlay.e2e_ms, present_ms, is_stall)) {
-        hitch.reset_window_log_cap();
+    if (auto s = stats600.push(interval, overlay.e2e_ms, present_ms, is_stall)) {
+      hitch.reset_window_log_cap();
         analyze.stats_600(*s, now, last_dlss_ms, g_nr_runtime_on);
         overlay.has_stats600 = true;
         overlay.s600_fps = s->fps;
@@ -1846,14 +1876,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         stalls_since_600 = 0;
         if (cfg.perf_test) nr_evals += consume_reshade_nr_evals(session_exe_dir, reshade_eval_off);
         char buf[320];
-        std::snprintf(buf, sizeof(buf),
+      std::snprintf(buf, sizeof(buf),
                       "600 frames: fps=%.2f mean=%.2fms p95_e2e=%.2f p95_present=%.2f stalls=%llu max=%.1f nr=%s "
                       "fg=%s evals=%d dlss_ms=%.2f",
                       s->fps, s->mean_interval_ms, s->p95_e2e_ms, s->p95_present_ms,
                       static_cast<unsigned long long>(s->stalls), s->max_interval_ms,
                       g_nr_runtime_on ? "on" : "off", overlay.fg_on ? "on" : "off", nr_evals, last_dlss_ms);
-        append_log(cfg.log_dir, buf);
-        std::printf("%s\n", buf);
+      append_log(cfg.log_dir, buf);
+      std::printf("%s\n", buf);
       }
     }
 
@@ -2127,15 +2157,14 @@ int main(int argc, char** argv) {
         cfg.video_path = bundled;
     }
   }
-  // Before ReShade loads: Pass Count 1 → addons-stable, 2/3/4 → addons-multipass (AddonPath).
+  // Before ReShade loads: AddonPath → addons-multipass (corrige ini antigo em addons-stable).
   {
     const int boot_pass = cfg.perf_test ? cfg.nr_pass_count : settings.nr_pass_count;
     const int boot_preset = cfg.perf_test ? cfg.renodx_preset : settings.renodx_preset;
     const int boot_scale = cfg.perf_test ? cfg.scale_percent : settings.scale_percent;
     const auto ar = nexuscap::sync_renodx_addon_variant(base.string(), boot_pass);
     if (ar == nexuscap::RenodxAddonSyncResult::OkSwapped) {
-      std::printf("renodx addon: %s\n",
-                  nexuscap::nr_pass_count_uses_multipass_addon(boot_pass) ? "multipass" : "stable");
+      std::printf("renodx addon: multipass\n");
     } else if (ar == nexuscap::RenodxAddonSyncResult::MissingVariant) {
       std::printf("renodx addon: stack missing (run tools\\setup_renodx.ps1)\n");
     }
@@ -2196,6 +2225,7 @@ int main(int argc, char** argv) {
       cfg.fg_auto_start = false;
     }
     if (cfg.fg_path.empty()) cfg.fg_path = settings.fg_path;
+    cfg.fg_queue = nexuscap::clamp_fg_queue(settings.fg_queue);
     if (settings.enhance_renodx) {
       cfg.enhance = nexuscap::EnhanceBackend::Renodx;
       cfg.dlss = false;
@@ -2262,7 +2292,7 @@ int main(int argc, char** argv) {
         nexuscap::LosslessFgController fg;
         std::string ferr;
         if (!fg.apply_hdmi_profile_without_launch(settings.fg_enabled, settings.fg_multiplier,
-                                                  settings.fg_path, ferr)) {
+                                                  settings.fg_path, ferr, settings.fg_queue)) {
           append_log(cfg.log_dir, "lobby HDMI restore: " + ferr);
         } else {
           append_log(cfg.log_dir, "lobby HDMI restore: escala/Pass/tom/NR/Feed + LS off");

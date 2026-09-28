@@ -24,12 +24,15 @@ $files = @(
   "nvngx_dlssnr.dll"
 )
 
-# Two isolated stacks (AddonPath switches on Pass Count restart — no dual-load conflict).
-$stableAddon = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\packaging\renodx-stable\renodx-dlss5.addon64"))
+# Single stack: every Pass Count (1x..3x) runs on addons-multipass.
 $multipassAddon = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\packaging\renodx-multipass\renodx-dlss5.addon64"))
-$stableDir = Join-Path $DestDir "addons-stable"
 $multiDir = Join-Path $DestDir "addons-multipass"
-New-Item -ItemType Directory -Force -Path $stableDir,$multiDir | Out-Null
+New-Item -ItemType Directory -Force -Path $multiDir | Out-Null
+$stableDir = Join-Path $DestDir "addons-stable"
+if (Test-Path -LiteralPath $stableDir) {
+  Remove-Item -LiteralPath $stableDir -Recurse -Force
+  Write-Host "removed legacy addons-stable"
+}
 
 foreach ($f in $files) {
   $src = Join-Path $X2Dir $f
@@ -38,7 +41,7 @@ foreach ($f in $files) {
   Write-Host "copied $f"
 }
 
-# Feed + Bridge into both stacks (ReShade only loads *.addon64 from AddonPath).
+# Feed + Bridge into the stack (ReShade only loads *.addon64 from AddonPath).
 # Feed resolves nvngx_dlss*.dll from the add-on's own folder — not the exe root.
 function Install-StackRuntime([string]$dir) {
   Copy-Item -LiteralPath (Join-Path $DestDir "dlss5-feed.addon64") -Destination (Join-Path $dir "dlss5-feed.addon64") -Force
@@ -55,18 +58,11 @@ function Install-StackRuntime([string]$dir) {
     $dst = Join-Path $dir $ngx
     if (-not (Test-Path -LiteralPath $src)) { throw "Faltando NGX: $src" }
     if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
-    # Full copy (not hardlink): isolates stacks so one motor never shares NGX with the other.
     Copy-Item -LiteralPath $src -Destination $dst -Force
     Write-Host "copied $ngx -> $dir"
   }
 }
-foreach ($dir in @($stableDir, $multiDir)) {
-  Install-StackRuntime $dir
-}
-
-if (-not (Test-Path -LiteralPath $stableAddon)) { throw "Faltando stable: $stableAddon" }
-Copy-Item -LiteralPath $stableAddon -Destination (Join-Path $stableDir "renodx-dlss5.addon64") -Force
-Write-Host "addons-stable: Krish $($stableAddon)"
+Install-StackRuntime $multiDir
 
 if (-not (Test-Path -LiteralPath $multipassAddon)) { throw "Faltando multipass: $multipassAddon" }
 Copy-Item -LiteralPath $multipassAddon -Destination (Join-Path $multiDir "renodx-dlss5.addon64") -Force
@@ -137,10 +133,9 @@ Sharpness=0.450000
 Set-Content -Path (Join-Path $DestDir "DLSS5MGF.ini") -Value $preset -Encoding UTF8
 Write-Host "wrote DLSS5MGF.ini (Kernel->Feed->Sharpen)"
 
-# NRToggleKey=0: Delete/NumDel NAO desliga NR sem querer (usar Home pro overlay).
 $ini = @"
 [ADDON]
-AddonPath=.\addons-stable
+AddonPath=.\addons-multipass
 DisabledAddons=
 OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64
 
@@ -215,18 +210,16 @@ NRPaperWhiteScale=16
 NRPreset=0
 NRSkinStructure=-1
 NRStyle=0
-NRToggleKey=0
+NRToggleKey=46
 NRTransferStrength=1
 NRUICorrection=1
 DirectNeuralRenderingPassCount=1
 "@
 Set-Content -Path (Join-Path $DestDir "ReShade.ini") -Value $ini -Encoding UTF8
-Write-Host "wrote ReShade.ini (AddonPath=addons-stable | 2x→addons-multipass no reinicio)"
+Write-Host "wrote ReShade.ini (AddonPath=addons-multipass)"
 
 function Write-MotorsStock([string]$Root) {
   $rels = @(
-    "addons-stable/renodx-dlss5.addon64",
-    "addons-stable/dlss5-feed.addon64",
     "addons-multipass/renodx-dlss5.addon64",
     "addons-multipass/dlss5-feed.addon64"
   )
@@ -247,4 +240,4 @@ Write-MotorsStock $DestDir
 
 Write-Host "OK -> $DestDir"
 Write-Host "Rode: NexusCap.exe --renodx"
-Write-Host "Pass Count 1x=addons-stable | 2x/3x=addons-multipass (reinicia sozinho)"
+Write-Host "Pass Count 1x/1,5x/2x/3x = addons-multipass (reinicia sozinho)"

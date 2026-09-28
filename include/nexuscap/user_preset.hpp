@@ -38,6 +38,7 @@ struct UserPreset {
   int nr_pass_count = 1;
   bool fg_enabled = false;
   int fg_multiplier = 2;
+  int fg_queue = 0;
   int scale_percent = 100;
 };
 
@@ -153,6 +154,7 @@ inline void clamp_user_preset(UserPreset& p) {
   p.renodx_preset = clamp_renodx_visual_preset(p.renodx_preset);
   p.nr_pass_count = clamp_nr_pass_count(p.nr_pass_count);
   p.fg_multiplier = clamp_fg_multiplier(p.fg_multiplier >= 2 ? p.fg_multiplier : 2);
+  p.fg_queue = clamp_fg_queue(p.fg_queue);
   p.scale_percent = clamp_scale_percent(p.scale_percent);
 }
 
@@ -194,6 +196,7 @@ inline UserPreset user_preset_from_persisted(const std::string& name, const Pers
   p.nr_pass_count = s.nr_pass_count;
   p.fg_enabled = s.fg_enabled;
   p.fg_multiplier = s.fg_multiplier;
+  p.fg_queue = s.fg_queue;
   p.scale_percent = s.scale_percent;
   clamp_user_preset(p);
   return p;
@@ -211,6 +214,7 @@ inline UserPreset user_preset_from_session(const std::string& name, const Sessio
   p.nr_pass_count = s.nr_pass_count;
   p.fg_enabled = s.fg_on;
   p.fg_multiplier = s.fg_multiplier;
+  p.fg_queue = s.fg_queue;
   p.scale_percent = s.scale_percent;
   clamp_user_preset(p);
   return p;
@@ -231,6 +235,7 @@ inline std::string serialize_user_preset(const UserPreset& raw) {
   o << "nr_pass_count=" << p.nr_pass_count << "\n";
   o << "fg_enabled=" << (p.fg_enabled ? 1 : 0) << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
+  o << "fg_queue=" << p.fg_queue << "\n";
   o << "scale_percent=" << p.scale_percent << "\n";
   return o.str();
 }
@@ -269,6 +274,7 @@ inline bool parse_user_preset(const std::string& text, UserPreset& out) {
     else if (k == "nr_pass_count") p.nr_pass_count = std::atoi(v.c_str());
     else if (k == "fg_enabled") p.fg_enabled = parse_bool_01(v);
     else if (k == "fg_multiplier") p.fg_multiplier = std::atoi(v.c_str());
+    else if (k == "fg_queue") p.fg_queue = std::atoi(v.c_str());
     else if (k == "scale_percent") p.scale_percent = std::atoi(v.c_str());
   }
   if (!saw_magic) return false;
@@ -300,6 +306,7 @@ inline SessionCfgActions plan_user_preset_apply(const SessionCfgState& cur, cons
   }
   if (cur.fg_on != want_fg) a.toggle_fg = true;
   if (want_fg && clamp_fg_multiplier(cur.fg_multiplier) != p.fg_multiplier) a.fg_multiplier_changed = true;
+  if (clamp_fg_queue(cur.fg_queue) != p.fg_queue) a.fg_queue_changed = true;
   if (clamp_scale_percent(cur.scale_percent) != p.scale_percent) {
     a.scale_apply = true;
     a.scale_before = clamp_scale_percent(cur.scale_percent);
@@ -314,6 +321,7 @@ inline SessionCfgActions plan_user_preset_apply(const SessionCfgState& cur, cons
   a.apply_nr_pass_count = p.nr_pass_count;
   a.apply_fg_on = want_fg;
   a.apply_fg_multiplier = p.fg_multiplier;
+  a.apply_fg_queue = p.fg_queue;
   a.apply_scale_percent = p.scale_percent;
   return a;
 }
@@ -330,6 +338,7 @@ inline void stamp_session_from_user_preset(SessionCfgState& cur, const UserPrese
   cur.nr_pass_count = p.nr_pass_count;
   cur.fg_on = p.fg_enabled && fg_can_enable;
   cur.fg_multiplier = p.fg_multiplier;
+  cur.fg_queue = p.fg_queue;
   cur.scale_percent = p.scale_percent;
 }
 
@@ -346,6 +355,7 @@ inline void apply_user_preset_to_persisted(PersistedSettings& s, const UserPrese
   s.nr_pass_count = p.nr_pass_count;
   s.fg_enabled = p.fg_enabled && fg_can_enable;
   s.fg_multiplier = p.fg_multiplier;
+  s.fg_queue = p.fg_queue;
   s.scale_percent = p.scale_percent;
 }
 

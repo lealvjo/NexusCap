@@ -188,15 +188,16 @@ inline void format_live_dlss5_line(char* out, size_t out_n, bool dlss5_on, int p
 }
 
 // Frame Gen on the live strip. FG is always uppercase: "FG x2" / "FG x3" / "FG x4" / "FG off".
-inline void format_live_fg_line(char* out, size_t out_n, bool fg_on, int fg_mult) {
+inline void format_live_fg_line(char* out, size_t out_n, bool fg_on, int fg_mult, int queue = 0) {
   if (!out || out_n == 0) return;
   int m = fg_mult;
   if (m < 1) m = 1;
   if (m > 4) m = 4;
+  const int q = queue < 0 ? 0 : (queue > 2 ? 2 : queue);
   if (fg_on && m >= 2) {
-    std::snprintf(out, out_n, "FG x%d", m);
+    std::snprintf(out, out_n, "FG x%d f%d", m, q);
   } else {
-    std::snprintf(out, out_n, "FG off");
+    std::snprintf(out, out_n, "FG off f%d", q);
   }
 }
 
@@ -253,12 +254,12 @@ struct LiveStripLines {
 
 inline void fill_live_strip_lines(LiveStripLines& o, bool show_console, LiveConsole cons, bool dlss_on,
                                  int pass_count, bool fg_on, int fg_mult, double fps_cap,
-                                 double fps_fg_est = 0.0, bool ft_stable = true) {
+                                 double fps_fg_est = 0.0, bool ft_stable = true, int fg_queue = 0) {
   o = LiveStripLines{};
   o.has_console = show_console;
   if (show_console) format_overlay_console_chip(o.console, sizeof(o.console), cons);
   format_live_dlss5_line(o.dlss, sizeof(o.dlss), dlss_on, pass_count, true);
-  format_live_fg_line(o.fg, sizeof(o.fg), fg_on, fg_mult);
+  format_live_fg_line(o.fg, sizeof(o.fg), fg_on, fg_mult, fg_queue);
   std::snprintf(o.fps_lab.text, sizeof(o.fps_lab.text), "FPS  ");
   o.fps_lab.r = 180;
   o.fps_lab.g = 184;

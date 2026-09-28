@@ -1094,6 +1094,9 @@ TEST_CASE("session HUD shows real|FG dual FPS when FG on") {
   CHECK(std::strstr(fg, "60") != nullptr);
   CHECK(std::strstr(fg, "120") != nullptr);
   CHECK(std::strstr(fg, "->") != nullptr);
+  CHECK(std::strstr(fg, "fila0") != nullptr);
+  format_session_hud_fg_status_line(fg, sizeof(fg), true, 2, "lsfg3", 80, "WGC", "On", 60.0, 120.0, 2);
+  CHECK(std::strstr(fg, "fila2") != nullptr);
 
   HudFpsParts parts{};
   fill_session_hud_fps_parts(parts, 60.0, 120.0, true, 2, true, true);
@@ -1366,8 +1369,12 @@ TEST_CASE("manual Pasta path is used when the exe exists") {
   }
 }
 
-TEST_CASE("mira-lock anti-ghost always Flow 100 WGC auto or manual") {
+TEST_CASE("mira-lock anti-ghost always Flow 80 WGC auto or manual") {
   CHECK(mira_lock_xml_ok(build_mira_settings_xml(2)));
+  CHECK(build_mira_settings_xml(2).find("<QueueTarget>0</QueueTarget>") != std::string::npos);
+  const std::string q2 = build_mira_settings_xml(2, 2);
+  CHECK(q2.find("<QueueTarget>2</QueueTarget>") != std::string::npos);
+  CHECK_FALSE(mira_lock_xml_ok(q2));
   CHECK(mira_lock_xml_ok(build_mira_settings_xml(3)));
   CHECK(mira_lock_xml_ok(build_mira_settings_xml(4)));
   CHECK(mira_lock_xml_ok(patch_mira_settings_xml("", 2)));  // fresh LOCALAPPDATA
@@ -1390,7 +1397,7 @@ TEST_CASE("mira-lock anti-ghost always Flow 100 WGC auto or manual") {
 
 TEST_CASE("mira settings xml never writes Flow 70") {
   const std::string built = build_mira_settings_xml(2);
-  CHECK(built.find("LSFGFlowScale>100") != std::string::npos);
+  CHECK(built.find("LSFGFlowScale>80") != std::string::npos);
   CHECK(built.find("LSFGFlowScale>70") == std::string::npos);
   CHECK(built.find("LSFG3Multiplier>2") != std::string::npos);
   CHECK(built.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos);
@@ -1403,7 +1410,7 @@ TEST_CASE("mira settings xml never writes Flow 70") {
       "<Settings><LSFGFlowScale>70</LSFGFlowScale><LSFG3Multiplier>2</LSFG3Multiplier>"
       "<CaptureApi>DXGI</CaptureApi><LSFGSize>QUALITY</LSFGSize></Settings>";
   const std::string patched = patch_mira_settings_xml(dirty, 3);
-  CHECK(patched.find("LSFGFlowScale>100") != std::string::npos);
+  CHECK(patched.find("LSFGFlowScale>80") != std::string::npos);
   CHECK(patched.find("LSFGFlowScale>70") == std::string::npos);
   CHECK(patched.find("LSFG3Multiplier>3") != std::string::npos);
   CHECK(patched.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos);
@@ -1423,6 +1430,7 @@ TEST_CASE("ls hide only settings ui not fg output overlay") {
   CHECK_FALSE(ls_should_hide_window(L"NexusCap", L"NexusCapWnd", 0));
   CHECK(ls_should_hide_window(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", 0, 1150, 650));
   CHECK_FALSE(ls_should_hide_window(L"Lossless Scaling", L"LosslessOverlay", 0, 2560, 1440));
+  CHECK_FALSE(ls_should_hide_window(L"", L"LosslessScaling", 0, 2560, 1440));
   CHECK_FALSE(ls_is_generating_output(L"Lossless Scaling", L"HwndWrapper[LosslessScaling.exe]", 0, 2560, 1440));
   CHECK_FALSE(ls_is_generating_output(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 180, 48));
   CHECK(ls_is_generating_output(L"Lossless Scaling", L"LosslessOverlay", WS_EX_LAYERED, 2560, 1440));
@@ -1436,22 +1444,61 @@ TEST_CASE("ls hide only settings ui not fg output overlay") {
 
 TEST_CASE("patch_lsfg_ini mira lock") {
   const std::string ini = patch_lsfg_ini("");
-  CHECK(ini.find("flow_scale = 100") != std::string::npos);
+  CHECK(ini.find("flow_scale = 80") != std::string::npos);
   CHECK(ini.find("ui_detection_rate = 2") != std::string::npos);
   CHECK(ini.find("ui_detection_threshold = 0.30") != std::string::npos);
   CHECK(ls_ini_fps_counter_hidden(ini));
   const std::string bad = "[lsfg]\r\nflow_scale = 70\r\nui_detection_rate = 1\r\nui_detection_threshold = 0.10\r\n";
   const std::string fixed = patch_lsfg_ini(bad);
-  CHECK(fixed.find("flow_scale = 100") != std::string::npos);
+  CHECK(fixed.find("flow_scale = 80") != std::string::npos);
   CHECK(fixed.find("ui_detection_rate = 2") != std::string::npos);
   CHECK(ls_ini_fps_counter_hidden(fixed));
   const std::string dirty_fps =
-      "[lsfg]\r\nflow_scale = 100\r\nui_detection_rate = 2\r\nui_detection_threshold = 0.30\r\n"
+      "[lsfg]\r\nflow_scale = 80\r\nui_detection_rate = 2\r\nui_detection_threshold = 0.30\r\n"
       "[fps_counter]\r\nscale = 1.0\r\nshow_captured = 1\r\n";
   CHECK(ls_ini_fps_counter_hidden(patch_lsfg_ini(dirty_fps)));
   CHECK(ls_xml_draw_fps_off(patch_mira_settings_xml(
       "<Settings><LSFGFlowScale>100</LSFGFlowScale><CaptureApi>WGC</CaptureApi><DrawFps>true</DrawFps></Settings>",
       2)));
+}
+
+TEST_CASE("fps counter only patch never touches lsfg profile") {
+  // keep-flow90 deixava exatamente isto: contador aceso e flow 100 contra a nossa mira.
+  const std::string from_script =
+      "[rendering]\r\nflush = 1\r\n\r\n"
+      "[lsfg]\r\nui_detection_rate = 2\r\nui_detection_threshold = 0.30\r\nflow_scale = 100\r\n"
+      "real_timestamp_tolerance = 0.05\r\nbase_framerate_threshold = 10\r\n\r\n"
+      "[fps_counter]\r\nscale = 1.0\r\ncolor = 0xD3D3D3\r\nfont = Consolas\r\n"
+      "offset_x = 0\r\noffset_y = 0\r\nshow_captured = 1\r\n";
+  const std::string fps_only = patch_lsfg_ini_fps_counter_only(from_script);
+  CHECK(ls_ini_fps_counter_hidden(fps_only));
+  // Com o LS vivo nao mexemos no perfil: flow_scale fica como estava.
+  CHECK(fps_only.find("flow_scale = 100") != std::string::npos);
+  CHECK(fps_only.find("flow_scale = 80") == std::string::npos);
+  CHECK(fps_only.find("ui_detection_rate = 2") != std::string::npos);
+  CHECK(fps_only.find("[rendering]") != std::string::npos);
+  // Idempotente: reaplicar nao duplica secao nem reacende o chip.
+  const std::string twice = patch_lsfg_ini_fps_counter_only(fps_only);
+  CHECK(ls_ini_fps_counter_hidden(twice));
+  CHECK(twice == fps_only);
+  CHECK(twice.find("[fps_counter]") == twice.rfind("[fps_counter]"));
+
+  // Sem a secao: injeta escondida, mantendo o resto.
+  const std::string no_sec = "[lsfg]\r\nflow_scale = 80\r\nui_detection_rate = 2\r\n";
+  const std::string injected = patch_lsfg_ini_fps_counter_only(no_sec);
+  CHECK(ls_ini_fps_counter_hidden(injected));
+  CHECK(injected.find("flow_scale = 80") != std::string::npos);
+
+  // O caminho completo (pre-lancamento) continua a impor a mira E o hide.
+  const std::string full = patch_lsfg_ini(from_script);
+  CHECK(ls_ini_fps_counter_hidden(full));
+  CHECK(mira_lock_ini_ok(full));
+  CHECK(full.find("flow_scale = 100") == std::string::npos);
+  CHECK_FALSE(ls_ini_fps_counter_hidden(
+      "[fps_counter]\r\nscale = 1.0\r\nshow_captured = 1\r\n"));
+  CHECK_FALSE(ls_ini_fps_counter_hidden(
+      "[fps_counter]\r\nscale = 0.1\r\nshow_captured = 0\r\n"));
+  CHECK(ls_ini_fps_counter_hidden("[fps_counter]\nscale = 0\nshow_captured = 0\n"));
 }
 
 TEST_CASE("resolve_lossless_exe missing override") {
@@ -1953,9 +2000,9 @@ TEST_CASE("bundled motor stock never false-positive or false-negative") {
 
   CHECK(std::string(lobby_motor_override_warn()) ==
         "Aviso: motores padrao alterados. Podes trocar o Feed e/ou o RenoDX (um ou os dois) depois de "
-        "instalar, mas pode dar bugs e perdes 2x otimizado, 1,5x e 1x no Feed mais estavel.");
+        "instalar, mas pode dar bugs e perdes 2x otimizado e 1,5x.");
   CHECK(std::string(lobby_motor_override_which(true, false)) == "so o motor 1x (Feed estavel)");
-  CHECK(std::string(lobby_motor_override_which(false, true)) == "so o motor 1,5x/2x/2x otimizado/3x");
+  CHECK(std::string(lobby_motor_override_which(false, true)) == "o motor multipass (1x/1,5x/2x/3x)");
   CHECK(std::string(lobby_motor_override_which(true, true)) == "1x (stable) e 1,5x/2x/3x (multipass)");
   CHECK(std::string(lobby_motor_override_which(false, false)).empty());
 
@@ -2065,7 +2112,7 @@ TEST_CASE("bundled motor stock never false-positive or false-negative") {
     CHECK_FALSE(mp.stable_dirty);
     CHECK(mp.multipass_dirty);
     CHECK(std::string(lobby_motor_override_which(mp.stable_dirty, mp.multipass_dirty)) ==
-          "so o motor 1,5x/2x/2x otimizado/3x");
+          "o motor multipass (1x/1,5x/2x/3x)");
   }
 
   write_bin(tmp / "addons-stable" / "renodx-dlss5.addon64", "stable-nrX");
@@ -2168,21 +2215,21 @@ TEST_CASE("renodx DLSS5MGF chain is Kernel then Feed then Sharpen") {
 }
 
 TEST_CASE("gear renodx preset change+save reflects in feed and ReShade") {
-  // Scenario: change Default → Natural → Cinematic in gear, Salvar must rewrite both files.
-  CHECK(std::string(renodx_visual_preset_name(0)) == "Default");
-  CHECK(std::string(renodx_visual_preset_name(1)) == "Natural");
-  CHECK(std::string(renodx_visual_preset_name(2)) == "Cinematic");
-  CHECK(std::string(renodx_visual_preset_name(0, 1)) == "Default");
-  CHECK(std::string(renodx_visual_preset_name(2, 1)) == "Cinematic");
+  // Scenario: change Model A → B → C in gear, Salvar must rewrite both files.
+  CHECK(std::string(renodx_visual_preset_name(0)) == "Model A");
+  CHECK(std::string(renodx_visual_preset_name(1)) == "Model B");
+  CHECK(std::string(renodx_visual_preset_name(2)) == "Model C");
+  CHECK(std::string(renodx_visual_preset_name(0, 1)) == "Model A");
+  CHECK(std::string(renodx_visual_preset_name(2, 1)) == "Model C");
   CHECK(std::string(renodx_visual_preset_name(0, 4)) == "Model A");
   CHECK(std::string(renodx_visual_preset_name(1, 2)) == "Model B");
   CHECK(std::string(renodx_visual_preset_name(2, 3)) == "Model C");
-  CHECK(renodx_nr_preset_index(0) == 0);  // Default → NR Natural
-  CHECK(renodx_nr_preset_index(1) == 0);  // Natural
-  CHECK(renodx_nr_preset_index(2) == 1);  // Cinematic
+  CHECK(renodx_nr_preset_index(0) == 0);
+  CHECK(renodx_nr_preset_index(1) == 0);
+  CHECK(renodx_nr_preset_index(2) == 1);
   CHECK(renodx_feed_model_preset(0) == 0);
-  CHECK(renodx_feed_model_preset(1) == 1);  // Natural → model Preset#1 (distinct from Default)
-  CHECK(renodx_feed_model_preset(2) == 0);
+  CHECK(renodx_feed_model_preset(1) == 1);
+  CHECK(renodx_feed_model_preset(2) == 2);
   CHECK(renodx_visual_presets_differ_on_disk(0, 1));
   CHECK(renodx_visual_presets_differ_on_disk(0, 2));
   CHECK(renodx_visual_presets_differ_on_disk(1, 2));
@@ -2208,7 +2255,7 @@ TEST_CASE("gear renodx preset change+save reflects in feed and ReShade") {
   reshade = apply_renodx_visual_preset_to_reshade(std::move(reshade), loaded.renodx_preset);
   CHECK(renodx_files_reflect_visual_preset(feed, reshade, loaded.renodx_preset));
   CHECK(parse_reshade_nr_preset(reshade) == 1);
-  CHECK(parse_feed_model_preset(feed) == 0);
+  CHECK(parse_feed_model_preset(feed) == 2);
 
   // Switch Natural → NR=0 and model=1 (must differ from Default on disk).
   loaded.renodx_preset = static_cast<int>(RenodxVisualPreset::Natural);
@@ -2240,13 +2287,13 @@ TEST_CASE("gear renodx preset change+save reflects in feed and ReShade") {
   CHECK(cfg.exclusive_fullscreen == cinema.ui.fullscreen);
 }
 
-TEST_CASE("pass count has no 0.5x; 1x Krish is the native floor") {
+TEST_CASE("pass count has no 0.5x; 1x multipass is the native floor") {
   CHECK(clamp_nr_pass_count(-1) == 1);
   CHECK(clamp_nr_pass_count(0) == 1);
   CHECK(nr_reshade_pass_count(-1) == 1);
   CHECK(nr_reshade_pass_count(0) == 1);
-  CHECK_FALSE(nr_pass_count_uses_multipass_addon(1));
-  CHECK(std::string(nr_dlss5_motor_name(1)) == "stable");
+  CHECK(nr_pass_count_uses_multipass_addon(1));
+  CHECK(std::string(nr_dlss5_motor_name(1)) == "multipass");
   CHECK(std::string(nr_pass_count_short(1)) == "1x");
   CHECK(std::string(nr_pass_count_label(1)).find("1x") != std::string::npos);
   for (int v = -2; v <= kMaxNrPassCount + 2; ++v) {
@@ -2298,15 +2345,18 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(nr_pass_uses_optimized_look(6));
   CHECK_FALSE(nr_pass_uses_optimized_look(2));
   CHECK_FALSE(nr_pass_uses_optimized_look(1));
-  CHECK_FALSE(nr_pass_count_uses_multipass_addon(1));
+  CHECK(nr_pass_count_uses_multipass_addon(1));
   CHECK(nr_pass_count_uses_multipass_addon(2));
   CHECK(nr_pass_count_uses_multipass_addon(3));
   CHECK(nr_pass_count_uses_multipass_addon(4));
   CHECK(nr_pass_count_uses_multipass_addon(5));
   CHECK(nr_pass_count_uses_multipass_addon(6));
-  CHECK(nr_pass_count_change_needs_relaunch(1, 2));
-  CHECK(nr_pass_count_change_needs_relaunch(1, 4));
-  CHECK(nr_pass_count_change_needs_relaunch(4, 1));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 2));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 4));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(4, 1));
+  CHECK_FALSE(nr_pass_count_change_applies_live(1, 4));
+  CHECK_FALSE(nr_pass_count_change_applies_live(4, 1));
+  CHECK_FALSE(nr_pass_count_change_applies_live(1, 2));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(4, 2));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 3));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 5));
@@ -2339,7 +2389,7 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
         "Window=[Window][RenoDX DLSS],Pos=8,,8,Size=100,,100,Collapsed=0,"
         "[Window][RenoDX-DLSSNR],Pos=8,,8,Size=100,,100,Collapsed=0,"
         "[Window][RenoDX Neural Resolution],Pos=1,,1,Size=10,,10,Collapsed=0\n";
-    win = sanitize_stable_home_windows(std::move(win));
+    win = sanitize_home_windows(std::move(win), false);
     CHECK(win.find("OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64") != std::string::npos);
     CHECK(win.find("[Window][###addons],Pos=931,,128,Size=895,,1296,Collapsed=0") != std::string::npos);
     CHECK(win.find("[Window][Complementos###addons],Pos=931,,128,Size=895,,1296,Collapsed=0,DockId=0x00000001,,0") !=
@@ -2381,7 +2431,8 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
       for (std::size_t p = 0; (p = s.find(n, p)) != std::string::npos; p += n.size()) ++c;
       return c;
     };
-    const std::string one = sanitize_home_windows_for_pass(win, 1);
+    CHECK(sanitize_home_windows_for_pass(win, 1) == sanitize_home_windows_for_pass(win, 4));
+    const std::string one = sanitize_home_windows(win, false);
     CHECK(nfind(one, "[Window][RenoDX DLSS5 Generic],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
     CHECK(nfind(one, "[Window][RenoDX DLSS5 Generic ],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
     CHECK(nfind(one, "[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
@@ -2479,10 +2530,17 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
     CHECK(look.find("DirectNeuralRenderingIntensity=1") != std::string::npos);
   }
   {
-    std::string look = "AddonPath=.\\addons-stable\nDirectNeuralRenderingPassCount=1\nNRToggleKey=46\n";
+    // ini antigo do 1x Krish: o look passa a ser o multipass default com Delete.
+    std::string look = "AddonPath=.\\addons-stable\nDirectNeuralRenderingPassCount=1\nNRToggleKey=124\n";
     look = apply_reshade_look_for_current_stack(std::move(look), 0);
-    CHECK_FALSE(reshade_addon_path_is_multipass(look));
-    CHECK(look.find("NRToggleKey=124") != std::string::npos);
+    CHECK(look.find("NRToggleKey=46") != std::string::npos);
+    CHECK(look.find("NRToggleKey=124") == std::string::npos);
+    CHECK(look.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+    CHECK(look.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+    CHECK(infer_multipass_ui_pass_count(look) == 1);
+    look = apply_reshade_addon_path(std::move(look), 1);
+    CHECK(reshade_addon_path_is_multipass(look));
+    CHECK(look.find("addons-stable") == std::string::npos);
   }
 
 #ifdef NEXUSCAP_SOURCE_DIR
@@ -2493,15 +2551,55 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   ss << in.rdbuf();
   const std::string setup = ss.str();
   CHECK(setup.find("renodx-multipass") != std::string::npos);
-  CHECK(setup.find("renodx-stable") != std::string::npos);
+  CHECK(setup.find("renodx-stable") == std::string::npos);
   CHECK(setup.find("DirectNeuralRenderingPassCount=1") != std::string::npos);
   CHECK(setup.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
   CHECK(setup.find("[RENODX-DLSS]") != std::string::npos);
   CHECK(setup.find("[RENODX-DLSS-preset1]") != std::string::npos);
-  CHECK(setup.find("addons-stable") != std::string::npos);
   CHECK(setup.find("addons-multipass") != std::string::npos);
-  CHECK(setup.find("AddonPath=.\\addons-stable") != std::string::npos);
+  CHECK(setup.find("AddonPath=.\\addons-multipass") != std::string::npos);
+  CHECK(setup.find("AddonPath=.\\addons-stable") == std::string::npos);
+  CHECK(setup.find("\"addons-stable/") == std::string::npos);  // fora do motors.stock
 #endif
+}
+
+TEST_CASE("boot migrates an old addons-stable ReShade.ini to multipass Pass 1 default look") {
+  namespace fs = std::filesystem;
+  const fs::path tmp = fs::temp_directory_path() / "nexuscap_pass1_migrate";
+  std::error_code ec;
+  fs::remove_all(tmp, ec);
+  fs::create_directories(tmp / "addons-multipass", ec);
+  { std::ofstream(tmp / "addons-multipass" / "renodx-dlss5.addon64", std::ios::binary) << "mp"; }
+  {
+    std::ofstream(tmp / "ReShade.ini")
+        << "[ADDON]\nAddonPath=.\\addons-stable\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\n"
+           "[RenoDX.DLSS5]\nNeuralUplift=1\nNRPreset=1\nNRToggleKey=124\n";
+  }
+  { std::ofstream(tmp / "dlss5-feed.cfg") << "enabled=1\npreset=0\nwork_resolution=100\n"; }
+
+  CHECK(sync_renodx_addon_variant(tmp.string(), 1) == RenodxAddonSyncResult::OkSwapped);
+  REQUIRE(sync_nr_pass_count_files(tmp.string(), 1, 2));
+
+  auto slurp = [](const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  };
+  const std::string ini = slurp(tmp / "ReShade.ini");
+  const std::string feed = slurp(tmp / "dlss5-feed.cfg");
+  CHECK(reshade_addon_path_is_multipass(ini));
+  CHECK(ini.find("addons-stable") == std::string::npos);
+  CHECK(parse_reshade_nr_pass_count(ini) == 1);
+  CHECK(infer_multipass_ui_pass_count(ini) == 1);
+  CHECK(ini.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(ini.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+  CHECK(ini.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
+  CHECK(ini.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
+  CHECK(ini.find("NRToggleKey=46") != std::string::npos);
+  CHECK(ini.find("NRToggleKey=124") == std::string::npos);
+  CHECK(every_keyed_int_is(ini, "DirectNeuralRenderingStyle=", 2));
+  CHECK(parse_feed_model_preset(feed) == 2);
+  CHECK(renodx_files_reflect_visual_preset(feed, ini, 2, 1));
+  fs::remove_all(tmp, ec);
 }
 
 TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact") {
@@ -2641,40 +2739,18 @@ TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact"
     CHECK(reshade_look_is_2x_optimized(keep5));
   }
 
-  std::string stable = apply_reshade_stable_look_defaults("NRPreset=0\n", 0);
-  CHECK(stable.find("DirectNeuralRenderingEncoding=") == std::string::npos);
-  CHECK(stable.find("NRDiffuseWhiteNits=500") != std::string::npos);
-  CHECK(stable.find("[Window][RenoDX DLSS5 Generic]") != std::string::npos);
-  CHECK(stable.find("[Window][RenoDX DLSS5 Generic],Pos=8,,8") != std::string::npos);
-  CHECK(stable.find("[Window][RenoDX DLSS5 Generic ],Pos=8,,8") != std::string::npos);
-  CHECK(stable.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8") != std::string::npos);
-  CHECK(stable.find("[Window][RenoDX-DLSSNR],Pos=-8000,,-8000") != std::string::npos);
-  CHECK(stable.find("[Window][RenoDX DLSS],Pos=-8000,,-8000") != std::string::npos);
-  CHECK(stable.find("OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64") != std::string::npos);
-  CHECK(stable.find("[Window][###addons],Pos=931,,128") != std::string::npos);
-  CHECK(stable.find("[Window][Complementos###addons],Pos=931,,128") != std::string::npos);
-  CHECK(stable.find("[Window][###home],Pos=931,,128") != std::string::npos);
-  CHECK(stable.find("Selected=0x84F87037") != std::string::npos);
-}
-
-TEST_CASE("Krish addon overlay title keeps trailing space") {
-  const auto addon = std::filesystem::path(__FILE__).parent_path().parent_path() /
-                     "build" / "Release" / "addons-stable" / "renodx-dlss5.addon64";
-  REQUIRE(std::filesystem::exists(addon));
-  std::ifstream in(addon, std::ios::binary);
-  REQUIRE(in);
-  const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  const char needle[] = "RenoDX DLSS5 Generic ";
-  bool isolated = false;
-  const std::size_t n = sizeof(needle);
-  for (std::size_t i = 0; i + n <= bytes.size(); ++i) {
-    if (std::memcmp(bytes.data() + i, needle, n) == 0) {
-      isolated = true;
-      break;
-    }
-  }
-  CHECK(isolated);
-  CHECK(std::string(kReshadeHomeKrishTitleSpaced) == needle);
+  // Pass 1x no multipass: 1 evaluate com o look default (nao o gancho do 1,5x).
+  std::string pass1 = apply_reshade_multipass_look_defaults("NRPreset=0\n", 1, 0);
+  CHECK(parse_reshade_nr_pass_count(pass1) == 1);
+  CHECK(pass1.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(pass1.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
+  CHECK(pass1.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
+  CHECK(pass1.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
+  CHECK(pass1.find("NRToggleKey=46") != std::string::npos);
+  CHECK_FALSE(reshade_look_is_2x_optimized(pass1));
+  CHECK(infer_multipass_ui_pass_count(pass1) == 1);
+  CHECK(pass1.find("[Window][RenoDX DLSS],Pos=8,,8") != std::string::npos);
+  CHECK(pass1.find("[Window][RenoDX DLSS5 Generic],Pos=-8000,,-8000") != std::string::npos);
   CHECK(std::strlen(kReshadeHomeKrishTitleSpaced) == 21);
 }
 
@@ -3075,7 +3151,7 @@ TEST_CASE("make_lobby_hud_preview_lines reflects gear adjustments live") {
   CHECK(hud.count == 6);
   CHECK(lobby_hud_contains(hud, "scale 100%"));
   CHECK(lobby_hud_contains(hud, "FG off"));
-  CHECK(lobby_hud_contains(hud, "Default"));
+  CHECK(lobby_hud_contains(hud, "Model A"));
   CHECK(lobby_hud_contains(hud, "fullscreen"));
   CHECK(lobby_hud_contains(hud, "SYNC TEAR"));
 
@@ -3089,14 +3165,14 @@ TEST_CASE("make_lobby_hud_preview_lines reflects gear adjustments live") {
   CHECK(lobby_hud_contains(hud, "scale 50%"));
   CHECK(lobby_hud_contains(hud, "FG ON"));
   CHECK(lobby_hud_contains(hud, "x3"));
-  CHECK(lobby_hud_contains(hud, "Cinematic"));
+  CHECK(lobby_hud_contains(hud, "Model C"));
   CHECK(lobby_hud_contains(hud, "windowed"));
   CHECK(lobby_hud_contains(hud, "SYNC VSYNC"));
-  CHECK_FALSE(lobby_hud_contains(hud, "Default"));
+  CHECK_FALSE(lobby_hud_contains(hud, "Model A"));
 
   s.renodx_preset = static_cast<int>(RenodxVisualPreset::Natural);
   hud = make_lobby_hud_preview_lines(s, 60.0);
-  CHECK(lobby_hud_contains(hud, "Natural"));
+  CHECK(lobby_hud_contains(hud, "Model B"));
 
   s.enhance_renodx = false;
   hud = make_lobby_hud_preview_lines(s, 60.0);
@@ -3110,7 +3186,7 @@ TEST_CASE("make_lobby_hud_preview_lines reflects gear adjustments live") {
   hud = make_lobby_hud_preview_lines(s, 60.0);
   CHECK(hud.count == 8);
   CHECK(lobby_hud_contains(hud, "ADV"));
-  CHECK(lobby_hud_contains(hud, "Cinematic"));
+  CHECK(lobby_hud_contains(hud, "Model C"));
   CHECK(lobby_hud_contains(hud, "75%"));
   CHECK(lobby_hud_contains(hud, "work"));
 
@@ -3165,7 +3241,7 @@ TEST_CASE("full gear contract: CFG fields reach session + preview HUD + RenoDX f
   CHECK(cfg.advanced_metrics);
 
   const auto hud = make_lobby_hud_preview_lines(loaded, 60.0);
-  CHECK(lobby_hud_contains(hud, "Cinematic"));
+  CHECK(lobby_hud_contains(hud, "Model C"));
   CHECK(lobby_hud_contains(hud, "scale 50%"));
   CHECK(lobby_hud_contains(hud, "x4"));
   CHECK(lobby_hud_contains(hud, "windowed"));
@@ -3411,17 +3487,17 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(4, 1, 8));
+  CHECK(app_version_is(5, 0, 0));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "4.1.8");
-  CHECK(std::strstr(kAppNameWithVersion, "v4.1.8") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-4.1.8");
+  CHECK(std::string(kAppVersion) == "5.0.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v5.0.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-5.0.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("4.1.8") != std::string::npos);
+  CHECK(lobby_t.find("5.0.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("4.1.8") != std::string::npos);
+  CHECK(sess_t.find("5.0.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
 }
 
@@ -4507,20 +4583,22 @@ TEST_CASE("live fps line shows FG bar when on") {
   format_live_dlss5_line(line, sizeof(line), false, 2, true);
   CHECK(std::string(line) == "DLSS off");
   format_live_fg_line(line, sizeof(line), true, 2);
-  CHECK(std::string(line) == "FG x2");
+  CHECK(std::string(line) == "FG x2 f0");
   format_live_fg_line(line, sizeof(line), true, 3);
-  CHECK(std::string(line) == "FG x3");
+  CHECK(std::string(line) == "FG x3 f0");
   format_live_fg_line(line, sizeof(line), true, 4);
-  CHECK(std::string(line) == "FG x4");
+  CHECK(std::string(line) == "FG x4 f0");
   format_live_fg_line(line, sizeof(line), false, 3);
-  CHECK(std::string(line) == "FG off");
+  CHECK(std::string(line) == "FG off f0");
+  format_live_fg_line(line, sizeof(line), true, 2, 2);
+  CHECK(std::string(line) == "FG x2 f2");
   CHECK(std::strstr(line, "FG") == line);
   LiveStripLines strip{};
   fill_live_strip_lines(strip, true, LiveConsole::Ps5Pro, true, 5, true, 3, 60.0);
   CHECK(strip.has_console);
   CHECK(std::string(strip.console) == "PS5 Pro");
   CHECK(std::string(strip.dlss) == "DLSS 2x+");
-  CHECK(std::string(strip.fg) == "FG x3");
+  CHECK(std::string(strip.fg) == "FG x3 f0");
   CHECK(std::string(strip.fps_cap.text) == "60.0");
   CHECK(strip.has_fg_fps);
   CHECK(std::string(strip.fps_fg.text) == "180.0");
@@ -4648,12 +4726,12 @@ TEST_CASE("lobby Iniciar always relaunches so CFG is first swapchain") {
 }
 
 // Measured: multipass RenoDX ignores NRToggleKey, so Delete must not fake an "off" HUD.
-TEST_CASE("NR hotkey only claimed on the stable stack") {
+TEST_CASE("NR hotkey never claimed: every Pass Count runs on multipass") {
   CHECK(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/false));
   CHECK_FALSE(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/true));
   CHECK_FALSE(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(2)));
   CHECK_FALSE(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(4)));
-  CHECK(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(1)));
+  CHECK_FALSE(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(1)));
   const std::string msg15 = session_notice_nr_hotkey_unavailable(4);
   CHECK(msg15.find("1,5x") != std::string::npos);
   CHECK(msg15.find("Home") != std::string::npos);
@@ -4766,7 +4844,7 @@ TEST_CASE("3.0 HUD stack line names motor and pass count") {
   char line[96]{};
   format_dlss5_stack_hud_line(line, sizeof(line), true, true, 1);
   CHECK(std::strstr(line, "1x") != nullptr);
-  CHECK(std::strstr(line, "stable") != nullptr);
+  CHECK(std::strstr(line, "multipass") != nullptr);
   CHECK(std::strstr(line, "NR ON") != nullptr);
   format_dlss5_stack_hud_line(line, sizeof(line), false, true, 2);
   CHECK(std::strstr(line, "2x") != nullptr);
@@ -4872,10 +4950,10 @@ TEST_CASE("session hotkeys are blocked while the CFG has the keyboard") {
 }
 
 TEST_CASE("session CFG plan: motor swap and feed scale restart, the rest is live") {
-  // 1x ↔ multipass troca o addon (AddonPath) → reinicio.
-  CHECK(plan_session_cfg_apply(true, 1, 4, 100, 100) == SessionCfgApply::RelaunchMotor);
-  CHECK(plan_session_cfg_apply(true, 4, 1, 100, 100) == SessionCfgApply::RelaunchMotor);
-  CHECK(plan_session_cfg_apply(true, 1, 2, 100, 100) == SessionCfgApply::RelaunchMotor);
+  // 1x tambem e multipass: sem troca de addon, so o PassCount/look (reinicio de pass).
+  CHECK(plan_session_cfg_apply(true, 1, 4, 100, 100) == SessionCfgApply::RelaunchPassCount);
+  CHECK(plan_session_cfg_apply(true, 4, 1, 100, 100) == SessionCfgApply::RelaunchPassCount);
+  CHECK(plan_session_cfg_apply(true, 1, 2, 100, 100) == SessionCfgApply::RelaunchPassCount);
   // 1,5x ↔ 2x ↔ 3x: mesmo motor, mas o multipass le o PassCount so no init (ReShade.log:
   // ini em 3 e runtime em "passes=1", sem NRToggleKey pro ciclo OFF→ON) — reinicia tambem.
   CHECK(plan_session_cfg_apply(true, 4, 2, 100, 100) == SessionCfgApply::RelaunchPassCount);
@@ -4900,8 +4978,8 @@ TEST_CASE("session CFG plan: motor swap and feed scale restart, the rest is live
   CHECK(plan_session_cfg_apply(true, 4, 4, 40, 33) == SessionCfgApply::Live);
   // Sem RenoDX o renderer escala o proprio RT.
   CHECK(plan_session_cfg_apply(false, 1, 1, 100, 50) == SessionCfgApply::Live);
-  // Motor tem prioridade quando as duas coisas mudam juntas.
-  CHECK(plan_session_cfg_apply(true, 1, 4, 100, 50) == SessionCfgApply::RelaunchMotor);
+  // Pass Count tem prioridade quando as duas coisas mudam juntas.
+  CHECK(plan_session_cfg_apply(true, 1, 4, 100, 50) == SessionCfgApply::RelaunchPassCount);
 
   CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchMotor));
   CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchPassCount));
@@ -5261,8 +5339,8 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(nr != preset);
   CHECK(pass.find("sessao") != std::string::npos);
   const std::string preset_toast = session_notice_preset_apply(0, 2);
-  CHECK(preset_toast.find("Default") != std::string::npos);
-  CHECK(preset_toast.find("Cinematic") != std::string::npos);
+  CHECK(preset_toast.find("Model A") != std::string::npos);
+  CHECK(preset_toast.find("Model C") != std::string::npos);
   CHECK(preset_toast.find("reinicio") != std::string::npos);
   const std::string model_toast = session_notice_preset_apply(0, 2, 4);
   CHECK(model_toast.find("Model A") != std::string::npos);
@@ -5349,11 +5427,7 @@ TEST_CASE("visual preset writes every ReShade section on 1x 1.5x 2x 3x") {
           "\n\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\nDirectNeuralRenderingStyle=0\n\n"
           "[RenoDX.DLSS5]\nNeuralUplift=1\nNRPreset=0\nNRStyle=0\nDirectNeuralRenderingPassCount=1\n";
       std::string feed = "enabled=1\npreset=0\nwork_resolution=100\n";
-      if (nr_pass_count_uses_multipass_addon(p)) {
-        reshade = apply_reshade_multipass_look_defaults(std::move(reshade), p, v);
-      } else {
-        reshade = apply_reshade_stable_look_defaults(std::move(reshade), v);
-      }
+      reshade = apply_reshade_multipass_look_defaults(std::move(reshade), p, v);
       reshade = apply_reshade_visual_look_keys(std::move(reshade), v);
       feed = apply_renodx_visual_preset_to_feed(std::move(feed), v, p);
       CHECK(renodx_files_reflect_visual_preset(feed, reshade, v, p));
@@ -5410,20 +5484,12 @@ TEST_CASE("--selftest-cfg runs the session without the lobby") {
 }
 
 TEST_CASE("visual preset names and disk keys follow the DLSS5 motor") {
-  // 1x Krish: look names + NR cinema knob + Natural on feed Preset#1.
-  CHECK(std::string(renodx_visual_preset_name(0, 1)) == "Default");
-  CHECK(std::string(renodx_visual_preset_name(1, 1)) == "Natural");
-  CHECK(std::string(renodx_visual_preset_name(2, 1)) == "Cinematic");
   CHECK(renodx_nr_preset_index(0) == 0);
   CHECK(renodx_nr_preset_index(1) == 0);
   CHECK(renodx_nr_preset_index(2) == 1);
-  CHECK(renodx_feed_model_preset(0, 1) == 0);
-  CHECK(renodx_feed_model_preset(1, 1) == 1);
-  CHECK(renodx_feed_model_preset(2, 1) == 0);
-  CHECK(renodx_direct_style_index(2, 1) == 1);
 
-  // 1.5x/2x/3x ShortFuse: Model A/B/C, Style+feed 0/1/2, Krish NR* still 0/0/1.
-  for (int p : {4, 2, 3}) {
+  // Todos os Pass Count no multipass: Model A/B/C, Style+feed 0/1/2, NR* legado 0/0/1.
+  for (int p : {1, 4, 2, 3}) {
     CHECK(nr_pass_count_uses_multipass_addon(p));
     CHECK(std::string(renodx_visual_preset_name(0, p)) == "Model A");
     CHECK(std::string(renodx_visual_preset_name(1, p)) == "Model B");
@@ -5439,11 +5505,11 @@ TEST_CASE("visual preset names and disk keys follow the DLSS5 motor") {
     CHECK(renodx_visual_presets_differ_on_disk(1, 2, p));
   }
 
-  // Motor swap: 1x Cinematic (feed 0) must become Model C (feed 2) on 1.5x.
-  CHECK(renodx_feed_model_preset(2, 1) != renodx_feed_model_preset(2, 4));
+  // 1x e 1,5x usam o mesmo slot do feed: Model C = 2 nos dois.
+  CHECK(renodx_feed_model_preset(2, 1) == renodx_feed_model_preset(2, 4));
   std::string feed = "enabled=1\npreset=0\n";
   feed = apply_renodx_visual_preset_to_feed(std::move(feed), 2, 1);
-  CHECK(parse_feed_model_preset(feed) == 0);
+  CHECK(parse_feed_model_preset(feed) == 2);
   feed = apply_renodx_visual_preset_to_feed(std::move(feed), 2, 4);
   CHECK(parse_feed_model_preset(feed) == 2);
 
@@ -5467,11 +5533,7 @@ TEST_CASE("visual preset names and disk keys follow the DLSS5 motor") {
             "\n\n[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\nDirectNeuralRenderingStyle=9\n\n"
             "[RenoDX.DLSS5]\nNeuralUplift=1\nNRPreset=9\nNRStyle=9\nDirectNeuralRenderingStyle=9\n";
         std::string f = "enabled=1\npreset=9\nwork_resolution=9\nwork_upscale=0\n";
-        if (nr_pass_count_uses_multipass_addon(p)) {
-          reshade = apply_reshade_multipass_look_defaults(std::move(reshade), p, v);
-        } else {
-          reshade = apply_reshade_stable_look_defaults(std::move(reshade), v);
-        }
+        reshade = apply_reshade_multipass_look_defaults(std::move(reshade), p, v);
         f = apply_feed_work_resolution(std::move(f), scale);
         f = apply_renodx_visual_preset_to_feed(std::move(f), v, p);
         CHECK(renodx_files_reflect_visual_preset(f, reshade, v, p));
@@ -5616,8 +5678,9 @@ TEST_CASE("visual preset names and disk keys follow the DLSS5 motor") {
     CHECK(parse_feed_model_preset(f) == 2);
     CHECK(parse_feed_work_resolution(f) == 50);
     CHECK(parse_keyed_int(f, "work_upscale=", 0) == 1);
-    reshade = apply_reshade_look_for_current_stack(std::move(reshade), 2);  // still 1x stack
+    reshade = apply_reshade_look_for_current_stack(std::move(reshade), 2);  // ini antigo addons-stable
     CHECK(parse_reshade_nr_preset(reshade) == 1);
+    CHECK(every_keyed_int_is(reshade, "DirectNeuralRenderingStyle=", 2));
     reshade = apply_reshade_addon_path(std::move(reshade), 4);
     reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 4, 2);
     CHECK(renodx_files_reflect_visual_preset(f, reshade, 2, 4));
@@ -5887,6 +5950,7 @@ TEST_CASE("perf test plan and result serialize") {
   p.nr_pass_count = 4;
   p.renodx_preset = 2;
   p.fg_multiplier = 3;
+  p.fg_queue = 2;
   p.audio = false;
   p.video = "C:\\vids\\last.mp4";
   PerfTestPlan back;
@@ -5898,11 +5962,13 @@ TEST_CASE("perf test plan and result serialize") {
   CHECK(back.nr_pass_count == 4);
   CHECK(back.renodx_preset == 2);
   CHECK(back.fg_multiplier == 3);
+  CHECK(back.fg_queue == 2);
   CHECK_FALSE(back.audio);
   CHECK(back.video == "C:\\vids\\last.mp4");
   PerfTestPlan oldp;
   CHECK(parse_perf_test_plan("width=1920\nheight=1080\nplan_fps=60\n", oldp));
   CHECK(oldp.audio);
+  CHECK(oldp.fg_queue == 0);
 
   PerfTestResult r;
   r.valid = true;
@@ -6301,11 +6367,7 @@ TEST_CASE("perf test combos pass x scale x scene color") {
         const char* color = renodx_visual_preset_name(preset, pass);
         CHECK(color != nullptr);
         CHECK(std::strlen(color) > 0);
-        if (pass == 1) {
-          CHECK(std::string(color) == std::string(preset == 0 ? "Default" : (preset == 1 ? "Natural" : "Cinematic")));
-        } else {
-          CHECK(std::string(color) == std::string(preset == 0 ? "Model A" : (preset == 1 ? "Model B" : "Model C")));
-        }
+        CHECK(std::string(color) == std::string(preset == 0 ? "Model A" : (preset == 1 ? "Model B" : "Model C")));
         const std::string card = format_perf_test_card(p, ok, grade_perf_test(ok));
         CHECK(card.find(nr_pass_count_short(pass)) != std::string::npos);
         CHECK(card.find(("escala " + std::to_string(scale)).c_str()) != std::string::npos);
@@ -6899,7 +6961,7 @@ TEST_CASE("user preset snapshot is the whole Ctrl+M and roundtrips") {
   CHECK_FALSE(a3.fg_enabled);
   CHECK(a3.scale_percent == 75);
 
-  CHECK(std::string(renodx_visual_preset_name(2, 1)) == "Cinematic");
+  CHECK(std::string(renodx_visual_preset_name(2, 1)) == "Model C");
   CHECK(std::string(renodx_visual_preset_name(2, 5)) == "Model C");
   CHECK(tlou2.renodx_preset == 2);
   CHECK(tlou2.nr_pass_count == 5);
@@ -6907,13 +6969,13 @@ TEST_CASE("user preset snapshot is the whole Ctrl+M and roundtrips") {
 
 TEST_CASE("user preset list summary is Pass look FG and scale") {
   CHECK(user_preset_list_summary(make_user_preset("a", 5, 2, true, 3, 100)) == "2x+  Model C  FG x3  100%");
-  CHECK(user_preset_list_summary(make_user_preset("b", 1, 0, false, 2, 100)) == "1x  Default  FG off  100%");
+  CHECK(user_preset_list_summary(make_user_preset("b", 1, 0, false, 2, 100)) == "1x  Model A  FG off  100%");
   CHECK(user_preset_list_summary(make_user_preset("c", 4, 1, true, 2, 100)) == "1.5x  Model B  FG x2  100%");
   CHECK(user_preset_list_summary(make_user_preset("d", 2, 0, true, 4, 100)) == "2x  Model A  FG x4  100%");
   CHECK(user_preset_list_summary(make_user_preset("e", 3, 2, false, 3, 80)) == "3x  Model C  FG off  80%");
   CHECK(user_preset_list_summary(make_user_preset("e6", 6, 2, false, 3, 80)) == "3x+  Model C  FG off  80%");
-  CHECK(user_preset_list_summary(make_user_preset("f", 1, 2, true, 3, 100)) == "1x  Cinematic  FG x3  100%");
-  CHECK(user_preset_list_summary(make_user_preset("g", 1, 1, false, 2, 100)) == "1x  Natural  FG off  100%");
+  CHECK(user_preset_list_summary(make_user_preset("f", 1, 2, true, 3, 100)) == "1x  Model C  FG x3  100%");
+  CHECK(user_preset_list_summary(make_user_preset("g", 1, 1, false, 2, 100)) == "1x  Model B  FG off  100%");
   CHECK(user_preset_list_summary(make_user_preset("a", 5, 2, true, 3, 100)).find("HUD") == std::string::npos);
   CHECK(user_preset_marquee_offset(80.f, 200.f, 12.0) == 0.f);
   CHECK(user_preset_marquee_offset(100.f, 100.f, 9.0) == 0.f);
@@ -7001,7 +7063,7 @@ TEST_CASE("user preset lobby snapshot and apply plan") {
   other.neural_rendering = false;
   const LobbyUserPresetPlan plan = plan_lobby_user_preset_apply(other, snap, true);
   CHECK(plan.pass_relaunch);
-  CHECK(plan.motor_relaunch);
+  CHECK_FALSE(plan.motor_relaunch);
   CHECK(plan.look_changed);
   CHECK_FALSE(plan.fg_missing);
   apply_user_preset_to_persisted(other, snap, true);
@@ -7155,9 +7217,9 @@ TEST_CASE("user preset apply plan matches Ctrl+M actions and is fill-safe") {
   CHECK(a.apply_fg_on);
   CHECK(a.apply_fg_multiplier == 3);
   CHECK(a.apply_scale_percent == 80);
-  CHECK(nr_pass_count_change_needs_relaunch(a.pass_count_before, a.apply_nr_pass_count));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(a.pass_count_before, a.apply_nr_pass_count));
   CHECK(plan_session_cfg_apply(true, a.pass_count_before, a.apply_nr_pass_count, 100, 80) ==
-        SessionCfgApply::RelaunchMotor);
+        SessionCfgApply::RelaunchPassCount);
 
   const SessionCfgActions same_motor = plan_user_preset_apply(make_preset_session(2, 0, false, 2, 100),
                                                              make_user_preset("opt", 5, 0, false, 2, 100), true);

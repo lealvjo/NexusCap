@@ -58,6 +58,20 @@ inline bool parse_fg_multiplier(const std::string& raw, int& out) {
   return false;
 }
 
+inline int clamp_fg_queue(int q) {
+  if (q < 0) return 0;
+  if (q > 2) return 2;
+  return q;
+}
+
+inline const char* fg_queue_label(int q) {
+  switch (clamp_fg_queue(q)) {
+    case 1: return "1 -> Equilibrado";
+    case 2: return "2 -> Maior estabilidade";
+    default: return "0 -> Menor latencia";
+  }
+}
+
 inline int clamp_fg_multiplier(int m) {
   if (m < 1) return 1;
   if (m > 4) return 4;
@@ -372,7 +386,8 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                                         const char* fg_backend = nullptr, double target_fps = 0,
                                         int nr_pass_count = 1, const char* console_label = nullptr,
                                         bool console_flag = true, unsigned char cons_r = 0,
-                                        unsigned char cons_g = 55, unsigned char cons_b = 145) {
+                                        unsigned char cons_g = 55, unsigned char cons_b = 145,
+                                        int fg_queue = 0) {
   if (line0 && n0) line0[0] = '\0';
   if (line1 && n1) line1[0] = '\0';
   int n = 0;
@@ -401,6 +416,11 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
     char fg_extra[40]{};
     std::snprintf(fg_extra, sizeof(fg_extra), " [%s]", fg_backend);
     push(fg_extra, 120, 255, 200);
+  }
+  {
+    char fila[16]{};
+    std::snprintf(fila, sizeof(fila), " fila%d", clamp_fg_queue(fg_queue));
+    push(fila, 120, 255, 200);
   }
 
   // Signal → DLSS5 work → output. Kept right after FPS: it used to sit after the counters
@@ -557,7 +577,8 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                       const char* fg_backend = nullptr, double target_fps = 0,
                                       int nr_pass_count = 1, const char* console_label = nullptr,
                                       bool console_flag = true, unsigned char cons_r = 0,
-                                      unsigned char cons_g = 55, unsigned char cons_b = 145) {
+                                      unsigned char cons_g = 55, unsigned char cons_b = 145,
+                                      int fg_queue = 0) {
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
   format_mini_overlay_segments(segs, kMiniOverlayMaxSegs, line0, n0, line1, n1, fps_cap, fps_fg_est, fg_on,
                                fg_mult, dlss5_on, sync_image, frame_ms, ft_avg_ms, ft_p95_ms, ft_max_ms,
@@ -565,7 +586,7 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                work_w, work_h, output_w, output_h, scale_percent, has_stats600, s600_fps,
                                s600_p95_e2e, s600_p95_present, s600_stalls, renodx_preset, hw_compact, dlss_ms,
                                frames, s600_max_interval, fg_backend, target_fps, nr_pass_count, console_label,
-                               console_flag, cons_r, cons_g, cons_b);
+                               console_flag, cons_r, cons_g, cons_b, fg_queue);
 }
 
 // Back-compat one-liner.
@@ -586,23 +607,25 @@ inline void format_mini_overlay_line(char* out, size_t out_n, double fps_cap, do
 
 inline void format_session_hud_fg_status_line(char* out, size_t out_n, bool fg_on, int fg_mult,
                                              const char* backend, int flow_scale, const char* capture_api,
-                                             const char* status, double fps_cap = 0, double fps_fg_est = 0) {
+                                             const char* status, double fps_cap = 0, double fps_fg_est = 0,
+                                             int queue = 0) {
   if (!out || out_n == 0) return;
   const int m = clamp_fg_multiplier(fg_mult);
+  const int q = clamp_fg_queue(queue);
   const char* be = backend && backend[0] ? backend : "lsfg3";
   const char* api = capture_api && capture_api[0] ? capture_api : "WGC";
   const char* st = status && status[0] ? status : (fg_on ? "On" : "Ready");
   if (fg_on && m >= 2) {
     const double fg = fps_fg_est > 0 ? fps_fg_est : (fps_cap > 0 ? fps_cap * static_cast<double>(m) : 0);
     if (fps_cap > 0 && fg > 0) {
-      std::snprintf(out, out_n, "FG      ON   x%d  %s  flow%d  %s  |  %.0f->%.0f", m, be, flow_scale, api,
-                    fps_cap, fg);
+      std::snprintf(out, out_n, "FG      ON   x%d  %s  flow%d  %s  fila%d  |  %.0f->%.0f", m, be, flow_scale,
+                    api, q, fps_cap, fg);
     } else {
-      std::snprintf(out, out_n, "FG      ON   x%d  %s  flow%d  %s", m, be, flow_scale, api);
+      std::snprintf(out, out_n, "FG      ON   x%d  %s  flow%d  %s  fila%d", m, be, flow_scale, api, q);
     }
   } else {
-    std::snprintf(out, out_n, "FG      %s  x%d  %s  flow%d  %s  [%s]", fg_on ? "ON" : "off", m, be,
-                  flow_scale, api, st);
+    std::snprintf(out, out_n, "FG      %s  x%d  %s  flow%d  %s  fila%d  [%s]", fg_on ? "ON" : "off", m, be,
+                  flow_scale, api, q, st);
   }
 }
 
@@ -648,14 +671,18 @@ inline bool ls_xml_draw_fps_off(const std::string& xml) {
 }
 
 inline bool mira_lock_xml_ok(const std::string& xml) {
-  return xml.find("LSFGFlowScale>100") != std::string::npos && xml.find("LSFGFlowScale>70") == std::string::npos &&
+  return xml.find("LSFGFlowScale>80") != std::string::npos && xml.find("LSFGFlowScale>70") == std::string::npos &&
+         xml.find("<QueueTarget>0</QueueTarget>") != std::string::npos &&
          xml.find("<CaptureApi>WGC</CaptureApi>") != std::string::npos && ls_xml_draw_fps_off(xml);
 }
 
 inline bool ls_ini_fps_counter_hidden(const std::string& ini) {
   const size_t sec = ini.find("[fps_counter]");
   if (sec == std::string::npos) return false;
-  return ini.find("scale = 0", sec) != std::string::npos && ini.find("show_captured = 0", sec) != std::string::npos;
+  // "scale = 0" sozinho casa com 0.1 (chip minusculo ainda visivel). Exige fim de linha.
+  const bool scale_off = ini.find("scale = 0\r", sec) != std::string::npos ||
+                         ini.find("scale = 0\n", sec) != std::string::npos;
+  return scale_off && ini.find("show_captured = 0", sec) != std::string::npos;
 }
 
 // Hide the LS settings UI and the small DrawFps chip. Never hide a large surface
@@ -666,6 +693,8 @@ inline bool ls_should_hide_window(const wchar_t* title, const wchar_t* cls, unsi
   if (!cls) cls = L"";
   const bool named = wcsstr(title, L"Lossless Scaling") != nullptr || wcsstr(cls, L"Lossless") != nullptr;
   if (!named) return false;
+  // Classe da saída que cobre a janela. Esconder ela apaga o frame gen.
+  if (_wcsicmp(cls, L"LosslessScaling") == 0) return false;
   if (wcsstr(cls, L"HwndWrapper") != nullptr) return true;
   if (w >= 640 && h >= 360) return false;
   if ((ex_style & WS_EX_TOPMOST) || (ex_style & WS_EX_LAYERED)) {
@@ -701,15 +730,14 @@ inline bool ls_output_covers_target(int ox, int oy, int ow, int oh, int tx, int 
   return inter * 5 >= area * 2;
 }
 inline bool mira_lock_ini_ok(const std::string& ini) {
-  return ini.find("flow_scale = 100") != std::string::npos && ini.find("ui_detection_rate = 2") != std::string::npos;
+  return ini.find("flow_scale = 80") != std::string::npos && ini.find("ui_detection_rate = 2") != std::string::npos;
 }
 
 // Patch or inject mira-lock tags into existing Settings.xml text. Never writes Flow 70.
-std::string patch_mira_settings_xml(const std::string& xml, int multiplier);
+std::string patch_mira_settings_xml(const std::string& xml, int multiplier, int queue = 0);
 
 // Build a minimal valid Settings.xml with mira lock + LSFG3 FIXED.
-std::string build_mira_settings_xml(int multiplier);
-
+std::string build_mira_settings_xml(int multiplier, int queue = 0);
 // Read LSFG3Multiplier from Settings.xml text; 0 = missing/invalid.
 inline int parse_lsfg3_multiplier_from_xml(const std::string& xml) {
   const std::string open = "<LSFG3Multiplier>";
@@ -750,15 +778,23 @@ inline bool fg_multiplier_confirmed_on_disk(int want_mult, const std::string& se
 // Patch [lsfg] section in config.ini text for mira lock.
 std::string patch_lsfg_ini(const std::string& ini);
 
+// Só o bloco [fps_counter]. Usado no re-hide depois do LS abrir: mexer em
+// flow_scale / ui_detection_* com a sessao viva reabre a briga de perfil.
+std::string patch_lsfg_ini_fps_counter_only(const std::string& ini);
+
 struct FgState {
   FgStatus status = FgStatus::Off;
   int multiplier = 1;
-  int flow_scale = 100;
+  int queue_target = 0;  // 0 menor latência, 1 equilibrado, 2 maior estabilidade
+  int flow_scale = 80;
   std::string capture_api = "WGC";
   std::string backend = "lsfg3";
   DWORD pid = 0;
   std::string exe_path;
   std::string last_error;
+  // Contador do LS: vazio = escondido de verdade (gravado e conferido no disco).
+  // Separado de last_error porque falhar o hide nao derruba o Frame Gen.
+  std::string ini_hide_error;
   bool active = false;  // FG currently applied to our window
 };
 
@@ -771,7 +807,7 @@ public:
   LosslessFgController& operator=(const LosslessFgController&) = delete;
 
   // Configure before use. multiplier 1 = off semantics.
-  void configure(int multiplier, const std::string& exe_override = {});
+  void configure(int multiplier, const std::string& exe_override = {}, int queue = -1);
 
   const FgState& state() const { return state_; }
   bool busy() const { return pending_ != FgPending::None; }
@@ -781,7 +817,7 @@ public:
 
   // Lobby / pos-Benchmark: mata LS leftover, grava mira HDMI, nao lanca processo.
   bool apply_hdmi_profile_without_launch(bool fg_enabled, int fg_mult, const std::string& path,
-                                         std::string& err);
+                                         std::string& err, int queue = 0);
 
   // Esc/fim do teste: F24 off se estiver gerando, TerminateProcess em todo LS, espera count=0.
   // Nao usa WM_CLOSE (tray). Chamar com a janela da sessao ainda viva.
@@ -838,6 +874,10 @@ private:
   void hide_ls_windows();
   bool write_settings_file(const std::string& xml, std::string& err);
   bool write_ini_alongside_exe(std::string& err);
+  // Grava o config.ini e confere no disco. Nunca marca ReadOnly.
+  bool write_ls_ini_verified(const std::string& ini_path, const std::string& data, std::string& err);
+  // Re-hide do contador sem tocar em [lsfg] nem no XML (LS ja esta vivo).
+  bool rehide_ls_fps_counter();
   bool adopt_existing_lossless(std::string& err);
   void terminate_extra_lossless_processes(DWORD keep_pid);
   bool run_sync_until_idle(std::string& err);

@@ -198,31 +198,9 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
   if (plan.need_bridge_pulse) {
     // Multipass build has no NRToggleKey: injecting an edge changed nothing (no RenoDX log
     // line, no frame-cost change) while the HUD went "off" — NR is on for the whole session.
-    if (renodx_active_addon_is_multipass(exe_dir)) {
-      *runtime_on = true;
-      if (async_out) async_out->active = false;
-      return files_ok;
-    }
-    if (!dlss5_bridge_available()) return false;
-    const std::string log_path = exe_dir + "\\ReShade.log";
-    const std::streamoff log_sz = file_size_off(log_path);
-    if (!dlss5_bridge_pulse_nr()) return false;
-    if (async_out) {
-      async_out->active = true;
-      async_out->exe_dir = exe_dir;
-      async_out->log_size_before = log_sz;
-      async_out->log_origin = log_sz;
-      async_out->want_on = plan.resulting_runtime_on;
-      async_out->deadline_ms = now_ms + 2000.0;
-      async_out->recover_pulses = 0;
-      // runtime_on unchanged until poll — Present keeps running (no 2s freeze).
-      return files_ok;
-    }
-    bool actual_on = plan.resulting_runtime_on;
-    if (!confirm_nr_after_pulse_blocking(exe_dir, plan.resulting_runtime_on, log_sz, &actual_on, 800)) {
-      return false;
-    }
-    *runtime_on = actual_on;
+    *runtime_on = true;
+    if (async_out) async_out->active = false;
+    (void)now_ms;
     return files_ok;
   }
   *runtime_on = plan.resulting_runtime_on;

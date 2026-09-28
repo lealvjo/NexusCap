@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "4.1.8",
+  [string]$Version = "5.0.0",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -145,12 +145,12 @@ foreach ($f in $runtimeFiles) {
   }
 }
 
-foreach ($stack in @("addons-stable", "addons-multipass")) {
+foreach ($stack in @("addons-multipass")) {
   $srcDir = Join-Path $Release $stack
   if (Test-Path -LiteralPath $srcDir) {
     $dstDir = Join-Path $Stage $stack
     New-Item -ItemType Directory -Force -Path $dstDir | Out-Null
-    # Addon binaries + full NGX copies (isolated motors — no shared hardlinks).
+    # Addon binaries + full NGX copies (no shared hardlinks).
     foreach ($f in @("renodx-dlss5.addon64", "dlss5-feed.addon64", "dlss5-bridge.addon64", "dlss5-feed.cfg")) {
       $src = Join-Path $srcDir $f
       if (Test-Path -LiteralPath $src) {
@@ -194,9 +194,9 @@ foreach ($leak in @(
 
 foreach ($ngx in @("nvngx_dlss.dll", "nvngx_dlssnr.dll")) {
   if (Test-Path -LiteralPath (Join-Path $Stage $ngx)) {
-    throw "Stage nao pode ter $ngx na raiz. Feed le so addons-stable / addons-multipass."
+    throw "Stage nao pode ter $ngx na raiz. Feed le so addons-multipass."
   }
-  foreach ($stack in @("addons-stable", "addons-multipass")) {
+  foreach ($stack in @("addons-multipass")) {
     if (-not (Test-Path -LiteralPath (Join-Path $Stage "$stack\$ngx"))) {
       $missingCritical += "$stack\$ngx"
     }
@@ -209,8 +209,6 @@ if ($missingCritical.Count -gt 0) {
 
 function Write-MotorsStock([string]$Root) {
   $rels = @(
-    "addons-stable/renodx-dlss5.addon64",
-    "addons-stable/dlss5-feed.addon64",
     "addons-multipass/renodx-dlss5.addon64",
     "addons-multipass/dlss5-feed.addon64"
   )

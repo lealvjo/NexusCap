@@ -151,7 +151,7 @@ struct LobbyPreview {
     color_range = clamp_color_range(range);
   }
 
-  // Instant Default/Natural/Cinematic look on the preview band (not only disk/Present).
+  // Instant Model A/B/C look on the preview band (not only disk/Present).
   void set_visual_preview(int preset, bool enhance) {
     const int p = clamp_renodx_visual_preset(preset);
     const bool e = enhance;
@@ -917,7 +917,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     LosslessFgController fg;
     std::string ferr;
     (void)fg.apply_hdmi_profile_without_launch(settings.fg_enabled, settings.fg_multiplier, settings.fg_path,
-                                               ferr);
+                                               ferr, settings.fg_queue);
   }
 
   WNDCLASSEXW wc{sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, hi, nullptr, nullptr,
@@ -1793,6 +1793,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::SameLine();
         ImGui::RadioButton("x4", &settings.fg_multiplier, 4);
         ImGui::EndDisabled();
+        ImGui::TextUnformatted("Perfil FG");
+        settings.fg_queue = clamp_fg_queue(settings.fg_queue);
+        if (ImGui::BeginCombo("##fg_queue", fg_queue_label(settings.fg_queue))) {
+          for (int q = 0; q < 3; ++q) {
+            const bool selected = settings.fg_queue == q;
+            if (ImGui::Selectable(fg_queue_label(q), selected)) settings.fg_queue = q;
+            if (selected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("0 menor latencia (validado). Vale na proxima abertura do frame gen.");
         if (settings.fg_enabled && !fg_was) {
           if (!lobby_fg_can_enable(settings.fg_path)) {
             settings.fg_enabled = false;
@@ -1937,9 +1948,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextDisabled("NR=%d  model=%d  ·  olhe a imagem (nao so o texto)",
                             renodx_nr_preset_index(settings.renodx_preset),
                             renodx_feed_model_preset(settings.renodx_preset, settings.nr_pass_count));
-        ImGui::TextDisabled(nr_pass_count_uses_multipass_addon(settings.nr_pass_count)
-                                ? "  1,5x/2x/3x: Model A/B/C (o addon so le no boot)"
-                                : "  1x: Default/Natural/Cinematic; o preview muda na hora");
+        ImGui::TextDisabled("  Model A/B/C (o addon so le no boot)");
         ImGui::TextDisabled("Mesmo look no Iniciar — janela ou tela cheia.");
 
         ImGui::Spacing();
@@ -1969,7 +1978,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             push_lobby_toast(renodx_write_denied_notice());
           } else if (need_relaunch &&
                      lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)) {
-            // Krish ↔ multipass: show hold notice, then relaunch (avoids "bugou" flash).
+            // Show hold notice, then relaunch (avoids "bugou" flash).
             std::string serr;
             save_settings(settings, settings_default_path(), serr);
             (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
@@ -2483,6 +2492,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::SameLine();
         if (ImGui::RadioButton("x4##perffg", fg_i == 4)) fg_i = 4;
         g_perf_plan.fg_multiplier = clamp_fg_multiplier(fg_i);
+        g_perf_plan.fg_queue = clamp_fg_queue(g_perf_plan.fg_queue);
+        ImGui::TextUnformatted("Perfil FG");
+        if (ImGui::BeginCombo("##perf_fg_queue", fg_queue_label(g_perf_plan.fg_queue))) {
+          for (int q = 0; q < 3; ++q) {
+            const bool selected = g_perf_plan.fg_queue == q;
+            if (ImGui::Selectable(fg_queue_label(q), selected)) g_perf_plan.fg_queue = q;
+            if (selected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("Padrao 0. So neste plano; o CFG HDMI nao muda.");
         if (g_perf_plan.fg_multiplier >= 2 && !lobby_fg_can_enable(settings.fg_path)) {
           ImGui::TextColored(ImVec4(1.f, 0.55f, 0.35f, 1.f), "Lossless Scaling nao encontrado — FG fica off");
         }
@@ -2603,7 +2623,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       lobby_toast.clear();
     }
 
-    // Hold screen while swapping Krish ↔ multipass so restart does not look like a crash.
+    // Hold screen while the Pass Count relaunch runs so restart does not look like a crash.
     if (motor_swap_pending) {
       const ImGuiViewport* tv = ImGui::GetMainViewport();
       ImGui::SetNextWindowPos(ImVec2(tv->WorkPos.x + tv->WorkSize.x * 0.5f, tv->WorkPos.y + tv->WorkSize.y * 0.45f),

@@ -71,7 +71,8 @@ struct OverlayState {
   int fg_multiplier = 1;
   std::string fg_status = "off";
   std::string fg_backend = "none";
-  int fg_flow_scale = 100;
+  int fg_flow_scale = 80;
+  int fg_queue = 0;
   std::string fg_capture_api = "WGC";
   std::string session_notice;  // soft tip (FG / NR); empty = none
   bool hdmi_hold_notice = false;  // restart-style card burned into Present (exclusive FS)
@@ -224,7 +225,7 @@ public:
   bool present_frame(const FramePayload& frame, OverlayState& overlay, double& present_ms, std::string& err);
   void present_black();
   uint32_t swapchain_flags() const { return swap_flags_; }
-  bool waitable() const { return false; }
+  bool waitable() const { return swap_waitable_; }
 
 private:
   bool create_nv12_textures(int w, int h, std::string& err);
@@ -245,6 +246,7 @@ private:
   int tex_w_ = 0;
   int tex_h_ = 0;
   uint32_t swap_flags_ = 0;
+  bool swap_waitable_ = false;
   bool vsync_ = false;
   unsigned present_interval_ = 1;
   int scale_percent_ = 100;

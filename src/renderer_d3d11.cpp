@@ -312,24 +312,24 @@ bool RendererD3D11::init(HWND hwnd, int width, int height, std::string& err) {
   sc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
   sc.Scaling = DXGI_SCALING_STRETCH;
   sc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-  // Explicitly NO FRAME_LATENCY_WAITABLE_OBJECT; ALLOW_TEARING when supported (uncapped Present).
-  sc.Flags = 0;
-  {
-    ComPtr<IDXGIFactory5> factory5;
-    if (SUCCEEDED(factory.As(&factory5))) {
-      BOOL allow = FALSE;
-      if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow, sizeof(allow))) &&
-          allow) {
-        sc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-      }
-    }
-  }
-  swap_flags_ = sc.Flags;
-
+  // Mesmo Present do app que segura o LSFG: flip waitable, sem tearing.
+  sc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
   hr = factory->CreateSwapChainForHwnd(dev.Get(), hwnd, &sc, nullptr, nullptr, &impl_->swap);
+  if (FAILED(hr)) {
+    sc.BufferCount = 1;
+    sc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+  sc.Flags = 0;
+  hr = factory->CreateSwapChainForHwnd(dev.Get(), hwnd, &sc, nullptr, nullptr, &impl_->swap);
+  }
   if (FAILED(hr)) {
     err = "CreateSwapChainForHwnd failed";
     return false;
+  }
+  swap_flags_ = sc.Flags;
+  swap_waitable_ = (swap_flags_ & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0;
+  if (swap_waitable_) {
+    ComPtr<IDXGISwapChain2> sc2;
+    if (SUCCEEDED(impl_->swap.As(&sc2)) && sc2) sc2->SetMaximumFrameLatency(1);
   }
   factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
 
@@ -354,7 +354,7 @@ void RendererD3D11::resize(int width, int height) {
   back_h_ = height;
   impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
   impl_->rtv.Reset();
-  impl_->swap->ResizeBuffers(2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0);
+  impl_->swap->ResizeBuffers(0, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, swap_flags_);
   ComPtr<ID3D11Texture2D> back;
   impl_->swap->GetBuffer(0, IID_PPV_ARGS(&back));
   impl_->device->CreateRenderTargetView(back.Get(), nullptr, &impl_->rtv);
@@ -524,10 +524,10 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
     if (map.RowPitch == static_cast<UINT>(frame.width)) {
       std::memcpy(map.pData, src, y_size);
     } else {
-      for (int y = 0; y < frame.height; ++y) {
-        std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
-                    src + static_cast<size_t>(y) * static_cast<size_t>(frame.width),
-                    static_cast<size_t>(frame.width));
+    for (int y = 0; y < frame.height; ++y) {
+      std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
+                  src + static_cast<size_t>(y) * static_cast<size_t>(frame.width),
+                  static_cast<size_t>(frame.width));
       }
     }
     impl_->ctx->Unmap(impl_->texY.Get(), 0);
@@ -540,9 +540,9 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
       std::memcpy(map.pData, src, y_size / 2);
     } else {
       for (int y = 0; y < uv_h; ++y) {
-        std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
-                    src + static_cast<size_t>(y) * static_cast<size_t>(frame.width),
-                    static_cast<size_t>(frame.width));
+      std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
+                  src + static_cast<size_t>(y) * static_cast<size_t>(frame.width),
+                  static_cast<size_t>(frame.width));
       }
     }
     impl_->ctx->Unmap(impl_->texUV.Get(), 0);
@@ -569,29 +569,29 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
         impl_->color_range = color_range_;
         impl_->yuv_dirty = false;
       }
-    }
+  }
 
-    D3D11_VIEWPORT vp{};
+  D3D11_VIEWPORT vp{};
     vp.Width = static_cast<float>(work_w);
     vp.Height = static_cast<float>(work_h);
-    vp.MaxDepth = 1.f;
-    const float clear[4] = {0, 0, 0, 1};
+  vp.MaxDepth = 1.f;
+  const float clear[4] = {0, 0, 0, 1};
     impl_->ctx->OMSetRenderTargets(1, impl_->colorRtv.GetAddressOf(), nullptr);
     impl_->ctx->ClearRenderTargetView(impl_->colorRtv.Get(), clear);
-    impl_->ctx->RSSetViewports(1, &vp);
-    impl_->ctx->VSSetShader(impl_->vs.Get(), nullptr, 0);
-    impl_->ctx->PSSetShader(impl_->ps.Get(), nullptr, 0);
+  impl_->ctx->RSSetViewports(1, &vp);
+  impl_->ctx->VSSetShader(impl_->vs.Get(), nullptr, 0);
+  impl_->ctx->PSSetShader(impl_->ps.Get(), nullptr, 0);
     if (impl_->yuvCb) {
       ID3D11Buffer* cbs[] = {impl_->yuvCb.Get()};
       impl_->ctx->PSSetConstantBuffers(0, 1, cbs);
     }
-    ID3D11ShaderResourceView* srvs[] = {impl_->srvY.Get(), impl_->srvUV.Get()};
-    impl_->ctx->PSSetShaderResources(0, 2, srvs);
+  ID3D11ShaderResourceView* srvs[] = {impl_->srvY.Get(), impl_->srvUV.Get()};
+  impl_->ctx->PSSetShaderResources(0, 2, srvs);
     ID3D11SamplerState* samp =
         (scale_percent_ < 100 && impl_->samplerLinear) ? impl_->samplerLinear.Get() : impl_->sampler.Get();
     impl_->ctx->PSSetSamplers(0, 1, &samp);
-    impl_->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    impl_->ctx->Draw(3, 0);
+  impl_->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  impl_->ctx->Draw(3, 0);
     ID3D11ShaderResourceView* nulls[] = {nullptr, nullptr};
     impl_->ctx->PSSetShaderResources(0, 2, nulls);
   }
@@ -682,11 +682,8 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
     ui_draw_(ui_draw_user_);
   }
 
-  UINT present_flags = 0;
-  if (!vsync_ && (swap_flags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)) {
-    present_flags = DXGI_PRESENT_ALLOW_TEARING;
-  }
-  impl_->swap->Present(vsync_ ? present_interval_ : 0u, present_flags);
+  const UINT interval = (overlay.fg_on || vsync_) ? present_interval_ : 0u;
+  impl_->swap->Present(interval, 0);
   present_ms = clk.now_ms() - t0;
   (void)err;
   return true;
@@ -812,7 +809,8 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       o.work_h, o.output_w, o.output_h, o.scale_percent, o.has_stats600, o.s600_fps, o.s600_p95_e2e,
       o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
       o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count,
-      overlay_console_label_or_null(o.overlay_console, clamp_live_console(o.live_console)), false, cr, cg, cb);
+      overlay_console_label_or_null(o.overlay_console, clamp_live_console(o.live_console)), false, cr, cg, cb,
+      o.fg_queue);
   (void)line0;
   (void)line1;
 
@@ -1234,7 +1232,7 @@ void RendererD3D11::burn_live_overlay(const OverlayState& overlay) {
   LiveStripLines strip{};
   fill_live_strip_lines(strip, overlay.overlay_console, cons, overlay.renodx_on || overlay.dlss_on,
                         overlay.nr_pass_count, overlay.fg_on, overlay.fg_multiplier, show_fps,
-                        overlay.fps_fg_est, overlay.ft_stable);
+                        overlay.fps_fg_est, overlay.ft_stable, overlay.fg_queue);
   const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
   const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
   const std::wstring fg_w = utf8_to_wide_hud(strip.fg);
@@ -1609,6 +1607,13 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       format_dlss5_stack_hud_line(stack, sizeof(stack), o.renodx_on, o.feed_on, o.nr_pass_count);
       swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(stack).c_str());
     }
+    {
+      char fg_line[160]{};
+      format_session_hud_fg_status_line(fg_line, sizeof(fg_line), o.fg_on, o.fg_multiplier, o.fg_backend.c_str(),
+                                        o.fg_flow_scale, o.fg_capture_api.c_str(), o.fg_status.c_str(),
+                                        o.fps_smooth > 0 ? o.fps_smooth : o.fps, o.fps_fg_est, o.fg_queue);
+      swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(fg_line).c_str());
+    }
     swprintf(lines[n++], 180, L"%s  Present(%u)", o.sync_image ? L"SYNC VSYNC" : L"SYNC TEAR",
              o.sync_image ? 1u : 0u);
     const int hw_start = n;
@@ -1632,7 +1637,8 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       if (i == 0) c = RGB(255, 210, 70);
       else if (i == 1) c = RGB(120, 220, 255);
       else if (i == 2) c = RGB(120, 255, 160);
-      else if (i == 4) c = o.sync_image ? RGB(120, 220, 255) : RGB(255, 160, 90);
+      else if (i == 5) c = o.fg_on ? RGB(120, 255, 200) : RGB(160, 170, 180);
+      else if (i == 6) c = o.sync_image ? RGB(120, 220, 255) : RGB(255, 160, 90);
       else if (o.hw_info && i >= hw_start && i < hotkey_i) c = RGB(140, 255, 180);
       else if (i == hotkey_i) c = RGB(150, 150, 160);
       else if (i == notice_i || i == notice_i2) c = RGB(255, 200, 120);
@@ -1710,7 +1716,7 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     char fg_line[160]{};
     format_session_hud_fg_status_line(fg_line, sizeof(fg_line), o.fg_on, o.fg_multiplier, o.fg_backend.c_str(),
                                       o.fg_flow_scale, o.fg_capture_api.c_str(), o.fg_status.c_str(), o.fps_smooth,
-                                      o.fps_fg_est);
+                                      o.fps_fg_est, o.fg_queue);
     swprintf(lines[7], 180, L"%s", utf8_to_wide_hud(fg_line).c_str());
   }
 
@@ -2092,7 +2098,7 @@ HWND create_app_window(HINSTANCE hi, int w, int h, bool fullscreen, const wchar_
     y = g.y;
     ww = g.w;
     hh = g.h;
-  } else {
+    } else {
     // Seed a reasonable size; ShowWindow(MAXIMIZED) covers the work area with chrome.
     const auto g = windowed_client_geom(w, h, sw, sh);
     RECT r{0, 0, g.w, g.h};
@@ -2276,7 +2282,7 @@ void LiveOverlay::present() const {
   LiveStripLines strip{};
   fill_live_strip_lines(strip, state_.overlay_console, cons, state_.renodx_on || state_.dlss_on,
                         state_.nr_pass_count, state_.fg_on, state_.fg_multiplier, show_fps, state_.fps_fg_est,
-                        state_.ft_stable);
+                        state_.ft_stable, state_.fg_queue);
   const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
   const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
   const std::wstring fg_w = utf8_to_wide_hud(strip.fg);

@@ -200,6 +200,7 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.hotkeys = s.hotkeys;
   // Keep preferred x2/x3/x4 armed even when checkbox is off (PageDn can enable).
   cfg.fg_multiplier = armed_fg_multiplier(s.fg_enabled, s.fg_multiplier);
+  cfg.fg_queue = clamp_fg_queue(s.fg_queue);
   cfg.fg_auto_start = s.fg_enabled;
   cfg.fg_path = s.fg_path;
   if (s.enhance_renodx) {

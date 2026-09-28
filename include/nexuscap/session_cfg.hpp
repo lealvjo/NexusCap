@@ -24,6 +24,7 @@ struct SessionCfgState {
   int feed_loaded_scale = 100;  // escala que o Feed travou neste processo
   bool fg_on = false;
   int fg_multiplier = 2;
+  int fg_queue = 0;
   bool fg_busy = false;
   bool hud_visible = true;
   bool overlay_no_bg = false;
@@ -45,6 +46,7 @@ struct SessionCfgActions {
   int pass_count_before = 1;
   bool toggle_fg = false;
   bool fg_multiplier_changed = false;
+  bool fg_queue_changed = false;
   bool hud_changed = false;
   bool overlay_no_bg_changed = false;
   bool volume_changed = false;
@@ -62,6 +64,7 @@ struct SessionCfgActions {
   int apply_nr_pass_count = 1;
   bool apply_fg_on = false;
   int apply_fg_multiplier = 2;
+  int apply_fg_queue = 0;
   int apply_scale_percent = 100;
 };
 

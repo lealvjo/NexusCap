@@ -358,7 +358,21 @@ void SessionCfgOverlay::draw_panel() {
       state.fg_multiplier = clamp_fg_multiplier(mult);
       actions_.fg_multiplier_changed = true;
     }
-    ImGui::TextDisabled(state.fg_busy ? "Aplicando..." : "Sem reinicio.");
+    ImGui::TextUnformatted("Perfil FG");
+    state.fg_queue = clamp_fg_queue(state.fg_queue);
+    if (ImGui::BeginCombo("##sess_fg_queue", fg_queue_label(state.fg_queue))) {
+      for (int q = 0; q < 3; ++q) {
+        const bool selected = state.fg_queue == q;
+        if (ImGui::Selectable(fg_queue_label(q), selected)) {
+          state.fg_queue = q;
+          actions_.fg_queue_changed = true;
+        }
+        if (selected) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::TextDisabled("0 menor latencia. Se o FG estiver ligado, reabre o Lossless.");
+    ImGui::TextDisabled(state.fg_busy ? "Aplicando..." : "Nao reinicia o NexusCap.");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Escala de resolucao (trabalho GPU)");
@@ -482,6 +496,7 @@ void SessionCfgOverlay::commit_apply_preset() {
   actions_.pass_count_before = planned.pass_count_before;
   actions_.toggle_fg = planned.toggle_fg;
   actions_.fg_multiplier_changed = planned.fg_multiplier_changed;
+  actions_.fg_queue_changed = planned.fg_queue_changed;
   actions_.hud_changed = planned.hud_changed;
   actions_.overlay_no_bg_changed = planned.overlay_no_bg_changed;
   actions_.console_changed = planned.console_changed;
@@ -497,6 +512,7 @@ void SessionCfgOverlay::commit_apply_preset() {
   actions_.apply_nr_pass_count = planned.apply_nr_pass_count;
   actions_.apply_fg_on = planned.apply_fg_on;
   actions_.apply_fg_multiplier = planned.apply_fg_multiplier;
+  actions_.apply_fg_queue = planned.apply_fg_queue;
   actions_.apply_scale_percent = planned.apply_scale_percent;
   stamp_session_from_user_preset(state, p, fg_can_enable);
   scale_slider_ = static_cast<float>(state.scale_percent);

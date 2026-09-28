@@ -261,7 +261,7 @@ try {
     Shot ("10-cfg-" + $m.label) | Out-Null
     $addon = Read-IniValue (Join-Path $ExeDir "ReShade.ini") "AddonPath"
     $pc = Read-IniValue (Join-Path $ExeDir "ReShade.ini") "DirectNeuralRenderingPassCount"
-    $wantAddon = if ($m.n -eq 1) { "addons-stable" } else { "addons-multipass" }
+    $wantAddon = "addons-multipass"
     $wantPc = if ($m.n -eq 4) { "1" } else { [string]$m.n }
     $ok = ($addon -like "*$wantAddon*") -and ($pc -eq $wantPc)
     Log-Step "Pass Count $($m.label) ficheiros" $ok "AddonPath=$addon PassCount=$pc"

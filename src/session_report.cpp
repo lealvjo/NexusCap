@@ -64,8 +64,7 @@ void collect_renodx_report_snippets(const std::string& exe_dir, std::string& res
                                    std::string& feed_out, std::string& mgf_out) {
   const std::string reshade_path = exe_dir + "\\ReShade.ini";
   // Report the cfg the active stack loaded (AddonPath), not the root copy.
-  const std::string stack_dir =
-      exe_dir + (renodx_active_addon_is_multipass(exe_dir) ? "\\addons-multipass" : "\\addons-stable");
+  const std::string stack_dir = exe_dir + "\\addons-multipass";
   std::string feed_path = stack_dir + "\\dlss5-feed.cfg";
   if (read_text_file_utf8(feed_path).empty()) feed_path = exe_dir + "\\dlss5-feed.cfg";
   const std::string mgf_path = exe_dir + "\\DLSS5MGF.ini";

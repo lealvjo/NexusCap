@@ -5,13 +5,13 @@
 namespace nexuscap {
 
 // Single source of truth for product version (UI, Analyze, installer, VERSIONINFO).
-inline constexpr int kAppVersionMajor = 4;
-inline constexpr int kAppVersionMinor = 1;
-inline constexpr int kAppVersionPatch = 8;
-inline constexpr const char* kAppVersion = "4.1.8";
+inline constexpr int kAppVersionMajor = 5;
+inline constexpr int kAppVersionMinor = 0;
+inline constexpr int kAppVersionPatch = 0;
+inline constexpr const char* kAppVersion = "5.0.0";
 inline constexpr const char* kAppDisplayName = "Nexus Cap";
-inline constexpr const char* kAppNameWithVersion = "Nexus Cap  v4.1.8";
-inline constexpr const char* kAppAnalyzeBuild = "NexusCap-4.1.8";
+inline constexpr const char* kAppNameWithVersion = "Nexus Cap  v5.0.0";
+inline constexpr const char* kAppAnalyzeBuild = "NexusCap-5.0.0";
 
 inline bool app_version_is(int major, int minor, int patch) {
   return major == kAppVersionMajor && minor == kAppVersionMinor && patch == kAppVersionPatch;

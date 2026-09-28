@@ -84,6 +84,11 @@ if(MSVC)
       $<$<NOT:$<CONFIG:Debug>>:/SUBSYSTEM:WINDOWS>
       $<$<NOT:$<CONFIG:Debug>>:/ENTRY:mainCRTStartup>)
   endif()
+  # asInvoker desliga a virtualizacao de Program Files. Sem isso o config.ini
+  # do Lossless Scaling era gravado no VirtualStore e o contador continuava.
+  target_link_options(NexusCap PRIVATE
+    "/MANIFESTUAC:NO"
+    "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/resources/nexuscap.manifest")
 endif()
 
 

@@ -39,6 +39,7 @@ add_library(nexuscap_core STATIC
   src/capture_fake.cpp
   src/capture_file.cpp
   src/capture_dshow.cpp
+  src/capture_wgc.cpp
   src/renderer_d3d11.cpp
   src/audio_wasapi.cpp
   src/audio_file.cpp
@@ -58,7 +59,7 @@ target_compile_definitions(nexuscap_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UN
 target_link_libraries(nexuscap_core PUBLIC
   nexuscap_imgui
   d3d11 dxgi d3dcompiler strmiids ole32 oleaut32 user32 gdi32 winmm uuid avrt advapi32 pdh comdlg32 shell32 windowscodecs
-  mfplat mfreadwrite mfuuid
+  mfplat mfreadwrite mfuuid dwmapi windowsapp CoreMessaging
 )
 
 if(NEXUSCAP_HAVE_STREAMLINE)

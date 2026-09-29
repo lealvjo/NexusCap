@@ -1,4 +1,5 @@
 #include "nexuscap/config.hpp"
+#include "nexuscap/capture.hpp"
 #include "nexuscap/live_mode.hpp"
 #include "nexuscap/perf_test.hpp"
 
@@ -41,6 +42,8 @@ AppConfig parse_args(int argc, char** argv) {
       }
     } else if (a == "--lobby-cfg") {
       c.open_lobby_cfg = true;  // CFG was open; reopen after lobby motor/Pass Count restart
+    } else if (a == "--simulate-hdmi-busy") {
+      c.simulate_hdmi_busy = true;
     } else if (a == "--selftest-cap" || a == "--selftest-vedo") {
       c.selftest_cap = true;
       c.exclusive_fullscreen = false;
@@ -81,6 +84,13 @@ AppConfig parse_args(int argc, char** argv) {
       c.perf_cli_override = true;
     } else if (a == "--device" && i + 1 < argc) {
       next(c.device_name);
+    } else if (a == "--source" && i + 1 < argc) {
+      const std::string v = argv[++i];
+      if (v == "window" || v == "janela") c.capture_source = 1;
+      else c.capture_source = 0;
+    } else if (a == "--window" && i + 1 < argc) {
+      next(c.window_title);
+      if (!c.window_title.empty()) c.capture_source = 1;
     } else if (a == "--log-dir" && i + 1 < argc) {
       next(c.log_dir);
     } else if (a == "--hitch-ms" && i + 1 < argc) {
@@ -191,6 +201,9 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.color_range = clamp_color_range(s.color_range);
   cfg.capture_buffering = clamp_capture_buffering(s.capture_buffering);
   cfg.capture_volume = clamp_capture_volume_percent(s.capture_volume);
+  cfg.capture_source = clamp_capture_source(s.capture_source);
+  cfg.window_title = s.window_title;
+  cfg.window_hwnd = s.window_hwnd;
   cfg.exclusive_fullscreen = s.ui.fullscreen;
   cfg.show_overlay = s.ui.show_fps;
   cfg.advanced_metrics = s.ui.advanced_metrics;

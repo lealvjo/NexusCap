@@ -451,6 +451,9 @@ inline double perf_test_pass_work(int nr_pass_count) {
   switch (clamp_nr_pass_count(nr_pass_count)) {
     case 4:
       return 1.5;
+    case 7:
+      // 1,7x: 2 evaluates como o 2x, no tamanho interno do Feed (nao 2.0 cheio).
+      return 2.0 * std::pow(static_cast<double>(kNr17xFeedPercent) / 100.0, kPerfTestScalePow);
     case 2:
     case 5:
       return 2.0;

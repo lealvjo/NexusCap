@@ -322,18 +322,27 @@ void SessionCfgOverlay::draw_panel() {
     ImGui::SameLine();
     if (ImGui::RadioButton("1,5x##nrpass", pass == 4)) pass = 4;
     ImGui::SameLine();
+    if (ImGui::RadioButton("1,7x##nrpass", pass == 7)) pass = 7;
     if (ImGui::RadioButton("2x default##nrpass", pass == 2)) pass = 2;
-    if (ImGui::RadioButton("2x otimizado##nrpass", pass == 5)) pass = 5;
     ImGui::SameLine();
+    if (ImGui::RadioButton("2x otimizado##nrpass", pass == 5)) pass = 5;
     if (ImGui::RadioButton("3x default##nrpass", pass == 3)) pass = 3;
     ImGui::SameLine();
     if (ImGui::RadioButton("3x otimizado##nrpass", pass == 6)) pass = 6;
     state.nr_pass_count = clamp_nr_pass_count(pass);
     if (state.nr_pass_count != pass_before) {
+      const int scaled =
+          nr_pass_count_on_select_scale(pass_before, state.nr_pass_count, state.scale_percent);
+      if (scaled != state.scale_percent) {
+        actions_.scale_before = clamp_scale_percent(state.scale_percent);
+        state.scale_percent = scaled;
+        scale_slider_ = static_cast<float>(scaled);
+      }
       actions_.pass_count_changed = true;
       actions_.pass_count_before = pass_before;
     }
     ImGui::TextDisabled("%s", nr_pass_count_15x_hint());
+    ImGui::TextDisabled("%s", nr_pass_count_15x_plus_hint());
     ImGui::TextDisabled("%s", nr_pass_count_2x_opt_hint());
     ImGui::TextDisabled("%s", nr_pass_count_23x_hint());
     // O addon só lê o PassCount no init: qualquer troca aqui passa por processo novo.
@@ -439,17 +448,20 @@ void SessionCfgOverlay::draw_panel() {
       scale_slider_ = static_cast<float>(clamp_scale_percent(slider));
     }
     const int want = clamp_scale_percent(static_cast<int>(std::lround(scale_slider_)));
-    const int eff = effective_scale_percent(state.renodx_stack, want);
+    const int eff = effective_scale_percent(state.renodx_stack, want, state.nr_pass_count, state.signal_w,
+                                           state.signal_h);
     ImGui::TextColored(kAccent, "Trabalho Feed/NR: %dx%d (%d%%)", scaled_extent(state.signal_w, eff),
                        scaled_extent(state.signal_h, eff), eff);
     if (state.renodx_stack && feed_scale_below_floor(true, want)) {
       ImGui::TextColored(kWarn, "Feed nao aceita abaixo de %d%% - usando %d%%", kMinFeedWorkResolution, eff);
     }
     const bool scale_restarts = feed_scale_change_needs_relaunch(state.renodx_stack, state.feed_loaded_scale,
-                                                                 want);
+                                                                 want, state.nr_pass_count, state.signal_w,
+                                                                 state.signal_h);
     if (scale_restarts) {
       ImGui::TextColored(kWarn, "Feed ativo em %d%% - aplicar reinicia e volta para a sessao.",
-                         effective_scale_percent(state.renodx_stack, state.feed_loaded_scale));
+                         effective_scale_percent(state.renodx_stack, state.feed_loaded_scale,
+                                                state.nr_pass_count, state.signal_w, state.signal_h));
     }
     ImGui::BeginDisabled(want == clamp_scale_percent(state.scale_percent) && !scale_restarts);
     if (ImGui::Button(scale_restarts ? "Aplicar escala (reinicio)" : "Aplicar escala", ImVec2(240, 0))) {
@@ -547,6 +559,11 @@ void SessionCfgOverlay::commit_apply_preset() {
   const int idx = find_user_preset_index(have, preset_names_[static_cast<size_t>(selected_preset_)]);
   if (idx < 0) return;
   const UserPreset& p = have[static_cast<size_t>(idx)];
+  if (user_preset_already_active(user_preset_from_session({}, state), p, fg_can_enable)) {
+    state.status = user_preset_already_active_toast(p.name);
+    actions_.notice = state.status;
+    return;
+  }
   const SessionCfgActions planned = plan_user_preset_apply(state, p, fg_can_enable);
   actions_.toggle_nr = planned.toggle_nr;
   actions_.preset_changed = planned.preset_changed;

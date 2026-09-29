@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -30,7 +31,149 @@ struct CaptureStartOptions {
   bool wait_first_frame = true;
   // Perf-test: prime the ring but keep clip 0 until rebase_playhead (NR/FG ready).
   bool hold_playhead = false;
+  // Janela: HWND escolhida no picker. 0 = achar pelo titulo.
+  uint64_t hwnd = 0;
+  // USB E_FAIL: um recover interno (settle + NV12, buffering off). Evita recurse infinito.
+  bool skip_dshow_recover = false;
 };
+
+// HDMI (placa) e o default. Janela (WGC) e opt-in — nao quebra o recover DShow.
+enum class CaptureSourceKind : int { Hdmi = 0, Window = 1 };
+
+inline int clamp_capture_source(int v) {
+  return v == static_cast<int>(CaptureSourceKind::Window) ? static_cast<int>(CaptureSourceKind::Window)
+                                                          : static_cast<int>(CaptureSourceKind::Hdmi);
+}
+
+inline bool capture_source_is_window(int v) {
+  return clamp_capture_source(v) == static_cast<int>(CaptureSourceKind::Window);
+}
+
+inline int lobby_boot_capture_source() { return static_cast<int>(CaptureSourceKind::Hdmi); }
+
+inline const char* capture_source_label(int v) {
+  return capture_source_is_window(v) ? "Janela" : "Placa HDMI";
+}
+
+inline const char* capture_source_card_title(bool window) { return window ? "Janela" : "HDMI"; }
+
+inline const char* capture_source_card_sub(bool window) {
+  return window ? "qualquer janela" : "Placa de captura";
+}
+
+inline const char* window_capture_pick_hint() { return "Escolha uma janela"; }
+
+inline const char* capture_factory_kind_name(bool fake, bool perf, bool window_source) {
+  if (fake) return "fake";
+  if (perf) return "file";
+  if (window_source) return "window";
+  return "dshow";
+}
+
+inline bool hdmi_recover_enabled(bool synthetic, bool app_relaunching, bool window_source) {
+  return !synthetic && !app_relaunching && !window_source;
+}
+
+inline bool session_hdmi_audio_wanted(bool synthetic, bool smoke, bool window_source) {
+  return !synthetic && !smoke && !window_source;
+}
+
+struct CapturableWindowInfo {
+  uint64_t hwnd = 0;
+  std::string title;
+  std::string class_name;
+};
+
+inline bool window_capture_is_self_class(const char* cls) {
+  return cls && std::strncmp(cls, "NexusCap", 8) == 0;
+}
+
+inline bool window_capture_is_self_title(const char* title) {
+  return title && std::strncmp(title, "Nexus Cap", 9) == 0;
+}
+
+inline bool window_capture_list_candidate(bool visible, bool iconic, bool toolwindow, bool owned, bool cloaked,
+                                          bool is_self, const char* title) {
+  if (!visible || iconic || toolwindow || owned || cloaked || is_self) return false;
+  return title && title[0] != '\0';
+}
+
+// Janela de jogo no mesmo processo (PCSX2 GS): pode ser owned e sem titulo.
+inline bool window_capture_process_view_candidate(bool visible, bool iconic, bool toolwindow, bool cloaked,
+                                                  bool is_self, int client_w, int client_h) {
+  if (!visible || iconic || toolwindow || cloaked || is_self) return false;
+  return client_w >= 64 && client_h >= 64;
+}
+
+inline bool window_title_matches_capture(const std::string& have, const std::string& want) {
+  if (want.empty() || have.empty()) return false;
+  if (have == want) return true;
+  return have.find(want) != std::string::npos;
+}
+
+inline int even_capture_dim(int v) {
+  if (v < 2) return 2;
+  return v & ~1;
+}
+
+inline void copy_nv12_from_pitch(const uint8_t* src, int pitch, int width, int height, uint8_t* dst) {
+  if (!src || !dst || pitch < width || width < 2 || height < 2) return;
+  width = even_capture_dim(width);
+  height = even_capture_dim(height);
+  const size_t w = static_cast<size_t>(width);
+  const size_t h = static_cast<size_t>(height);
+  const size_t p = static_cast<size_t>(pitch);
+  for (int y = 0; y < height; ++y) {
+    std::memcpy(dst + static_cast<size_t>(y) * w, src + static_cast<size_t>(y) * p, w);
+  }
+  const uint8_t* uv = src + p * h;
+  uint8_t* uv_dst = dst + w * h;
+  for (int y = 0; y < height / 2; ++y) {
+    std::memcpy(uv_dst + static_cast<size_t>(y) * w, uv + static_cast<size_t>(y) * p, w);
+  }
+}
+
+inline void bgra_to_nv12(const uint8_t* bgra, int pitch, int width, int height, uint8_t* nv12) {
+  if (!bgra || !nv12 || pitch < width * 4) return;
+  width = even_capture_dim(width);
+  height = even_capture_dim(height);
+  const size_t y_stride = static_cast<size_t>(width);
+  uint8_t* yplane = nv12;
+  uint8_t* uvplane = nv12 + y_stride * static_cast<size_t>(height);
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* row = bgra + static_cast<size_t>(y) * static_cast<size_t>(pitch);
+    for (int x = 0; x < width; ++x) {
+      const int b = row[static_cast<size_t>(x) * 4];
+      const int g = row[static_cast<size_t>(x) * 4 + 1];
+      const int r = row[static_cast<size_t>(x) * 4 + 2];
+      int Y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+      if (Y < 16) Y = 16;
+      if (Y > 235) Y = 235;
+      yplane[static_cast<size_t>(y) * y_stride + static_cast<size_t>(x)] = static_cast<uint8_t>(Y);
+    }
+  }
+  for (int y = 0; y < height; y += 2) {
+    const uint8_t* row0 = bgra + static_cast<size_t>(y) * static_cast<size_t>(pitch);
+    const uint8_t* row1 = bgra + static_cast<size_t>(y + 1) * static_cast<size_t>(pitch);
+    uint8_t* uv = uvplane + static_cast<size_t>(y / 2) * y_stride;
+    for (int x = 0; x < width; x += 2) {
+      const int b = (row0[x * 4] + row0[(x + 1) * 4] + row1[x * 4] + row1[(x + 1) * 4]) / 4;
+      const int g = (row0[x * 4 + 1] + row0[(x + 1) * 4 + 1] + row1[x * 4 + 1] + row1[(x + 1) * 4 + 1]) / 4;
+      const int r = (row0[x * 4 + 2] + row0[(x + 1) * 4 + 2] + row1[x * 4 + 2] + row1[(x + 1) * 4 + 2]) / 4;
+      int U = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+      int V = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+      if (U < 16) U = 16;
+      if (U > 240) U = 240;
+      if (V < 16) V = 16;
+      if (V > 240) V = 240;
+      uv[x] = static_cast<uint8_t>(U);
+      uv[x + 1] = static_cast<uint8_t>(V);
+    }
+  }
+}
+
+std::vector<CapturableWindowInfo> list_capturable_windows(uint64_t exclude_hwnd = 0);
+uint64_t find_capturable_hwnd(const std::string& title, uint64_t exclude_hwnd = 0);
 
 class CaptureBase {
 public:
@@ -276,8 +419,88 @@ private:
   std::vector<uint8_t> nv12_scratch_;
 };
 
+// WGC de uma HWND. Publica NV12 no mesmo FrameSlot do HDMI.
+class WindowCapture final : public CaptureBase {
+public:
+  WindowCapture();
+  ~WindowCapture() override;
+  bool start(const std::string& device_name, const CaptureStartOptions& opt, FrameSlot& slot, IClock& clock,
+             std::string& err) override;
+  void stop() override;
+  bool running() const override { return running_; }
+  uint64_t frames() const override { return frames_.load(std::memory_order_relaxed); }
+  std::string opened_device() const override { return opened_; }
+  int opened_width() const override { return width_.load(std::memory_order_relaxed); }
+  int opened_height() const override { return height_.load(std::memory_order_relaxed); }
+  int opened_fourcc() const override { return static_cast<int>(VideoFourcc::Nv12); }
+
+private:
+  struct Impl;
+  Impl* impl_ = nullptr;
+  std::string opened_;
+  std::atomic<bool> running_{false};
+  std::atomic<uint64_t> frames_{0};
+  std::atomic<int> width_{0};
+  std::atomic<int> height_{0};
+};
+
 // USB capture cards need a beat after Stop/SetFormat before reopen (white screen if skipped).
 inline int capture_device_settle_ms() { return 180; }
+
+inline std::string dshow_hresult_hex(unsigned long hr) {
+  static const char kHex[] = "0123456789ABCDEF";
+  std::string s = "0x";
+  s.resize(10, '0');
+  s[0] = '0';
+  s[1] = 'x';
+  for (int i = 0; i < 8; ++i) {
+    s[static_cast<size_t>(9 - i)] = kHex[(hr >> (i * 4)) & 0xFu];
+  }
+  return s;
+}
+
+inline bool hdmi_open_err_is_busy(const std::string& e) {
+  if (e.empty()) return false;
+  return e.find("RenderStream") != std::string::npos || e.find("0x") != std::string::npos ||
+         e.find("MediaControl::Run") != std::string::npos || e.find("recusou") != std::string::npos ||
+         e.find("placa ocupada") != std::string::npos || e.find("grafo") != std::string::npos ||
+         e.find("A placa nao abriu") != std::string::npos || e.find("em uso") != std::string::npos;
+}
+
+inline const char* hdmi_open_busy_hint() {
+  return "A placa esta em uso. Fecha o OBS ou outro app no USB e clica Recarregar entradas.";
+}
+
+inline std::string hdmi_open_error_user(const std::string& raw) {
+  if (raw.empty()) return {};
+  if (raw.find("reabriu NV12") != std::string::npos || raw.find("usando NV12") != std::string::npos) {
+    return "Placa reabriu em NV12.";
+  }
+  if (hdmi_open_err_is_busy(raw)) return hdmi_open_busy_hint();
+  return raw;
+}
+
+// Iniciar com --simulate-hdmi-busy: nao abre DShow; o mesmo aviso da placa ocupada.
+inline bool session_hdmi_open_blocked_by_busy_sim(bool simulate, bool from_lobby, bool synthetic,
+                                                 bool window_source) {
+  return simulate && from_lobby && !synthetic && !window_source;
+}
+
+// Iniciar no lobby relanca com --autostart e perde a flag: o aviso tem que nascer aqui.
+inline bool lobby_iniciar_blocked_by_hdmi_busy_sim(bool simulate, bool window_source) {
+  return session_hdmi_open_blocked_by_busy_sim(simulate, true, false, window_source);
+}
+
+inline const char* session_capture_fail_title() { return "A captura nao abriu"; }
+
+inline std::string session_capture_fail_detail(const std::string& raw) {
+  const std::string u = hdmi_open_error_user(raw);
+  return u.empty() ? std::string(hdmi_open_busy_hint()) : u;
+}
+
+inline std::string session_capture_fail_notice(const std::string& raw) {
+  return std::string(session_capture_fail_title()) + " — " + session_capture_fail_detail(raw);
+}
 
 // After MediaControl::Run, wait for first BufferCB. 4K/MJPEG needs more than 1080p.
 inline int capture_first_frame_wait_ms(int width = 1920, int height = 1080) {

@@ -77,6 +77,7 @@ struct SessionCfgActions {
   bool apply_fg_adaptive = false;
   int apply_fg_target_fps = 60;
   int apply_scale_percent = 100;
+  std::string notice;  // toast HUD (preset ja ativo, etc.)
 };
 
 // ImGui desenhado no swapchain da sessão (mesmo caminho do mini overlay). Janela separada

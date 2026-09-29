@@ -226,6 +226,10 @@ struct PersistedSettings {
   int capture_buffering = 0;  // CaptureBuffering::Disabled
   // HDMI WASAPI monitor gain (CFG). App setting — never a user preset field.
   int capture_volume = 100;
+  // 0=HDMI (default no boot). 1=Janela. Lobby sempre abre em HDMI; Iniciar Janela grava 1 para --autostart.
+  int capture_source = 0;
+  std::string window_title;  // ultimo titulo do picker Janela
+  uint64_t window_hwnd = 0;
 };
 
 enum class RenodxVisualPreset : int {
@@ -240,8 +244,21 @@ inline int clamp_renodx_visual_preset(int v) {
   return v;
 }
 
-// Pass Count UI: 1=Krish, 2=2x default, 3=3x default, 4=1.5x, 5=2x otimizado, 6=3x otimizado.
-inline constexpr int kMaxNrPassCount = 6;
+// Pass Count UI: 1=1x, 2=2x default, 3=3x default, 4=1.5x, 5=2x otimizado, 6=3x otimizado, 7=1.7x.
+inline constexpr int kMaxNrPassCount = 7;
+inline constexpr int kNr15xPlusUi = 7;
+// 1,7x: Feed interno fixo (cara de 2x, custo de 1x). Alias 4k/2k/sd = o mesmo valor.
+inline constexpr int kNr17xFeedPercent = 80;
+inline constexpr int kNr17xFeed4kPercent = kNr17xFeedPercent;
+inline constexpr int kNr17xFeed2kPercent = kNr17xFeedPercent;
+inline constexpr int kNr17xFeedSdPercent = kNr17xFeedPercent;
+inline constexpr int kNr15xPlusWorkPercent = kNr17xFeedPercent;
+inline constexpr int kNr15xPlusFeedPreset = 5;
+inline constexpr const char* kNr15xPlusWorkSharpness = "0.30";
+inline constexpr const char* kNr15xPlusMgfSharpness = "0.450000";
+inline constexpr const char* kNr15xPlusHaloProtect = "0.80";
+inline constexpr const char* kNr15xPlusDenoise = "0.025";
+inline constexpr const char* kDefaultMgfSharpness = "0.450000";
 
 inline int clamp_nr_pass_count(int v) {
   if (v < 1) return 1;
@@ -251,18 +268,24 @@ inline int clamp_nr_pass_count(int v) {
 
 inline bool nr_pass_is_2x_optimized(int ui) { return clamp_nr_pass_count(ui) == 5; }
 inline bool nr_pass_is_3x_optimized(int ui) { return clamp_nr_pass_count(ui) == 6; }
+inline bool nr_pass_is_15x_plus(int ui) { return clamp_nr_pass_count(ui) == kNr15xPlusUi; }
 
-// 1,5x / 2x otimizado / 3x otimizado: mesmo gancho de cor/UI (menos flicker/ghost).
+// 1,5x / 1,7x / 2x otimizado / 3x otimizado: mesmo gancho de cor/UI (menos flicker/ghost).
 inline bool nr_pass_uses_optimized_look(int ui) {
   const int v = clamp_nr_pass_count(ui);
-  return v == 4 || v == 5 || v == 6;
+  return v == 4 || v == 5 || v == 6 || v == kNr15xPlusUi;
 }
 
-// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1; UI 5 → INI 2; UI 6 → INI 3).
+// 1,7x: dois evaluates + Feed interno (sem work_upscale). Captura WxH ignorada.
+inline int nr_17x_feed_work_percent(int /*capture_w*/, int /*capture_h*/) { return kNr17xFeedPercent; }
+
+// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1; UI 5/7 → INI 2; UI 6 → INI 3).
+// 1,7x: dois evaluates do 2x; Feed interno fixo.
 inline int nr_reshade_pass_count(int ui) {
   switch (clamp_nr_pass_count(ui)) {
     case 2:
     case 5:
+    case 7:
       return 2;
     case 3:
     case 6:
@@ -286,6 +309,8 @@ inline const char* nr_pass_count_label(int v) {
       return "2x otimizado";
     case 6:
       return "3x otimizado";
+    case 7:
+      return "1,7x";
     default:
       return "1x";
   }
@@ -295,6 +320,9 @@ inline const char* nr_pass_count_label(int v) {
 inline const char* nr_pass_count_15x_hint() {
   return "1,5x exclusivo NexusCap: gancho do 2x otimizado — menos flicker, melhor imagem, sem perder desempenho.";
 }
+inline const char* nr_pass_count_15x_plus_hint() {
+  return "1,7x exclusivo NexusCap: evolucao do 1,5x — ainda mais proximo do 2x.";
+}
 inline const char* nr_pass_count_2x_opt_hint() {
   return "2x otimizado exclusivo NexusCap: 2x de verdade, menos flicker e ghost, melhor qualidade de imagem.";
 }
@@ -302,7 +330,7 @@ inline const char* nr_pass_count_23x_hint() {
   return "2x default / 3x default: look antigo. 2x/3x otimizado: menos flicker.";
 }
 
-// Short HUD tag: "1x" / "1.5x" / "2x" / "2x+" / "3x" / "3x+".
+// Short HUD tag: "1x" / "1.5x" / "1.7x" / "2x" / "2x+" / "3x" / "3x+".
 inline const char* nr_pass_count_short(int v) {
   switch (clamp_nr_pass_count(v)) {
     case 2:
@@ -315,6 +343,8 @@ inline const char* nr_pass_count_short(int v) {
       return "2x+";
     case 6:
       return "3x+";
+    case 7:
+      return "1.7x";
     default:
       return "1x";
   }
@@ -377,12 +407,14 @@ inline int renodx_nr_preset_index(int visual) {
 }
 
 // Multipass DirectNeuralRenderingStyle is the model slot (A=0, B=1, C=2).
-inline int renodx_direct_style_index(int visual, int /*pass_count*/ = 1) {
+inline int renodx_direct_style_index(int visual, int pass_count = 1) {
+  if (nr_pass_is_15x_plus(pass_count)) return 1;
   return clamp_renodx_visual_preset(visual);
 }
 
-// feed.cfg preset=: model slot 0/1/2 so A/B/C each hit a distinct Feed model.
-inline int renodx_feed_model_preset(int visual, int /*pass_count*/ = 1) {
+// feed.cfg preset=: Model A/B/C = 0/1/2. 1,7x forca o modelo 5.
+inline int renodx_feed_model_preset(int visual, int pass_count = 1) {
+  if (nr_pass_is_15x_plus(pass_count)) return kNr15xPlusFeedPreset;
   return clamp_renodx_visual_preset(visual);
 }
 
@@ -479,6 +511,17 @@ inline int clamp_scale_percent(int p) {
   if (p < kMinScalePercent) return kMinScalePercent;
   if (p > kMaxScalePercent) return kMaxScalePercent;
   return p;
+}
+
+// 1,7x nao mexe na escala da UI. Sair com 75/80/90/58 residual volta a 100%.
+inline int nr_pass_count_on_select_scale(int pass_before, int pass_after, int scale_percent) {
+  const int after = clamp_nr_pass_count(pass_after);
+  const int scale = clamp_scale_percent(scale_percent);
+  if (nr_pass_is_15x_plus(pass_before) && !nr_pass_is_15x_plus(after) &&
+      (scale == kNr17xFeedPercent || scale == 80 || scale == 90 || scale == 58)) {
+    return 100;
+  }
+  return scale;
 }
 
 // Generic key=value int rewriter (feed.cfg / ReShade.ini style).
@@ -685,15 +728,20 @@ inline double scale_pixel_ratio(int scale_percent) {
 // builds at 100% (overlay then "lies" about the scale). Never write below this floor.
 inline constexpr int kMinFeedWorkResolution = 50;
 
+inline int feed_work_upscale_flag(int work_percent, int pass_count = 1) {
+  if (nr_pass_is_15x_plus(pass_count)) return 0;
+  return clamp_scale_percent(work_percent) < 100 ? 1 : 0;
+}
+
 // Keep RenoDX dlss5-feed.cfg work_resolution in sync with lobby scale (including 100%).
 // Bug: only writing when scale<100 left work_resolution=50 stuck → blur at "100%".
 // work_upscale=1 when below 100% so Feed actually downsamples then expands back.
-// rebuild=1 forces the Feed feature to rebuild (it caches work_resolution otherwise).
-inline std::string apply_feed_work_resolution(std::string text, int scale_percent) {
+// 1,7x: upscale=0 (trabalha no tamanho interno). rebuild=1 força o Feed a reler.
+inline std::string apply_feed_work_resolution(std::string text, int scale_percent, int pass_count = 1) {
   int p = clamp_scale_percent(scale_percent);
   if (p < kMinFeedWorkResolution) p = kMinFeedWorkResolution;
   text = apply_keyed_int(std::move(text), "work_resolution=", p);
-  text = apply_keyed_int(std::move(text), "work_upscale=", p < 100 ? 1 : 0);
+  text = apply_keyed_int(std::move(text), "work_upscale=", feed_work_upscale_flag(p, pass_count));
   text = apply_keyed_int(std::move(text), "rebuild=", 1);
   return text;
 }
@@ -931,6 +979,8 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingDiffuseWhiteOverride=", 0);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingEncoding=", encoding);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingHookPoint=", hook);
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingHookStage=",
+                        nr_pass_is_15x_plus(pass_count) ? 2 : 0);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingRequireDlss=", 1);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingUiCorrectionMode=", ui_corr);
   // [RENODX-DLSS-preset1] look knobs
@@ -940,8 +990,9 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalStructureStrength=", 1);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalToneStrength=", 1);
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingSkinStructureStrength=", 1);
-  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingStyle=",
-                            clamp_renodx_visual_preset(visual_preset));
+  if (nr_pass_is_15x_plus(pass_count)) {
+    text = apply_keyed_int_all(std::move(text), "NREnableUpscaling=", 1);
+  }
   text = apply_reshade_nr_pass_count(std::move(text), pass_count);
   // Keep legacy NR* block in sync for tools / dual-read / Krish.
   text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", nits);
@@ -953,6 +1004,14 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = apply_keyed_int(std::move(text), "NRSkinStructure=", -1);
   text = apply_keyed_int(std::move(text), "NRUICorrection=", ui_corr);
   text = apply_reshade_visual_look_keys(std::move(text), visual_preset);
+  {
+    const int style = renodx_direct_style_index(visual_preset, pass_count);
+    text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingStyle=", style);
+    text = upsert_keyed_int_in_section(std::move(text), "RENODX-DLSS-preset1",
+                                      "DirectNeuralRenderingStyle=", style);
+    text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5",
+                                      "DirectNeuralRenderingStyle=", style);
+  }
   // Multipass: Delete is the real NRToggleKey (Bridge cannot inject GetAsyncKeyState).
   text = apply_keyed_int(std::move(text), "NRToggleKey=", 0x2E);
   text = sanitize_multipass_home_windows(std::move(text));
@@ -970,9 +1029,10 @@ inline bool reshade_look_is_2x_optimized(const std::string& text) {
 inline int infer_multipass_ui_pass_count(const std::string& text) {
   const int raw = parse_reshade_nr_pass_count(text, 1);
   if (reshade_look_is_2x_optimized(text)) {
-    if (raw == 2) return 5;
+    const bool plus = parse_keyed_int(text, "DirectNeuralRenderingHookStage=", 0) == 2;
+    if (raw == 2) return plus ? 7 : 5;
     if (raw == 3) return 6;
-    if (raw == 1) return 4;
+    if (raw == 1) return plus ? 7 : 4;
   }
   return raw;
 }
@@ -1030,6 +1090,17 @@ inline std::string apply_mgf_techniques_for_phase(std::string text, bool session
                                                       : kRenodxLobbyIdleTechniqueChain);
 }
 
+// 1,7x: Sharpen 0.45 + HaloProtect/Denoise do pack nitido. Os outros modos so Sharpness.
+inline std::string apply_mgf_sharpen_for_pass(std::string text, int pass_count) {
+  const char* s = nr_pass_is_15x_plus(pass_count) ? kNr15xPlusMgfSharpness : kDefaultMgfSharpness;
+  text = apply_keyed_value(std::move(text), "Sharpness=", s);
+  if (nr_pass_is_15x_plus(pass_count)) {
+    text = apply_keyed_value(std::move(text), "HaloProtect=", kNr15xPlusHaloProtect);
+    text = apply_keyed_value(std::move(text), "Denoise=", kNr15xPlusDenoise);
+  }
+  return text;
+}
+
 inline bool renodx_mgf_chain_order_ok(const std::string& mgf_ini_or_script) {
   auto value_after = [&](const char* key) -> std::string {
     const std::string k(key);
@@ -1054,7 +1125,9 @@ inline bool renodx_mgf_chain_order_ok(const std::string& mgf_ini_or_script) {
 
 inline std::string apply_renodx_visual_preset_to_feed(std::string feed, int visual_preset,
                                                     int pass_count = 1) {
-  return apply_feed_model_preset(std::move(feed), visual_preset, pass_count);
+  feed = apply_feed_model_preset(std::move(feed), visual_preset, pass_count);
+  const char* sharp = nr_pass_is_15x_plus(pass_count) ? kNr15xPlusWorkSharpness : "0.30";
+  return apply_keyed_value(std::move(feed), "work_sharpness=", sharp);
 }
 
 inline std::string apply_renodx_visual_preset_to_reshade(std::string reshade, int visual_preset) {
@@ -1124,14 +1197,17 @@ inline int lobby_preview_out_width(int frame_w, int max_w = kLobbyPreviewMaxWidt
 // in a relaunched process (--autostart), whose first swapchain is the capture window.
 inline constexpr int kLobbyFeedWorkResolution = 100;
 
-inline int feed_work_resolution_for_session(int scale_percent) {
+inline int feed_work_resolution_for_session(int scale_percent, int pass_count = 1, int capture_w = 0,
+                                           int capture_h = 0) {
+  if (nr_pass_is_15x_plus(pass_count)) return nr_17x_feed_work_percent(capture_w, capture_h);
   const int p = clamp_scale_percent(scale_percent);
   return p < kMinFeedWorkResolution ? kMinFeedWorkResolution : p;
 }
 
 // What the pipeline really renders at: Feed floor under RenoDX, app RT scale otherwise.
-inline int effective_scale_percent(bool renodx_stack, int ui_scale_percent) {
-  return renodx_stack ? feed_work_resolution_for_session(ui_scale_percent)
+inline int effective_scale_percent(bool renodx_stack, int ui_scale_percent, int pass_count = 1,
+                                   int capture_w = 0, int capture_h = 0) {
+  return renodx_stack ? feed_work_resolution_for_session(ui_scale_percent, pass_count, capture_w, capture_h)
                       : clamp_scale_percent(ui_scale_percent);
 }
 
@@ -1143,10 +1219,12 @@ inline bool feed_scale_below_floor(bool renodx_stack, int ui_scale_percent) {
 // Feed snapshots work_resolution at addon load, so a scale picked in the lobby only lands
 // after a relaunch that re-seeds the cfg first.
 // Without RenoDX the renderer scales its own RT — no restart needed.
-inline bool feed_scale_change_needs_relaunch(bool renodx_stack, int loaded_scale, int want_scale) {
+inline bool feed_scale_change_needs_relaunch(bool renodx_stack, int loaded_scale, int want_scale,
+                                             int pass_count = 1, int capture_w = 0, int capture_h = 0) {
   if (!renodx_stack) return false;
   // Compare what the Feed actually builds at — 40% and 33% both floor to 50%, no restart.
-  return feed_work_resolution_for_session(loaded_scale) != feed_work_resolution_for_session(want_scale);
+  return feed_work_resolution_for_session(loaded_scale, pass_count, capture_w, capture_h) !=
+         feed_work_resolution_for_session(want_scale, pass_count, capture_w, capture_h);
 }
 
 // Esc/X/timer do Benchmark: o processo ainda tem Pass/tom/NR/Feed/LS do teste na RAM.
@@ -1162,8 +1240,10 @@ inline bool lobby_iniciar_needs_session_relaunch() { return true; }
 inline int feed_work_resolution_for_lobby() { return kLobbyFeedWorkResolution; }
 
 // work_resolution the process should boot with: session scale only when skipping the lobby.
-inline int feed_work_resolution_at_boot(bool lobby_first, int ui_scale_percent) {
-  return lobby_first ? feed_work_resolution_for_lobby() : feed_work_resolution_for_session(ui_scale_percent);
+inline int feed_work_resolution_at_boot(bool lobby_first, int ui_scale_percent, int pass_count = 1,
+                                        int capture_w = 0, int capture_h = 0) {
+  if (lobby_first) return feed_work_resolution_for_lobby();
+  return feed_work_resolution_for_session(ui_scale_percent, pass_count, capture_w, capture_h);
 }
 
 // Quick health for lobby first-run / Iniciar (exe_dir = folder next to NexusCap.exe).
@@ -1239,10 +1319,10 @@ bool save_settings(const PersistedSettings& s, const std::string& path, std::str
 bool load_settings(PersistedSettings& s, const std::string& path, std::string& err);
 
 // Rewrite dlss5-feed.cfg work_resolution on disk. false if missing/unreadable.
-bool sync_feed_work_resolution_file(const std::string& path, int scale_percent);
+bool sync_feed_work_resolution_file(const std::string& path, int scale_percent, int pass_count = 1);
 
 // Feed lives under AddonPath (addons-multipass); keep root + stack in sync.
-bool sync_feed_work_resolution_in_dir(const std::string& exe_dir, int scale_percent);
+bool sync_feed_work_resolution_in_dir(const std::string& exe_dir, int scale_percent, int pass_count = 1);
 
 // DLSS5MGF.ini Techniques: full chain for session/live preview, empty for idle lobby.
 bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_live_preview);
@@ -1263,7 +1343,9 @@ inline bool sync_persisted_session_files(const std::string& exe_dir, const Persi
   (void)sync_nr_pass_count_files(exe_dir, s.nr_pass_count, s.renodx_preset);
   (void)sync_renodx_visual_preset_files(exe_dir, s.renodx_preset, s.nr_pass_count);
   (void)sync_neural_rendering_enabled_files(exe_dir, want_nr, want_nr);
-  (void)sync_feed_work_resolution_in_dir(exe_dir, feed_work_resolution_for_session(s.scale_percent));
+  (void)sync_feed_work_resolution_in_dir(
+      exe_dir, feed_work_resolution_at_boot(false, s.scale_percent, s.nr_pass_count, s.width, s.height),
+      s.nr_pass_count);
   (void)sync_mgf_techniques_for_phase(exe_dir, s.enhance_renodx);
   return true;
 }
@@ -1323,6 +1405,23 @@ inline bool restore_hdmi_pipeline_after_perf_test(const std::string& exe_dir, co
 // Pure helpers for unit tests (serialize to string).
 std::string serialize_settings_ini(const PersistedSettings& s);
 bool parse_settings_ini(const std::string& text, PersistedSettings& s);
+
+inline bool lobby_cfg_settings_dirty(const PersistedSettings& live, const PersistedSettings& snap) {
+  return serialize_settings_ini(live) != serialize_settings_ini(snap);
+}
+
+inline bool lobby_cfg_fg_draft_dirty(bool adp_draft, bool adp_committed, int tgt_draft, int tgt_committed) {
+  if (adp_draft != adp_committed) return true;
+  return adp_draft && tgt_draft != tgt_committed;
+}
+
+inline bool lobby_cfg_has_unsaved(const PersistedSettings& live, const PersistedSettings& snap, bool adp_draft,
+                                  bool adp_committed, int tgt_draft, int tgt_committed) {
+  return lobby_cfg_settings_dirty(live, snap) ||
+         lobby_cfg_fg_draft_dirty(adp_draft, adp_committed, tgt_draft, tgt_committed);
+}
+
+inline bool lobby_cfg_close_needs_prompt(bool has_unsaved) { return has_unsaved; }
 
 const char* vk_display_name(int vk);
 

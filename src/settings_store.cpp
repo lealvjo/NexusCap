@@ -214,6 +214,9 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "color_range=" << clamp_color_range(s.color_range) << "\n";
   o << "capture_buffering=" << clamp_capture_buffering(s.capture_buffering) << "\n";
   o << "capture_volume=" << clamp_capture_volume_percent(s.capture_volume) << "\n";
+  o << "capture_source=" << (s.capture_source == 1 ? 1 : 0) << "\n";
+  o << "window_title=" << s.window_title << "\n";
+  o << "window_hwnd=" << s.window_hwnd << "\n";
   o << "show_fps=" << (s.ui.show_fps ? 1 : 0) << "\n";
   o << "advanced_metrics=" << (s.ui.advanced_metrics ? 1 : 0) << "\n";
   o << "mini_overlay=" << (s.ui.mini_overlay ? 1 : 0) << "\n";
@@ -295,6 +298,9 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "color_range") s.color_range = clamp_color_range(std::atoi(val.c_str()));
       else if (key == "capture_buffering") s.capture_buffering = clamp_capture_buffering(std::atoi(val.c_str()));
       else if (key == "capture_volume") s.capture_volume = clamp_capture_volume_percent(std::atoi(val.c_str()));
+      else if (key == "capture_source") s.capture_source = (val == "1" || val == "window" || val == "janela") ? 1 : 0;
+      else if (key == "window_title") s.window_title = val;
+      else if (key == "window_hwnd") s.window_hwnd = static_cast<uint64_t>(std::strtoull(val.c_str(), nullptr, 10));
       else if (key == "show_fps") s.ui.show_fps = (val == "1" || val == "true");
       else if (key == "advanced_metrics") s.ui.advanced_metrics = (val == "1" || val == "true");
       else if (key == "mini_overlay") s.ui.mini_overlay = (val == "1" || val == "true");
@@ -407,12 +413,12 @@ const char* vk_display_name(int vk) {
   return "Key";
 }
 
-bool sync_feed_work_resolution_file(const std::string& path, int scale_percent) {
+bool sync_feed_work_resolution_file(const std::string& path, int scale_percent, int pass_count) {
   std::ifstream in(path);
   if (!in) return false;
   std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   in.close();
-  text = apply_feed_work_resolution(std::move(text), scale_percent);
+  text = apply_feed_work_resolution(std::move(text), scale_percent, pass_count);
   std::ofstream out(path, std::ios::trunc);
   if (!out) return false;
   out << text;
@@ -439,9 +445,9 @@ bool for_each_feed_cfg(const std::string& exe_dir, Fn&& fn) {
 
 }  // namespace
 
-bool sync_feed_work_resolution_in_dir(const std::string& exe_dir, int scale_percent) {
+bool sync_feed_work_resolution_in_dir(const std::string& exe_dir, int scale_percent, int pass_count) {
   return for_each_feed_cfg(exe_dir, [&](const std::string& path) {
-    return sync_feed_work_resolution_file(path, scale_percent);
+    return sync_feed_work_resolution_file(path, scale_percent, pass_count);
   });
 }
 
@@ -549,6 +555,17 @@ bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int vi
   std::ofstream out(reshade_path, std::ios::trunc);
   if (!out) return false;
   out << text;
+  {
+    const std::string mgf_path = exe_dir + "\\DLSS5MGF.ini";
+    std::ifstream min(mgf_path);
+    if (min) {
+      std::string mgf((std::istreambuf_iterator<char>(min)), std::istreambuf_iterator<char>());
+      min.close();
+      mgf = apply_mgf_sharpen_for_pass(std::move(mgf), p);
+      std::ofstream mout(mgf_path, std::ios::trunc);
+      if (mout) mout << mgf;
+    }
+  }
   // ini antigo do Krish gravava o feed 1x (Cinematic=0); o multipass usa o slot 0/1/2.
   (void)for_each_feed_cfg(exe_dir, [&](const std::string& feed_path) {
     std::ifstream fin(feed_path);

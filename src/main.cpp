@@ -212,8 +212,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
   // Escala que o Feed travou neste processo (lobby abre em 100%, --autostart já entra escalado).
   // O CFG da sessão compara com ela pra saber se aplicar a escala pede reinício.
-  int feed_locked_scale =
-      feed_work_resolution_at_boot(cfg.show_lobby && !cfg.autostart && !cfg.perf_test, cfg.scale_percent);
+  int feed_locked_scale = feed_work_resolution_at_boot(
+      cfg.show_lobby && !cfg.autostart && !cfg.perf_test, cfg.scale_percent, cfg.nr_pass_count, cfg.width,
+      cfg.height);
 
   // Session: RenoDX feed scale + NR state. Disk NeuralUplift alone never enables runtime NR.
   {
@@ -262,10 +263,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           in.close();
           before = parse_feed_work_resolution(text, 100);
         }
-        const int want = feed_work_resolution_for_session(cfg.scale_percent);
+        const int want = feed_work_resolution_for_session(cfg.scale_percent, cfg.nr_pass_count, cfg.width,
+                                                         cfg.height);
         // Este write e anterior ao primeiro swapchain (--autostart / Iniciar com relancamento).
         // O addon le o arquivo no init, entao o valor travado e o que acabamos de gravar.
-        if (sync_feed_work_resolution_in_dir(exe_dir.string(), want)) {
+        if (sync_feed_work_resolution_in_dir(exe_dir.string(), want, cfg.nr_pass_count)) {
           feed_locked_scale = want;
           append_log(cfg.log_dir, "scale feed work_resolution " + std::to_string(before) + " -> " +
                                       std::to_string(want) + " (session ui=" + std::to_string(cfg.scale_percent) + ")");
@@ -362,7 +364,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   g_renodx_multipass = renodx_stack;
   renderer.set_scale_percent(app_present_scale_percent(renodx_stack, cfg.scale_percent));
   // RenoDX: app RT native, Feed does the scaling — HUD must show the Feed resolution.
-  renderer.set_hud_work_scale_percent(renodx_stack ? effective_scale_percent(true, cfg.scale_percent) : 0);
+  renderer.set_hud_work_scale_percent(
+      renodx_stack ? effective_scale_percent(true, cfg.scale_percent, cfg.nr_pass_count, cfg.width, cfg.height)
+                   : 0);
   renderer.set_color_format(cfg.color_space, cfg.color_range);
 
   std::unique_ptr<IFrameEnhance> enhance;
@@ -445,21 +449,31 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   cap_opt.capture_buffering = cfg.capture_buffering;
   cap_opt.hold_playhead = cfg.perf_test;
   const bool synthetic_capture = cfg.fake_capture || cfg.perf_test;
+  const bool window_source =
+      capture_source_is_window(cfg.capture_source) && !synthetic_capture && !cfg.fake_capture;
   if (cfg.fake_capture) {
     capture = std::make_unique<FakeCapture>();
   } else if (cfg.perf_test) {
     capture = std::make_unique<VirtualCapturePin>();
+  } else if (window_source) {
+    capture = std::make_unique<WindowCapture>();
   } else {
     capture = std::make_unique<DShowCapture>();
   }
-  const std::string capture_name = cfg.perf_test ? cfg.video_path : cfg.device_name;
+  const std::string capture_name =
+      cfg.perf_test ? cfg.video_path : (window_source ? cfg.window_title : cfg.device_name);
+  if (window_source) cap_opt.hwnd = cfg.window_hwnd;
   auto try_start_capture = [&]() -> bool {
     err.clear();
     return capture->start(capture_name, cap_opt, slot, clock, err);
   };
-  if (!try_start_capture()) {
+  const bool skip_hdmi_open = session_hdmi_open_blocked_by_busy_sim(
+      cfg.simulate_hdmi_busy, g_session_from_lobby, synthetic_capture, window_source);
+  if (skip_hdmi_open) {
+    err = hdmi_open_busy_hint();
+  } else if (!try_start_capture()) {
     // Mode churn / exclusive device: one settle+retry before fake fallback.
-    if (!synthetic_capture) {
+    if (!synthetic_capture && !window_source) {
       append_log(cfg.log_dir, "capture start fail: " + err + " — retry apos settle");
       Sleep(static_cast<DWORD>(capture_device_settle_ms()));
       capture = std::make_unique<DShowCapture>();
@@ -500,8 +514,15 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
     // Lobby sessions: NEVER fake — fake+RenoDX = tela branca (visto em 4K MJPEG).
     if (g_session_from_lobby) {
-      std::fprintf(stderr, "capture falhou — voltando ao lobby (sem fake)\n");
-      append_log(cfg.log_dir, "capture fail → lobby (no fake fallback)");
+      const std::string fail_title = session_capture_fail_title();
+      const std::string fail_detail = session_capture_fail_detail(err);
+      std::fprintf(stderr, "capture falhou — voltando ao lobby (sem fake): %s\n", fail_detail.c_str());
+      append_log(cfg.log_dir, "capture fail → lobby (no fake fallback): " + fail_detail);
+      g_restart_notice.show(hi, fail_title, fail_detail);
+      g_restart_notice.pump();
+      Sleep(1800);
+      g_restart_notice.destroy();
+      cfg.lobby_boot_toast = session_capture_fail_notice(err);
       g_session_renderer = nullptr;
       if (enhance) {
         renderer.set_enhance(nullptr);
@@ -545,7 +566,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
   AudioMonitor audio;
   ClipAudioPlayer clip_audio;
-  if (!synthetic_capture && !cfg.smoke) {
+  if (!synthetic_capture && !cfg.smoke && session_hdmi_audio_wanted(false, false, window_source)) {
     std::string aerr;
     if (!audio.start(audio_prefer, aerr)) {
       std::fprintf(stderr, "audio: %s (continuando sem som)\n", aerr.c_str());
@@ -584,6 +605,21 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   info.dlss_mode = (cfg.enhance == EnhanceBackend::Renodx) ? "renodx-presets" : dlss_mode_name(cfg.dlss_mode);
   info.dlss_backend = (cfg.enhance == EnhanceBackend::Renodx) ? "renodx+feed" : enhance->backend_name();
   info.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
+
+  if (cfg.enhance == EnhanceBackend::Renodx && nr_pass_is_15x_plus(cfg.nr_pass_count) && info.width > 0 &&
+      info.height > 0) {
+    wchar_t exe_path[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    const int want =
+        feed_work_resolution_for_session(cfg.scale_percent, cfg.nr_pass_count, info.width, info.height);
+    if (sync_feed_work_resolution_in_dir(fs::path(exe_path).parent_path().string(), want, cfg.nr_pass_count)) {
+      feed_locked_scale = want;
+      char fbuf[160];
+      std::snprintf(fbuf, sizeof(fbuf), "scale feed 1.7x work_resolution=%d cap=%dx%d", want, info.width,
+                    info.height);
+      append_log(cfg.log_dir, fbuf);
+    }
+  }
 
   LosslessFgController fg;
   const int boot_hz = display_refresh_hz(hwnd);
@@ -635,7 +671,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.hud_on = cfg.show_overlay;
   // HUD work size = what the Feed really builds (floors at 50% under RenoDX), not the
   // requested UI scale — otherwise the overlay reports a scale the Feed refused.
-  const int shown_scale = effective_scale_percent(renodx_stack, cfg.scale_percent);
+  const int shown_scale =
+      effective_scale_percent(renodx_stack, cfg.scale_percent, cfg.nr_pass_count, info.width, info.height);
   overlay.scale_percent = shown_scale;
   overlay.work_w = scaled_extent(info.width > 0 ? info.width : cap_w, shown_scale);
   overlay.work_h = scaled_extent(info.height > 0 ? info.height : cap_h, shown_scale);
@@ -659,8 +696,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   // Soft tip on enter only when CFG asked to start with FG on.
   if (cfg.fg_auto_start && cfg.fg_multiplier >= 2) {
     session_notice.push(session_notice_fg_on(), clock.now_ms());
-  } else if ((cfg.enhance == EnhanceBackend::Renodx) && cfg.neural_rendering) {
-    session_notice.push(session_notice_nr_on(), clock.now_ms());
   }
   g_analyze = cfg.bug_report;
   analyze.set_verbose(cfg.bug_report);
@@ -727,7 +762,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       snap.width = info.width;
       snap.height = info.height;
       snap.fps = cfg.fps;
-      snap.scale_percent = effective_scale_percent(renodx_stack, cfg.scale_percent);
+      snap.scale_percent =
+          effective_scale_percent(renodx_stack, cfg.scale_percent, cfg.nr_pass_count, info.width, info.height);
       snap.sync_image = cfg.sync_image;
       snap.fullscreen = cfg.exclusive_fullscreen;
       snap.show_fps = cfg.show_overlay;
@@ -941,9 +977,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (g_toggle_cfg.exchange(false) && cfg_ui_ready && !cfg_restart_pending) {
       cfg_ui.toggle_open();
       g_cfg_open = cfg_ui.open();
-      session_notice.push(cfg_ui.open() ? session_notice_cfg_open(g_hotkeys.vk_cfg, g_hotkeys.cfg_ctrl)
-                                        : session_notice_cfg_closed(),
-                          clock.now_ms());
     }
     if (g_close_cfg.exchange(false) && cfg_ui_ready) {
       cfg_ui.set_open(false);
@@ -993,7 +1026,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg_restart_kind = SessionCfgApply::RelaunchNr;
         cfg_restart_pending = true;
         cfg_restart_until = now_nr + kDlss5MotorSwapHoldSec * 1000.0;
-        session_notice.push(session_notice_nr_apply(want_on), now_nr);
         append_log(cfg.log_dir, std::string("cfg nr restart → ") + (want_on ? "ON" : "OFF"));
         std::printf("neural rendering %s (Delete→reinicio) — Frame Gen nao muda\n", want_on ? "ON" : "OFF");
       }
@@ -1011,8 +1043,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                                     " (log confirm)");
         std::printf("neural rendering %s (confirm) — Frame Gen nao muda\n",
                     g_nr_runtime_on ? "ON" : "OFF");
-        session_notice.push(g_nr_runtime_on ? session_notice_nr_on() : session_notice_nr_off(),
-                            clock.now_ms());
       }
     }
 
@@ -1153,7 +1183,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     const bool app_relaunching = hdmi_blocked_by_nexuscap_restart(
         cfg_restart_pending, g_restart_notice.visible() && !cfg.perf_test,
         cfg.autostart && !cfg.perf_test && presented < kStatsWarmupFrames);
-    if (!synthetic_capture && !app_relaunching) {
+    if (hdmi_recover_enabled(synthetic_capture, app_relaunching, window_source)) {
       const int ow = capture->opened_width() > 0 ? capture->opened_width() : cap_w;
       const int oh = capture->opened_height() > 0 ? capture->opened_height() : cap_h;
       if (have_new) {
@@ -1219,8 +1249,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           if (size_changed) {
             wchar_t exe_path[MAX_PATH]{};
             GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-            (void)sync_feed_work_resolution_in_dir(fs::path(exe_path).parent_path().string(),
-                                                   feed_work_resolution_for_session(cfg.scale_percent));
+            (void)sync_feed_work_resolution_in_dir(
+                fs::path(exe_path).parent_path().string(),
+                feed_work_resolution_for_session(cfg.scale_percent, cfg.nr_pass_count, info.width,
+                                                info.height),
+                cfg.nr_pass_count);
           }
           char okbuf[192];
           std::snprintf(okbuf, sizeof(okbuf), "hdmi recover ok signal %dx%d (pedido %dx%d) feed_rebuild=%d",
@@ -1454,6 +1487,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (cfg_ui_ready && !cfg_restart_pending) {
       const SessionCfgActions act = cfg_ui.take_actions();
       SessionCfgState& ui = cfg_ui.state;
+      if (!act.notice.empty()) session_notice.push(act.notice, clock.now_ms());
       if (act.apply_user_preset) {
         ui.hud_visible = act.apply_hud;
         ui.overlay_no_bg = act.apply_overlay_no_bg;
@@ -1486,7 +1520,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (act.close_requested) {
         cfg_ui.set_open(false);
         g_cfg_open = false;
-        session_notice.push(session_notice_cfg_closed(), now);
       }
       if (act.hud_changed) g_overlay = ui.hud_visible;
       if (act.overlay_no_bg_changed) {
@@ -1634,7 +1667,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           cfg.nr_pass_count = clamp_nr_pass_count(ui.nr_pass_count);
           (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
           (void)sync_feed_work_resolution_in_dir(
-              exe_dir_cfg, feed_work_resolution_for_session(cfg.scale_percent));
+              exe_dir_cfg, feed_work_resolution_for_session(cfg.scale_percent, cfg.nr_pass_count, info.width,
+                                                           info.height),
+              cfg.nr_pass_count);
           cfg_restart_kind = plan;
           cfg_restart_pending = true;
           cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
@@ -1664,8 +1699,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         const int want_scale = clamp_scale_percent(ui.scale_percent);
         cfg.scale_percent = want_scale;
         if (cfg_restart_pending) {
-          (void)sync_feed_work_resolution_in_dir(exe_dir_cfg,
-                                                 feed_work_resolution_for_session(want_scale));
+          (void)sync_feed_work_resolution_in_dir(
+              exe_dir_cfg, feed_work_resolution_for_session(want_scale, cfg.nr_pass_count, info.width,
+                                                           info.height),
+              cfg.nr_pass_count);
           append_log(cfg.log_dir, "cfg feed scale (com restart) → " + std::to_string(want_scale) + "%");
         } else if (plan == SessionCfgApply::RelaunchFeedScale) {
           cfg.scale_percent = want_scale;
@@ -1673,16 +1710,24 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           cfg_restart_pending = true;
           cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
           session_notice.push(
-              session_notice_feed_scale_apply(effective_scale_percent(renodx_now, feed_locked_scale),
-                                              effective_scale_percent(renodx_now, want_scale)),
+              session_notice_feed_scale_apply(
+                  effective_scale_percent(renodx_now, feed_locked_scale, cfg.nr_pass_count, info.width,
+                                         info.height),
+                  effective_scale_percent(renodx_now, want_scale, cfg.nr_pass_count, info.width, info.height)),
               now);
           append_log(cfg.log_dir, "cfg feed scale → " + std::to_string(want_scale) + "% (reinicio)");
         } else {
           cfg.scale_percent = want_scale;
           renderer.set_scale_percent(app_present_scale_percent(renodx_now, want_scale));
-          renderer.set_hud_work_scale_percent(renodx_now ? effective_scale_percent(true, want_scale) : 0);
-          overlay.scale_percent = effective_scale_percent(renodx_now, want_scale);
-          session_notice.push("Escala: " + std::to_string(effective_scale_percent(renodx_now, want_scale)) + "%",
+          renderer.set_hud_work_scale_percent(
+              renodx_now ? effective_scale_percent(true, want_scale, cfg.nr_pass_count, info.width, info.height)
+                         : 0);
+          overlay.scale_percent =
+              effective_scale_percent(renodx_now, want_scale, cfg.nr_pass_count, info.width, info.height);
+          session_notice.push(
+              "Escala: " + std::to_string(effective_scale_percent(renodx_now, want_scale, cfg.nr_pass_count,
+                                                                  info.width, info.height)) +
+                  "%",
                               now);
           append_log(cfg.log_dir, "cfg scale → " + std::to_string(want_scale) + "% (ao vivo)");
         }
@@ -2200,6 +2245,8 @@ int main(int argc, char** argv) {
     const int boot_pass = cfg.perf_test ? cfg.nr_pass_count : settings.nr_pass_count;
     const int boot_preset = cfg.perf_test ? cfg.renodx_preset : settings.renodx_preset;
     const int boot_scale = cfg.perf_test ? cfg.scale_percent : settings.scale_percent;
+    const int boot_w = cfg.perf_test ? cfg.width : settings.width;
+    const int boot_h = cfg.perf_test ? cfg.height : settings.height;
     const auto ar = nexuscap::sync_renodx_addon_variant(base.string(), boot_pass);
     if (ar == nexuscap::RenodxAddonSyncResult::OkSwapped) {
       std::printf("renodx addon: multipass\n");
@@ -2219,7 +2266,9 @@ int main(int argc, char** argv) {
       (void)nexuscap::sync_mgf_techniques_for_phase(base.string(), want_nr && !lobby_first);
     }
     (void)nexuscap::sync_feed_work_resolution_in_dir(
-        base.string(), nexuscap::feed_work_resolution_at_boot(lobby_first, boot_scale));
+        base.string(),
+        nexuscap::feed_work_resolution_at_boot(lobby_first, boot_scale, boot_pass, boot_w, boot_h),
+        lobby_first ? 1 : boot_pass);
   }
   // CLI overrides persisted where explicit.
   if (!cfg.show_lobby) {
@@ -2245,6 +2294,9 @@ int main(int argc, char** argv) {
     cfg.mini_overlay = settings.ui.mini_overlay;
     cfg.overlay_no_bg = settings.ui.overlay_no_bg;
     cfg.capture_volume = nexuscap::clamp_capture_volume_percent(settings.capture_volume);
+    cfg.capture_source = nexuscap::clamp_capture_source(settings.capture_source);
+    cfg.window_title = settings.window_title;
+    cfg.window_hwnd = settings.window_hwnd;
     cfg.hw_info = settings.ui.hw_info;
     cfg.hide_panel_on_capture = true;
     cfg.sync_image = settings.ui.sync_image;

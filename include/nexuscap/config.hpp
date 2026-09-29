@@ -34,6 +34,8 @@ struct AppConfig {
   bool autostart = false;       // --autostart: seed from settings, skip lobby once (feed scale relaunch)
   bool portable = false;        // --portable: settings/presets/logs beside the exe (zip / USB)
   bool open_lobby_cfg = false;  // --lobby-cfg: reopen lobby CFG after a motor/Pass Count restart
+  bool simulate_hdmi_busy = false;  // preview + Iniciar: placa em uso (sem abrir DShow)
+  std::string lobby_boot_toast;     // one-shot toast ao voltar ao lobby (captura falhou)
   int overlay_hud_restore = -1; // --hud=: session overlay after OUR restart (not lobby checks)
   bool advanced_metrics = false;
   bool mini_overlay = false;    // Steam Deck-style top bar
@@ -48,7 +50,7 @@ struct AppConfig {
   int live_console = 0;       // LiveConsole: which console is being captured
   int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
-  int nr_pass_count = 1;    // 1=Krish, 2/3=multipass evaluates, 4=1.5x (multipass motor, 1 pass)
+  int nr_pass_count = 1;    // 1=1x, 4=1.5x, 5=2x+, 6=3x+, 7=1.7x
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
   // Live RenoDX NR (Bridge). Carried lobby↔session — NOT the same as neural_rendering on disk.
   // Resetting this to false while RenoDX is still ON causes a boot pulse that inverts HUD vs image.
@@ -58,6 +60,9 @@ struct AppConfig {
   int color_range = 0;      // Limitado
   int capture_buffering = 0;  // Desativado
   int capture_volume = 100;  // HDMI WASAPI 0–100; settings.ini, not presets
+  int capture_source = 0;    // 0 HDMI, 1 Janela
+  std::string window_title;
+  uint64_t window_hwnd = 0;
 
   // Enhance: renodx (ReShade proxy + presets) | streamline (native) | off
   EnhanceBackend enhance = EnhanceBackend::Off;
@@ -540,7 +545,7 @@ inline SessionCfgApply plan_session_cfg_apply(bool renodx_stack, int pass_before
   if (!nr_pass_count_change_applies_live(pass_before, pass_after)) {
     return SessionCfgApply::RelaunchPassCount;
   }
-  if (feed_scale_change_needs_relaunch(renodx_stack, scale_loaded, scale_after)) {
+  if (feed_scale_change_needs_relaunch(renodx_stack, scale_loaded, scale_after, pass_after)) {
     return SessionCfgApply::RelaunchFeedScale;
   }
   return SessionCfgApply::Live;
@@ -605,6 +610,9 @@ inline bool lobby_gear_hotkey_toggles_cfg(int vk, int gear_vk, bool capturing_ho
   if (capturing_hotkey || gear_vk <= 0) return false;
   return vk == gear_vk;
 }
+
+inline const char* lobby_cfg_unsaved_title() { return "Alteracoes foram feitas e nao foram salvas."; }
+inline const char* lobby_cfg_unsaved_question() { return "Deseja aplica-las?"; }
 
 // Soft on-screen tips while playing (FG / Neural Rendering hotkeys).
 inline constexpr double kSessionNoticeTtlMs = 3200.0;
@@ -710,13 +718,14 @@ inline void session_notice_split(const std::string& msg, std::string& title, std
   title.clear();
   detail.clear();
   if (msg.empty()) return;
-  const auto pos = msg.find(" — ");
+  static const std::string kSep = " — ";
+  const auto pos = msg.find(kSep);
   if (pos == std::string::npos) {
     title = msg;
     return;
   }
   title = msg.substr(0, pos);
-  detail = msg.substr(pos + 3);
+  detail = msg.substr(pos + kSep.size());
 }
 
 inline int session_notice_extra_px(const std::string& msg) {

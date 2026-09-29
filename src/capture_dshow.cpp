@@ -382,9 +382,9 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   hr = impl_->builder->RenderStream(&PIN_CATEGORY_CAPTURE, &MEDIATYPE_Video, impl_->source, impl_->grabber_f,
                                     impl_->null_f);
   if (FAILED(hr)) {
-    const unsigned long hrx = static_cast<unsigned long>(hr);
     const int was_fc = opened_fourcc_;
     stop();
+    Sleep(static_cast<DWORD>(capture_device_settle_ms()));
     if (was_fc != static_cast<int>(VideoFourcc::Nv12)) {
       CaptureStartOptions nv = opt;
       nv.video_fourcc = static_cast<int>(VideoFourcc::Nv12);
@@ -393,10 +393,24 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
         err = "RenderStream falhou p/ " + std::string(video_fourcc_name(was_fc)) + "; usando NV12";
         return true;
       }
-      err = "RenderStream failed hr=0x" + std::to_string(hrx) + " | NV12: " + err2;
+      err = hdmi_open_busy_hint();
       return false;
     }
-    err = "RenderStream failed hr=0x" + std::to_string(hrx);
+    if (!opt.skip_dshow_recover) {
+      CaptureStartOptions again = opt;
+      again.skip_dshow_recover = true;
+      again.video_fourcc = static_cast<int>(VideoFourcc::Nv12);
+      again.capture_buffering = 0;
+      std::string err2;
+      if (start(device_name, again, slot, clock, err2)) {
+        err = "placa recusou o grafo; reabriu NV12";
+        if (clamp_capture_buffering(opt.capture_buffering) != 0) err += " sem buffering extra";
+        return true;
+      }
+      err = hdmi_open_busy_hint();
+      return false;
+    }
+    err = hdmi_open_busy_hint();
     return false;
   }
 
@@ -431,7 +445,23 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   impl_->graph->QueryInterface(IID_IMediaControl, reinterpret_cast<void**>(&impl_->control));
   hr = impl_->control->Run();
   if (FAILED(hr)) {
-    err = "MediaControl::Run failed";
+    stop();
+    if (!opt.skip_dshow_recover) {
+      Sleep(static_cast<DWORD>(capture_device_settle_ms()));
+      CaptureStartOptions again = opt;
+      again.skip_dshow_recover = true;
+      again.video_fourcc = static_cast<int>(VideoFourcc::Nv12);
+      again.capture_buffering = 0;
+      std::string err2;
+      if (start(device_name, again, slot, clock, err2)) {
+        err = "placa recusou Run; reabriu NV12";
+        if (clamp_capture_buffering(opt.capture_buffering) != 0) err += " sem buffering extra";
+        return true;
+      }
+      err = hdmi_open_busy_hint();
+      return false;
+    }
+    err = hdmi_open_busy_hint();
     stop();
     return false;
   }

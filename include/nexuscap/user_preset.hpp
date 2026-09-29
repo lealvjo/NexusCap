@@ -161,6 +161,26 @@ inline void clamp_user_preset(UserPreset& p) {
   p.scale_percent = clamp_scale_percent(p.scale_percent);
 }
 
+inline std::string user_preset_already_active_toast(const std::string& name) {
+  return "Preset ja ativo: " + name;
+}
+
+inline bool user_preset_already_active(const UserPreset& current, const UserPreset& incoming, bool fg_can_enable) {
+  UserPreset a = current;
+  UserPreset b = incoming;
+  clamp_user_preset(a);
+  clamp_user_preset(b);
+  a.fg_enabled = a.fg_enabled && fg_can_enable;
+  b.fg_enabled = b.fg_enabled && fg_can_enable;
+  return a.hud_visible == b.hud_visible && a.overlay_no_bg == b.overlay_no_bg &&
+         a.overlay_console == b.overlay_console &&
+         clamp_live_console(a.live_console) == clamp_live_console(b.live_console) &&
+         a.neural_rendering == b.neural_rendering && a.renodx_preset == b.renodx_preset &&
+         a.nr_pass_count == b.nr_pass_count && a.fg_enabled == b.fg_enabled &&
+         a.fg_multiplier == b.fg_multiplier && a.fg_queue == b.fg_queue && a.fg_adaptive == b.fg_adaptive &&
+         a.fg_target_fps == b.fg_target_fps && a.scale_percent == b.scale_percent;
+}
+
 inline std::string user_preset_list_summary(const UserPreset& p) {
   char b[72]{};
   const char* look = renodx_visual_preset_name(p.renodx_preset, p.nr_pass_count);

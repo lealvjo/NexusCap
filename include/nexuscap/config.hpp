@@ -1,7 +1,11 @@
 #pragma once
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
+#include <system_error>
 
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/dlss_options.hpp"
@@ -582,17 +586,17 @@ inline std::string lobby_pipeline_hold_title() { return session_restart_notice_t
 inline std::string session_restart_notice_detail(SessionCfgApply a) {
   switch (a) {
     case SessionCfgApply::RelaunchMotor:
-      return "Motor do pipeline — volto para a sessao";
+      return "Motor do pipeline: volto para a sessao";
     case SessionCfgApply::RelaunchPassCount:
-      return "Pass Count do pipeline — volto para a sessao";
+      return "Pass Count do pipeline: volto para a sessao";
     case SessionCfgApply::RelaunchFeedScale:
-      return "Escala do Feed — volto para a sessao";
+      return "Escala do Feed: volto para a sessao";
     case SessionCfgApply::RelaunchPreset:
-      return "Preset visual — volto para a sessao";
+      return "Preset visual: volto para a sessao";
     case SessionCfgApply::RelaunchNr:
-      return "Neural Rendering — volto para a sessao";
+      return "Neural Rendering: volto para a sessao";
     default:
-      return "Motor do pipeline — volto para a sessao";
+      return "Motor do pipeline: volto para a sessao";
   }
 }
 inline bool restart_notice_visible_at_boot(bool autostart) { return autostart; }
@@ -671,19 +675,19 @@ inline std::string session_notice_fg_confirmed_on(int mult) {
   return std::string("Frame Gen ON — Confirmado x") + std::to_string(clamp_fg_multiplier(mult));
 }
 inline std::string session_notice_dlss5_motor_swap(int from_pass, int to_pass) {
-  return std::string("Otimizando o pipeline — ") + nr_pass_count_label(from_pass) + " → " +
+  return std::string("Otimizando o pipeline: ") + nr_pass_count_label(from_pass) + " → " +
          nr_pass_count_label(to_pass) + " (motor)";
 }
 inline std::string session_notice_nr_pass_count_apply(int from_pass, int to_pass) {
-  return std::string("Otimizando o pipeline — ") + nr_pass_count_label(from_pass) + " → " +
+  return std::string("Otimizando o pipeline: ") + nr_pass_count_label(from_pass) + " → " +
          nr_pass_count_label(to_pass) + " (Pass Count)";
 }
 inline std::string session_notice_preset_apply(int from_preset, int to_preset, int pass_count = 1) {
-  return std::string("Aplicando preset — ") + renodx_visual_preset_name(from_preset, pass_count) + " → " +
+  return std::string("Aplicando preset: ") + renodx_visual_preset_name(from_preset, pass_count) + " → " +
          renodx_visual_preset_name(to_preset, pass_count) + " (reinicio)";
 }
 inline std::string session_notice_nr_apply(bool want_on) {
-  return std::string("Aplicando Neural Rendering — ") + (want_on ? "ON" : "OFF") + " (reinicio)";
+  return std::string("Aplicando DLSS 5: ") + (want_on ? "ON" : "OFF") + " (reinicio)";
 }
 inline std::string session_notice_nr_hotkey_unavailable(int pass_count) {
   return std::string("Neural Rendering sempre ON em ") + nr_pass_count_label(pass_count) +
@@ -698,17 +702,58 @@ inline std::string session_notice_cfg_closed() {
   return "CFG fechado — ajustes mantidos";
 }
 inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
-  return std::string("Aplicando escala do Feed — ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +
+  return std::string("Aplicando escala do Feed: ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +
          std::to_string(clamp_scale_percent(to_pct)) + "% (reinicio)";
 }
 inline std::string session_notice_lobby_iniciar_apply() {
-  return "Aplicando configuracao — DLSS 5, preset e escala do CFG entram na sessao";
+  return "Aplicando configuracao: DLSS 5, preset e escala do CFG entram na sessao";
 }
 
+// Toast de Pass/preset/escala/Iniciar: o processo morre no restart. Grava e mostra na volta.
+inline std::string restart_toast_path() {
+  const std::string base = app_data_dir();
+  return base.empty() ? std::string("boot_toast.txt") : base + "\\boot_toast.txt";
+}
+
+inline bool write_restart_toast_in(const std::string& path, const std::string& msg) {
+  if (path.empty()) return false;
+  const auto p = std::filesystem::u8path(path);
+  if (msg.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(p, ec);
+    return true;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(p.parent_path(), ec);
+  std::ofstream out(p, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  out << msg;
+  return static_cast<bool>(out);
+}
+
+inline std::string take_restart_toast_in(const std::string& path) {
+  if (path.empty()) return {};
+  const auto p = std::filesystem::u8path(path);
+  std::ifstream in(p, std::ios::binary);
+  if (!in) return {};
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  in.close();
+  std::error_code ec;
+  std::filesystem::remove(p, ec);
+  std::string s = ss.str();
+  while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+  return s;
+}
+
+inline bool write_restart_toast(const std::string& msg) { return write_restart_toast_in(restart_toast_path(), msg); }
+
+inline std::string take_restart_toast() { return take_restart_toast_in(restart_toast_path()); }
+
 inline std::string perf_test_pipeline_notice_title() { return "Gerando o pipeline do Benchmark"; }
-inline std::string perf_test_pipeline_notice_detail() { return "Aguarde — a janela abre quando estiver pronto"; }
+inline std::string perf_test_pipeline_notice_detail() { return "Aguarde: a janela abre quando estiver pronto"; }
 inline std::string perf_test_pipeline_fail_title() { return "Pipeline do Benchmark nao ficou pronto"; }
-inline std::string perf_test_pipeline_fail_detail() { return "Timeout. Volta ao lobby — tenta de novo."; }
+inline std::string perf_test_pipeline_fail_detail() { return "Timeout. Volta ao lobby: tenta de novo."; }
 inline std::string session_notice_perf_test_hold() {
   return perf_test_pipeline_notice_title() + " — " + perf_test_pipeline_notice_detail();
 }

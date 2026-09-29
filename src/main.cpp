@@ -693,8 +693,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   }
   g_overlay = cfg.show_overlay;
   SessionNotice session_notice;
+  std::string session_boot_toast = take_restart_toast();
   // Soft tip on enter only when CFG asked to start with FG on.
-  if (cfg.fg_auto_start && cfg.fg_multiplier >= 2) {
+  if (session_boot_toast.empty() && cfg.fg_auto_start && cfg.fg_multiplier >= 2) {
     session_notice.push(session_notice_fg_on(), clock.now_ms());
   }
   g_analyze = cfg.bug_report;
@@ -1026,6 +1027,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg_restart_kind = SessionCfgApply::RelaunchNr;
         cfg_restart_pending = true;
         cfg_restart_until = now_nr + kDlss5MotorSwapHoldSec * 1000.0;
+        write_restart_toast(session_notice_nr_apply(want_on));
         append_log(cfg.log_dir, std::string("cfg nr restart → ") + (want_on ? "ON" : "OFF"));
         std::printf("neural rendering %s (Delete→reinicio) — Frame Gen nao muda\n", want_on ? "ON" : "OFF");
       }
@@ -1640,8 +1642,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           cfg_restart_kind = SessionCfgApply::RelaunchPreset;
           cfg_restart_pending = true;
           cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
-          session_notice.push(session_notice_preset_apply(preset_before, cfg.renodx_preset, cfg.nr_pass_count),
-                              now);
+          write_restart_toast(session_notice_preset_apply(preset_before, cfg.renodx_preset, cfg.nr_pass_count));
           overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
           append_log(cfg.log_dir, std::string("cfg preset restart → ") +
                                       renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count));
@@ -1674,10 +1675,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           cfg_restart_pending = true;
           cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
           const bool motor = (plan == SessionCfgApply::RelaunchMotor);
-          session_notice.push(motor ? session_notice_dlss5_motor_swap(act.pass_count_before, cfg.nr_pass_count)
+          write_restart_toast(motor ? session_notice_dlss5_motor_swap(act.pass_count_before, cfg.nr_pass_count)
                                     : session_notice_nr_pass_count_apply(act.pass_count_before,
-                                                                         cfg.nr_pass_count),
-                              now);
+                                                                         cfg.nr_pass_count));
           append_log(cfg.log_dir, std::string(motor ? "cfg motor swap → " : "cfg pass count restart → ") +
                                       nr_pass_count_label(cfg.nr_pass_count));
         } else {
@@ -1709,12 +1709,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           cfg_restart_kind = SessionCfgApply::RelaunchFeedScale;
           cfg_restart_pending = true;
           cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
-          session_notice.push(
-              session_notice_feed_scale_apply(
-                  effective_scale_percent(renodx_now, feed_locked_scale, cfg.nr_pass_count, info.width,
-                                         info.height),
-                  effective_scale_percent(renodx_now, want_scale, cfg.nr_pass_count, info.width, info.height)),
-              now);
+          write_restart_toast(session_notice_feed_scale_apply(
+              effective_scale_percent(renodx_now, feed_locked_scale, cfg.nr_pass_count, info.width, info.height),
+              effective_scale_percent(renodx_now, want_scale, cfg.nr_pass_count, info.width, info.height)));
           append_log(cfg.log_dir, "cfg feed scale → " + std::to_string(want_scale) + "% (reinicio)");
         } else {
           cfg.scale_percent = want_scale;
@@ -1800,6 +1797,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     // Sessão de volta na tela: só agora o aviso de reinício pode sair.
     // No teste, o aviso fica até o DLSS 5 ligar — o relógio não começa no 1º frame.
     if (presented == 1 && g_restart_notice.visible() && !cfg.perf_test) g_restart_notice.destroy();
+    if (presented == 1 && !session_boot_toast.empty()) {
+      session_notice.push(session_boot_toast, now);
+      session_boot_toast.clear();
+    }
     if (cfg.perf_test && !perf_scoring) {
       if (g_restart_notice.visible()) g_restart_notice.pump();
       if (perf_hold_t0 <= 0) perf_hold_t0 = now;

@@ -1266,6 +1266,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       motor_swap_args = g_open_gear ? lobby_cfg_relaunch_args() : "";
       motor_swap_pending = true;
       motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+      write_restart_toast(std::string("Preset aplicado: ") + p.name);
     } else if (live) {
       preview.set_visual_preview(settings.renodx_preset, want);
       if (plan.look_changed) {
@@ -1289,7 +1290,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     }
     if (plan.fg_missing) {
       push_lobby_toast(session_notice_fg_missing());
-    } else {
+    } else if (!(plan.pass_relaunch && live)) {
       push_lobby_toast(std::string("Preset aplicado: ") + p.name + (live ? "" : " — no Iniciar"));
     }
   };
@@ -1305,7 +1306,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       push_lobby_toast("RenoDX incompleto (dxgi/addon/feed). Reinstale o Nexus Cap ou use Abrir logs.");
     }
   }
-  if (!cfg.lobby_boot_toast.empty()) {
+  if (auto t = take_restart_toast(); !t.empty()) {
+    push_lobby_toast(std::move(t));
+  } else if (!cfg.lobby_boot_toast.empty()) {
     push_lobby_toast(std::move(cfg.lobby_boot_toast));
     cfg.lobby_boot_toast.clear();
   }
@@ -1707,6 +1710,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             motor_swap_args = g_open_gear ? lobby_cfg_relaunch_args() : "";
             motor_swap_pending = true;
             motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+            write_restart_toast(lobby_preview_cfg_pipeline_hold_line(live));
           };
           if (ImGui::SmallButton(pv)) {
             const bool pipeline_was =
@@ -1956,7 +1960,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
             motor_swap_title = lobby_pipeline_hold_title();
             motor_swap_line = "Janela + DLSS 5 entram na sessao";
-            push_lobby_toast(session_notice_lobby_iniciar_apply());
+            write_restart_toast(session_notice_lobby_iniciar_apply());
             (void)session_scale;
           }
         } else {
@@ -1992,7 +1996,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           motor_swap_line = std::to_string(effective_scale_percent(true, feed_loaded_scale)) + "%  \xE2\x86\x92  " +
                             std::to_string(effective_scale_percent(true, session_scale, settings.nr_pass_count,
                                                                    settings.width, settings.height)) + "%";
-          push_lobby_toast(session_notice_feed_scale_apply(effective_scale_percent(true, feed_loaded_scale),
+          write_restart_toast(session_notice_feed_scale_apply(effective_scale_percent(true, feed_loaded_scale),
                                                           effective_scale_percent(true, session_scale,
                                                                                   settings.nr_pass_count,
                                                                                   settings.width,
@@ -2000,7 +2004,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         } else {
           motor_swap_title = lobby_pipeline_hold_title();
           motor_swap_line = "DLSS 5, preset e escala do CFG entram na sessao";
-          push_lobby_toast(session_notice_lobby_iniciar_apply());
+          write_restart_toast(session_notice_lobby_iniciar_apply());
         }
         }
       }
@@ -2237,7 +2241,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           }
           if (feed_scale_change_needs_relaunch(true, feed_loaded_scale, settings.scale_percent,
                                                settings.nr_pass_count, settings.width, settings.height)) {
-            ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "Feed ativo em %d%% — Iniciar aplica %d%% (reinicio)",
+            ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "Feed ativo em %d%%: Iniciar aplica %d%% (reinicio)",
                                effective_scale_percent(true, feed_loaded_scale), eff_scale);
           }
         } else {
@@ -2371,7 +2375,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             motor_swap_args = lobby_cfg_relaunch_args();
             motor_swap_pending = true;
             motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
-            push_lobby_toast(motor_change
+            write_restart_toast(motor_change
                                  ? session_notice_dlss5_motor_swap(pass_before, settings.nr_pass_count)
                                  : session_notice_nr_pass_count_apply(pass_before, settings.nr_pass_count));
           } else if (lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)) {
@@ -3084,7 +3088,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "%s", motor_swap_title.c_str());
         ImGui::Spacing();
         ImGui::TextUnformatted(motor_swap_line.c_str());
-        ImGui::TextDisabled("Feed + RenoDX reiniciam — aguarde…");
+        ImGui::TextDisabled("Feed + RenoDX reiniciam: aguarde...");
         const double left = (std::max)(0.0, motor_swap_until - ImGui::GetTime());
         ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.f, 1.f), "%.1fs", left);
       }
@@ -3109,7 +3113,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       if (relaunch_current_process(motor_swap_args.empty() ? nullptr : motor_swap_args.c_str())) {
         ExitProcess(0);
       }
-      push_lobby_toast("Falha ao reiniciar — feche e abra o NexusCap");
+      push_lobby_toast("Falha ao reiniciar: feche e abra o NexusCap");
     }
   }
 

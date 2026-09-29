@@ -1894,6 +1894,27 @@ TEST_CASE("session notices for FG enable/up and NR on/off") {
   CHECK(n.visible(2700.0) == session_notice_nr_on());
 }
 
+TEST_CASE("restart toast is one-shot on disk so Pass Count survives relaunch") {
+  auto dir = std::filesystem::temp_directory_path() / "nexuscap_toast_ut";
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::create_directories(dir, ec);
+  const auto path = (dir / "boot_toast.txt").string();
+  const std::string pass = session_notice_nr_pass_count_apply(1, 2);
+  CHECK(write_restart_toast_in(path, pass));
+  CHECK(take_restart_toast_in(path) == pass);
+  CHECK(take_restart_toast_in(path).empty());
+  CHECK(write_restart_toast_in(path, session_notice_preset_apply(0, 2, 1)));
+  CHECK(write_restart_toast_in(path, ""));
+  CHECK(take_restart_toast_in(path).empty());
+  CHECK(write_restart_toast_in(path, session_notice_feed_scale_apply(100, 50)));
+  CHECK(take_restart_toast_in(path).find("50%") != std::string::npos);
+  CHECK(write_restart_toast_in(path, session_notice_nr_apply(false)));
+  CHECK(take_restart_toast_in(path) == session_notice_nr_apply(false));
+  CHECK(restart_toast_path().find("boot_toast.txt") != std::string::npos);
+  std::filesystem::remove_all(dir, ec);
+}
+
 TEST_CASE("session_start records fg fields") {
   AnalyzeWriter a;
   SessionInfo info;
@@ -3853,19 +3874,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(5, 1, 1));
+  CHECK(app_version_is(5, 1, 2));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "5.1.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v5.1.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-5.1.1");
+  CHECK(std::string(kAppVersion) == "5.1.2");
+  CHECK(std::strstr(kAppNameWithVersion, "v5.1.2") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-5.1.2");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("5.1.1") != std::string::npos);
+  CHECK(lobby_t.find("5.1.2") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("5.1.1") != std::string::npos);
+  CHECK(sess_t.find("5.1.2") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v5.1.1 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v5.1.2 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
@@ -5486,6 +5507,7 @@ TEST_CASE("session CFG NR on/off restarts on every RenoDX motor") {
   const std::string off = session_notice_nr_apply(false);
   CHECK(on.find("ON") != std::string::npos);
   CHECK(off.find("OFF") != std::string::npos);
+  CHECK(on.find("DLSS 5") != std::string::npos);
   CHECK(on.find("reinicio") != std::string::npos);
 }
 
@@ -5817,6 +5839,15 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(preset != pass);
   CHECK(nr != preset);
   CHECK(pass.find("sessao") != std::string::npos);
+  CHECK(motor.find("\xE2\x80\x94") == std::string::npos);
+  CHECK(pass.find("\xE2\x80\x94") == std::string::npos);
+  CHECK(session_notice_nr_pass_count_apply(1, 2).find("\xE2\x80\x94") == std::string::npos);
+  CHECK(session_notice_nr_apply(true).find("\xE2\x80\x94") == std::string::npos);
+  CHECK(session_notice_preset_apply(0, 2).find("\xE2\x80\x94") == std::string::npos);
+  CHECK(session_notice_feed_scale_apply(100, 50).find("\xE2\x80\x94") == std::string::npos);
+  CHECK(session_notice_lobby_iniciar_apply().find("\xE2\x80\x94") == std::string::npos);
+  CHECK(perf_test_pipeline_notice_detail().find("\xE2\x80\x94") == std::string::npos);
+  CHECK(perf_test_pipeline_fail_detail().find("\xE2\x80\x94") == std::string::npos);
   const std::string preset_toast = session_notice_preset_apply(0, 2);
   CHECK(preset_toast.find("Model A") != std::string::npos);
   CHECK(preset_toast.find("Model C") != std::string::npos);
@@ -7923,7 +7954,7 @@ TEST_CASE("window capture list filter and factory gate") {
   CHECK(window_capture_is_self_class("NexusCapLobby"));
   CHECK(window_capture_is_self_class("NexusCapWnd"));
   CHECK_FALSE(window_capture_is_self_class("PCSX2"));
-  CHECK(window_capture_is_self_title("Nexus Cap v5.1.1"));
+  CHECK(window_capture_is_self_title("Nexus Cap v5.1.2"));
   CHECK_FALSE(window_capture_is_self_title("YouTube"));
   CHECK(window_title_matches_capture("PCSX2 v2.2", "PCSX2"));
   CHECK(window_title_matches_capture("YouTube - Chrome", "YouTube - Chrome"));

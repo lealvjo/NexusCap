@@ -17,8 +17,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -431,6 +433,53 @@ void RendererD3D11::resize(int width, int height) {
   ComPtr<ID3D11Texture2D> back;
   impl_->swap->GetBuffer(0, IID_PPV_ARGS(&back));
   impl_->device->CreateRenderTargetView(back.Get(), nullptr, &impl_->rtv);
+}
+
+bool RendererD3D11::recycle_swapchain() {
+  if (!impl_ || !impl_->device || !impl_->ctx || !hwnd_ || back_w_ < 1 || back_h_ < 1) return false;
+  impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+  impl_->ctx->Flush();
+  impl_->rtv.Reset();
+  impl_->swap.Reset();
+
+  ComPtr<IDXGIDevice> dxgi_dev;
+  impl_->device.As(&dxgi_dev);
+  if (!dxgi_dev) return false;
+  ComPtr<IDXGIAdapter> adapter;
+  dxgi_dev->GetAdapter(&adapter);
+  ComPtr<IDXGIFactory2> factory;
+  if (!adapter || FAILED(adapter->GetParent(IID_PPV_ARGS(&factory))) || !factory) return false;
+
+  DXGI_SWAP_CHAIN_DESC1 sc{};
+  sc.Width = static_cast<UINT>(back_w_);
+  sc.Height = static_cast<UINT>(back_h_);
+  sc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  sc.SampleDesc.Count = 1;
+  sc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+  sc.BufferCount = 2;
+  sc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+  sc.Scaling = DXGI_SCALING_STRETCH;
+  sc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+  sc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+  HRESULT hr = factory->CreateSwapChainForHwnd(impl_->device.Get(), hwnd_, &sc, nullptr, nullptr, &impl_->swap);
+  if (FAILED(hr)) {
+    sc.BufferCount = 1;
+    sc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+    sc.Flags = 0;
+    hr = factory->CreateSwapChainForHwnd(impl_->device.Get(), hwnd_, &sc, nullptr, nullptr, &impl_->swap);
+  }
+  if (FAILED(hr) || !impl_->swap) return false;
+  swap_flags_ = sc.Flags;
+  swap_waitable_ = (swap_flags_ & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) != 0;
+  if (swap_waitable_) {
+    ComPtr<IDXGISwapChain2> sc2;
+    if (SUCCEEDED(impl_->swap.As(&sc2)) && sc2) sc2->SetMaximumFrameLatency(1);
+  }
+  factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
+  ComPtr<ID3D11Texture2D> back;
+  if (FAILED(impl_->swap->GetBuffer(0, IID_PPV_ARGS(&back))) || !back) return false;
+  if (FAILED(impl_->device->CreateRenderTargetView(back.Get(), nullptr, &impl_->rtv))) return false;
+  return true;
 }
 
 bool RendererD3D11::create_pipeline(std::string& err) {
@@ -1995,13 +2044,139 @@ LRESULT CALLBACK MetricsHud::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
 
 namespace {
 constexpr wchar_t kRestartNoticeClass[] = L"NexusCapRestartNotice";
-constexpr int kRestartNoticeW = 900;
-constexpr int kRestartNoticeH = 150;
+constexpr int kRestartNoticeCardW = 900;
+constexpr int kRestartNoticeCardH = 150;
+#ifndef PW_RENDERFULLCONTENT
+constexpr UINT kPrintFull = 0x00000002u;
+#else
+constexpr UINT kPrintFull = PW_RENDERFULLCONTENT;
+#endif
+
+std::wstring hold_path_w(const std::string& utf8) { return utf8_to_wide_hud(utf8); }
+
+bool write_bmp32(const std::wstring& path, HBITMAP bmp) {
+  BITMAP bm{};
+  if (!GetObjectW(bmp, sizeof(bm), &bm) || bm.bmWidth < 1 || bm.bmHeight < 1) return false;
+  BITMAPINFOHEADER bi{};
+  bi.biSize = sizeof(bi);
+  bi.biWidth = bm.bmWidth;
+  bi.biHeight = -bm.bmHeight;
+  bi.biPlanes = 1;
+  bi.biBitCount = 32;
+  bi.biCompression = BI_RGB;
+  const std::size_t stride = static_cast<std::size_t>(bm.bmWidth) * 4u;
+  std::vector<std::uint8_t> bits(stride * static_cast<std::size_t>(bm.bmHeight));
+  HDC hdc = GetDC(nullptr);
+  BITMAPINFO info{};
+  info.bmiHeader = bi;
+  const int got = GetDIBits(hdc, bmp, 0, static_cast<UINT>(bm.bmHeight), bits.data(), &info, DIB_RGB_COLORS);
+  ReleaseDC(nullptr, hdc);
+  if (got < 1) return false;
+  BITMAPFILEHEADER fh{};
+  fh.bfType = 0x4D42;
+  fh.bfOffBits = static_cast<DWORD>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER));
+  fh.bfSize = fh.bfOffBits + static_cast<DWORD>(bits.size());
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, path.c_str(), L"wb") != 0 || !f) return false;
+  fwrite(&fh, sizeof(fh), 1, f);
+  fwrite(&bi, sizeof(bi), 1, f);
+  fwrite(bits.data(), 1, bits.size(), f);
+  fclose(f);
+  return true;
+}
 }  // namespace
+
+bool save_motor_hold_from_hwnd(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd)) return false;
+  RECT wr{};
+  if (!GetWindowRect(hwnd, &wr)) return false;
+  const int w = wr.right - wr.left;
+  const int h = wr.bottom - wr.top;
+  if (w < 2 || h < 2) return false;
+  HDC screen = GetDC(nullptr);
+  if (!screen) return false;
+  HDC mem = CreateCompatibleDC(screen);
+  HBITMAP bmp = CreateCompatibleBitmap(screen, w, h);
+  HGDIOBJ old = SelectObject(mem, bmp);
+  bool ok = BitBlt(mem, 0, 0, w, h, screen, wr.left, wr.top, SRCCOPY) != FALSE;
+  if (!ok) ok = PrintWindow(hwnd, mem, kPrintFull) != FALSE;
+  SelectObject(mem, old);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  if (!ok || !bmp) {
+    if (bmp) DeleteObject(bmp);
+    return false;
+  }
+  const bool saved = write_bmp32(hold_path_w(motor_hold_bmp_path()), bmp);
+  DeleteObject(bmp);
+  return saved;
+}
+
+void write_motor_hold_ready() {
+  const std::wstring p = hold_path_w(motor_hold_ready_path());
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, p.c_str(), L"wb") != 0 || !f) return;
+  fputs("ready\n", f);
+  fclose(f);
+}
+
+void reset_motor_hold_ready() {
+  const std::wstring p = hold_path_w(motor_hold_ready_path());
+  if (!p.empty()) DeleteFileW(p.c_str());
+}
+
+void clear_motor_hold_files() {
+  const std::wstring bmp = hold_path_w(motor_hold_bmp_path());
+  const std::wstring ready = hold_path_w(motor_hold_ready_path());
+  if (!bmp.empty()) DeleteFileW(bmp.c_str());
+  if (!ready.empty()) DeleteFileW(ready.c_str());
+}
+
+bool motor_hold_image_exists() {
+  const std::wstring p = hold_path_w(motor_hold_bmp_path());
+  if (p.empty()) return false;
+  return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool wait_motor_hold_ready(int timeout_ms, RestartNotice* notice) {
+  const std::wstring p = hold_path_w(motor_hold_ready_path());
+  if (p.empty()) return false;
+  const DWORD t0 = GetTickCount();
+  const DWORD lim = timeout_ms < 1 ? 1u : static_cast<DWORD>(timeout_ms);
+  while (GetTickCount() - t0 < lim) {
+    if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) return true;
+    if (notice) notice->pump();
+    Sleep(15);
+  }
+  return false;
+}
+
+void RestartNotice::release_hold_bmp() {
+  if (hold_bmp_) {
+    DeleteObject(hold_bmp_);
+    hold_bmp_ = nullptr;
+  }
+  hold_w_ = hold_h_ = 0;
+}
+
+void RestartNotice::load_hold_bmp() {
+  release_hold_bmp();
+  const std::wstring p = hold_path_w(motor_hold_bmp_path());
+  if (p.empty()) return;
+  hold_bmp_ = static_cast<HBITMAP>(LoadImageW(nullptr, p.c_str(), IMAGE_BITMAP, 0, 0,
+                                              LR_LOADFROMFILE | LR_CREATEDIBSECTION));
+  if (!hold_bmp_) return;
+  BITMAP bm{};
+  if (GetObjectW(hold_bmp_, sizeof(bm), &bm)) {
+    hold_w_ = bm.bmWidth;
+    hold_h_ = bm.bmHeight;
+  }
+}
 
 bool RestartNotice::show(HINSTANCE hi, const std::string& title, const std::string& detail) {
   title_ = utf8_to_wide_hud(title);
   detail_ = utf8_to_wide_hud(detail);
+  load_hold_bmp();
   if (hwnd_) {
     InvalidateRect(hwnd_, nullptr, FALSE);
     pump();
@@ -2017,12 +2192,9 @@ bool RestartNotice::show(HINSTANCE hi, const std::string& title, const std::stri
 
   const int sw = GetSystemMetrics(SM_CXSCREEN);
   const int sh = GetSystemMetrics(SM_CYSCREEN);
-  const int x = (std::max)(0, (sw - kRestartNoticeW) / 2);
-  const int y = (std::max)(0, (sh - kRestartNoticeH) / 2);
-  // Sem owner: a janela de captura pode morrer que este aviso continua na tela.
+  // GDI em ecrã inteiro: cobre a sessão a morrer. Sem D3D, sem segunda janela de motor.
   hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kRestartNoticeClass,
-                          L"NexusCap", WS_POPUP, x, y, kRestartNoticeW, kRestartNoticeH, nullptr, nullptr, hi,
-                          this);
+                          L"NexusCap", WS_POPUP, 0, 0, sw, sh, nullptr, nullptr, hi, this);
   if (!hwnd_) return false;
   ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
   pump();
@@ -2034,6 +2206,7 @@ void RestartNotice::destroy() {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
+  release_hold_bmp();
 }
 
 void RestartNotice::pump() const {
@@ -2050,13 +2223,31 @@ void RestartNotice::pump() const {
 void RestartNotice::paint(HDC hdc) const {
   RECT rc{};
   GetClientRect(hwnd_, &rc);
-  HBRUSH bg = CreateSolidBrush(RGB(14, 18, 26));
+  if (hold_bmp_ && hold_w_ > 0 && hold_h_ > 0) {
+    HDC mem = CreateCompatibleDC(hdc);
+    HGDIOBJ old = SelectObject(mem, hold_bmp_);
+    SetStretchBltMode(hdc, HALFTONE);
+    StretchBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, hold_w_, hold_h_, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    return;
+  }
+  HBRUSH bg = CreateSolidBrush(RGB(8, 10, 14));
   FillRect(hdc, &rc, bg);
   DeleteObject(bg);
+
+  const int card_w = kRestartNoticeCardW;
+  const int card_h = kRestartNoticeCardH;
+  const int x = (std::max)(0, static_cast<int>(rc.right - card_w) / 2);
+  const int y = (std::max)(0, static_cast<int>(rc.bottom - card_h) / 2);
+  RECT card{x, y, x + card_w, y + card_h};
+  HBRUSH card_bg = CreateSolidBrush(RGB(14, 18, 26));
+  FillRect(hdc, &card, card_bg);
+  DeleteObject(card_bg);
   HPEN edge = CreatePen(PS_SOLID, 2, RGB(240, 180, 65));
   HGDIOBJ old_pen = SelectObject(hdc, edge);
   HGDIOBJ old_brush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-  Rectangle(hdc, 0, 0, rc.right, rc.bottom);
+  Rectangle(hdc, card.left, card.top, card.right, card.bottom);
   SelectObject(hdc, old_pen);
   SelectObject(hdc, old_brush);
   DeleteObject(edge);
@@ -2066,7 +2257,7 @@ void RestartNotice::paint(HDC hdc) const {
                           CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
   HFONT old = static_cast<HFONT>(SelectObject(hdc, big));
   SetTextColor(hdc, RGB(255, 210, 110));
-  TextOutW(hdc, 28, 30, title_.c_str(), static_cast<int>(title_.size()));
+  TextOutW(hdc, x + 28, y + 30, title_.c_str(), static_cast<int>(title_.size()));
   SelectObject(hdc, old);
   DeleteObject(big);
 
@@ -2075,7 +2266,7 @@ void RestartNotice::paint(HDC hdc) const {
                                  DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
   old = static_cast<HFONT>(SelectObject(hdc, small_font));
   SetTextColor(hdc, RGB(205, 225, 250));
-  TextOutW(hdc, 28, 80, detail_.c_str(), static_cast<int>(detail_.size()));
+  TextOutW(hdc, x + 28, y + 80, detail_.c_str(), static_cast<int>(detail_.size()));
   SelectObject(hdc, old);
   DeleteObject(small_font);
 }

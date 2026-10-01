@@ -592,25 +592,25 @@ inline SessionCfgApply plan_session_cfg_nr_apply(bool renodx_stack, bool multipa
   return SessionCfgApply::RecycleWorker;
 }
 
-// Aviso de reinício: sessão, teardown e boot do processo novo mostram o mesmo texto.
-inline std::string session_restart_notice_title() { return "Otimizando o pipeline"; }
+// Aviso na troca de X: a imagem fica; o motor novo le o INI.
+inline std::string session_restart_notice_title() { return "A aplicar o motor"; }
 inline std::string lobby_pipeline_hold_title() { return session_restart_notice_title(); }
 inline std::string session_restart_notice_detail(SessionCfgApply a) {
   switch (a) {
     case SessionCfgApply::RecycleWorker:
-      return "A aplicar o motor — a imagem volta";
+      return "A tela fica.";
     case SessionCfgApply::RelaunchMotor:
-      return "Motor do pipeline: volto para a sessao";
+      return "Motor: a tela fica.";
     case SessionCfgApply::RelaunchPassCount:
-      return "Pass Count do pipeline: volto para a sessao";
+      return "Pass Count: a tela fica.";
     case SessionCfgApply::RelaunchFeedScale:
-      return "Escala do Feed: volto para a sessao";
+      return "Escala do Feed: a tela fica.";
     case SessionCfgApply::RelaunchPreset:
-      return "Preset visual: volto para a sessao";
+      return "Preset visual: a tela fica.";
     case SessionCfgApply::RelaunchNr:
-      return "Neural Rendering: volto para a sessao";
+      return "Neural Rendering: a tela fica.";
     default:
-      return "Motor do pipeline: volto para a sessao";
+      return "A tela fica.";
   }
 }
 inline bool restart_notice_visible_at_boot(bool autostart) { return autostart; }
@@ -689,19 +689,19 @@ inline std::string session_notice_fg_confirmed_on(int mult) {
   return std::string("Frame Gen ON — Confirmado x") + std::to_string(clamp_fg_multiplier(mult));
 }
 inline std::string session_notice_dlss5_motor_swap(int from_pass, int to_pass) {
-  return std::string("Otimizando o pipeline: ") + nr_pass_count_label(from_pass) + " → " +
-         nr_pass_count_label(to_pass) + " (motor)";
+  return std::string("A aplicar o motor: ") + nr_pass_count_label(from_pass) + " → " +
+         nr_pass_count_label(to_pass);
 }
 inline std::string session_notice_nr_pass_count_apply(int from_pass, int to_pass) {
-  return std::string("Otimizando o pipeline: ") + nr_pass_count_label(from_pass) + " → " +
-         nr_pass_count_label(to_pass) + " (Pass Count)";
+  return std::string("A aplicar Pass Count: ") + nr_pass_count_label(from_pass) + " → " +
+         nr_pass_count_label(to_pass);
 }
 inline std::string session_notice_preset_apply(int from_preset, int to_preset, int pass_count = 1) {
   return std::string("Aplicando preset: ") + renodx_visual_preset_name(from_preset, pass_count) + " → " +
-         renodx_visual_preset_name(to_preset, pass_count) + " (reinicio)";
+         renodx_visual_preset_name(to_preset, pass_count);
 }
 inline std::string session_notice_nr_apply(bool want_on) {
-  return std::string("Aplicando DLSS 5: ") + (want_on ? "ON" : "OFF") + " (reinicio)";
+  return std::string("Aplicando DLSS 5: ") + (want_on ? "ON" : "OFF");
 }
 inline std::string session_notice_nr_hotkey_unavailable(int pass_count) {
   return std::string("Neural Rendering sempre ON em ") + nr_pass_count_label(pass_count) +
@@ -717,7 +717,7 @@ inline std::string session_notice_cfg_closed() {
 }
 inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
   return std::string("Aplicando escala do Feed: ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +
-         std::to_string(clamp_scale_percent(to_pct)) + "% (reinicio)";
+         std::to_string(clamp_scale_percent(to_pct)) + "%";
 }
 inline std::string session_notice_lobby_iniciar_apply() {
   return "Aplicando configuracao: DLSS 5, preset e escala do CFG entram na sessao";

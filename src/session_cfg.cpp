@@ -294,7 +294,7 @@ void SessionCfgOverlay::draw_panel() {
     if (!state.renodx_stack) {
       ImGui::TextColored(kWarn, "Sem RenoDX nesta sessao - marque RenoDX no lobby.");
     } else {
-      ImGui::TextDisabled(state.nr_busy ? "Aplicando..." : "Delete ou este check reinicia e volta para a sessao.");
+      ImGui::TextDisabled(state.nr_busy ? "Aplicando..." : "Delete ou este check aplica na sessao.");
     }
 
     ImGui::BeginDisabled(!state.renodx_stack);
@@ -309,7 +309,7 @@ void SessionCfgOverlay::draw_panel() {
     if (ImGui::RadioButton(renodx_visual_preset_name(2, state.nr_pass_count), preset == 2)) preset = 2;
     state.renodx_preset = clamp_renodx_visual_preset(preset);
     if (state.renodx_preset != preset_before) actions_.preset_changed = true;
-    ImGui::TextColored(kWarn, "Trocar o preset reinicia o app e volta para a sessao.");
+    ImGui::TextColored(kWarn, "Trocar o preset aplica na sessao.");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Pass Count");
@@ -341,7 +341,7 @@ void SessionCfgOverlay::draw_panel() {
     ImGui::TextDisabled("%s", nr_pass_count_2x_opt_hint());
     ImGui::TextDisabled("%s", nr_pass_count_23x_hint());
     // O addon só lê o PassCount no init: qualquer troca aqui passa por processo novo.
-    ImGui::TextColored(kWarn, "Trocar o Pass Count reinicia o app e volta para a sessao.");
+    ImGui::TextColored(kWarn, "Trocar o Pass Count aplica na sessao.");
     ImGui::EndDisabled();
 
     ImGui::Separator();
@@ -433,7 +433,7 @@ void SessionCfgOverlay::draw_panel() {
       ImGui::EndCombo();
     }
     ImGui::TextDisabled("0 menor latencia. Se o FG estiver ligado, reabre o Lossless.");
-    ImGui::TextDisabled(state.fg_busy ? "Aplicando..." : "Nao reinicia o NexusCap.");
+    ImGui::TextDisabled(state.fg_busy ? "Aplicando..." : "Frame Gen entra ao vivo.");
     ImGui::EndDisabled();
 
     ImGui::Separator();
@@ -454,12 +454,12 @@ void SessionCfgOverlay::draw_panel() {
                                                                  want, state.nr_pass_count, state.signal_w,
                                                                  state.signal_h);
     if (scale_restarts) {
-      ImGui::TextColored(kWarn, "Feed ativo em %d%% - aplicar reinicia e volta para a sessao.",
+      ImGui::TextColored(kWarn, "Feed ativo em %d%% - aplicar na sessao.",
                          effective_scale_percent(state.renodx_stack, state.feed_loaded_scale,
                                                 state.nr_pass_count, state.signal_w, state.signal_h));
     }
     ImGui::BeginDisabled(want == clamp_scale_percent(state.scale_percent) && !scale_restarts);
-    if (ImGui::Button(scale_restarts ? "Aplicar escala (reinicio)" : "Aplicar escala", ImVec2(240, 0))) {
+    if (ImGui::Button("Aplicar escala", ImVec2(240, 0))) {
       actions_.scale_before = clamp_scale_percent(state.scale_percent);
       state.scale_percent = want;
       actions_.scale_apply = true;

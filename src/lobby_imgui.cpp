@@ -12,6 +12,7 @@
 #include "nexuscap/imgui_theme.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/perf_test.hpp"
+#include "nexuscap/pipeline.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/system_metrics.hpp"
 #include "nexuscap/user_preset.hpp"
@@ -1054,6 +1055,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   int watermark_w = 0, watermark_h = 0;
   create_watermark_srv(g_dx.device, &watermark_srv, &watermark_w, &watermark_h);
 
+  pipeline_global().stop();
   LobbyPreview preview;
   AudioMonitor lobby_audio;
   bool lobby_audio_want = false;
@@ -1199,6 +1201,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   std::string motor_swap_title = lobby_pipeline_hold_title();
   std::string motor_swap_line;
   std::string motor_swap_args;  // "--autostart" resumes the session after the restart
+  bool motor_swap_refresh_lobby = false;
   auto push_lobby_toast = [&](std::string msg) {
     if (msg.empty()) return;
     lobby_toast = std::move(msg);
@@ -1708,6 +1711,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             motor_swap_title = lobby_pipeline_hold_title();
             motor_swap_line = lobby_preview_cfg_pipeline_hold_line(live);
             motor_swap_args = g_open_gear ? lobby_cfg_relaunch_args() : "";
+            motor_swap_refresh_lobby = true;
             motor_swap_pending = true;
             motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
             write_restart_toast(lobby_preview_cfg_pipeline_hold_line(live));
@@ -2241,7 +2245,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           }
           if (feed_scale_change_needs_relaunch(true, feed_loaded_scale, settings.scale_percent,
                                                settings.nr_pass_count, settings.width, settings.height)) {
-            ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "Feed ativo em %d%%: Iniciar aplica %d%% (reinicio)",
+            ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "Feed ativo em %d%%: Iniciar aplica %d%%",
                                effective_scale_percent(true, feed_loaded_scale), eff_scale);
           }
         } else {
@@ -2386,17 +2390,20 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
               nr_boot_retries = 120;
             }
           } else {
+            std::string serr;
+            save_settings(settings, settings_default_path(), serr);
+            gear_snapshot = settings;
             (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset);
             push_lobby_toast(std::string("Pass Count: ") + nr_pass_count_label(settings.nr_pass_count) +
                              " — no Iniciar");
           }
         }
+        ImGui::TextDisabled("%s", nr_pass_count_1x_hint());
         ImGui::TextDisabled("%s", nr_pass_count_15x_hint());
-        ImGui::TextDisabled("%s", nr_pass_count_15x_plus_hint());
         ImGui::TextDisabled("%s", nr_pass_count_2x_opt_hint());
         ImGui::TextDisabled("%s", nr_pass_count_23x_hint());
         ImGui::TextDisabled("Escala do Feed e manual se quiseres menos carga.");
-        ImGui::TextDisabled("Delete ou Ctrl+M liga/desliga o NR na captura (reinicia e volta).");
+        ImGui::TextDisabled("Delete ou Ctrl+M liga/desliga o NR na captura (recicla o motor).");
         ImGui::EndDisabled();
 
         ImGui::Separator();
@@ -3084,9 +3091,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextColored(ImVec4(1.f, 0.82f, 0.35f, 1.f), "%s", motor_swap_title.c_str());
         ImGui::Spacing();
         ImGui::TextUnformatted(motor_swap_line.c_str());
-        ImGui::TextDisabled("Feed + RenoDX reiniciam: aguarde...");
-        const double left = (std::max)(0.0, motor_swap_until - ImGui::GetTime());
-        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.f, 1.f), "%.1fs", left);
+        ImGui::TextDisabled("A aplicar o motor...");
       }
       ImGui::End();
       ImGui::PopStyleVar(2);
@@ -3098,18 +3103,52 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     g_dx.ctx->OMSetRenderTargets(1, &g_dx.rtv, nullptr);
     g_dx.ctx->ClearRenderTargetView(g_dx.rtv, clear);
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-    // Uncapped Present — vsync Present(1) + full-res CPU preview decode locked ~30 fps.
-    g_dx.swap->Present(0, 0);
+    // Sem preview ao vivo o dxgi está parked: Present(0) disparava a GPU a 80% só no menu.
+    const UINT lobby_sync =
+        lobby_loads_reshade_dxgi(settings.ui.preview_enabled, settings.ui.preview_cfg_live,
+                                 settings.enhance_renodx)
+            ? 0u
+            : 1u;
+    g_dx.swap->Present(lobby_sync, 0);
 
     if (motor_swap_pending && ImGui::GetTime() >= motor_swap_until) {
       motor_swap_pending = false;
-      // Release the capture device before the new process claims it (exclusive).
-      preview.stop();
-      lobby_audio.stop();
-      if (relaunch_current_process(motor_swap_args.empty() ? nullptr : motor_swap_args.c_str())) {
-        ExitProcess(0);
+      if (lobby_hold_relaunch_starts_session(motor_swap_args.c_str())) {
+        preview.stop();
+        lobby_audio.stop();
+        pipeline_global().stop();
+        {
+          wchar_t exe_path[MAX_PATH]{};
+          GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+          (void)restore_reshade_dxgi(std::filesystem::path(exe_path).parent_path().string());
+        }
+        if (relaunch_current_process(motor_swap_args.c_str())) {
+          ExitProcess(0);
+        }
+        push_lobby_toast("Falha ao iniciar: feche e abra o NexusCap");
+      } else if (motor_swap_refresh_lobby) {
+        preview.stop();
+        lobby_audio.stop();
+        pipeline_global().stop();
+        {
+          wchar_t exe_path[MAX_PATH]{};
+          GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+          const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+          if (lobby_loads_reshade_dxgi(settings.ui.preview_enabled, settings.ui.preview_cfg_live,
+                                       settings.enhance_renodx)) {
+            (void)restore_reshade_dxgi(exe_dir);
+          }
+        }
+        motor_swap_refresh_lobby = false;
+        if (relaunch_current_process(motor_swap_args.empty() ? nullptr : motor_swap_args.c_str())) {
+          ExitProcess(0);
+        }
+        push_lobby_toast("Falha ao aplicar o preview");
+      } else {
+        // CFG/X no lobby so grava INI. O motor (dxgi) entra no Iniciar.
+        pipeline_global().stop();
+        push_lobby_toast("Guardado — o motor aplica no Iniciar");
       }
-      push_lobby_toast("Falha ao reiniciar: feche e abra o NexusCap");
     }
   }
 
@@ -3146,6 +3185,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
     // Session always needs Kernel→Feed→Sharpen on disk (ReShade may reload on next Present).
     sync_mgf_techniques_for_phase(exe_dir, /*session_or_live_preview=*/true);
+    (void)restore_reshade_dxgi(exe_dir);
   }
   apply_settings_to_cfg(settings, cfg);
   cfg.nr_runtime_on = nr_runtime_on;

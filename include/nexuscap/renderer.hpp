@@ -122,9 +122,8 @@ private:
   bool visible_ = true;
 };
 
-// "Otimizando o pipeline" — janela sem owner que sobrevive ao teardown da sessão e
-// reaparece no processo novo (--autostart) até o primeiro frame. Sem ela a tela apagava
-// e parecia que o app tinha fechado sozinho.
+// "A aplicar o motor" — janela sem owner que segura o ultimo frame (GDI) enquanto
+// o processo novo le o INI. Sem ela a tela apagava e parecia que o app tinha fechado.
 class RestartNotice {
 public:
   ~RestartNotice() { destroy(); }
@@ -132,15 +131,28 @@ public:
   void destroy();
   void pump() const;  // repinta enquanto a sessão está sendo desmontada
   bool visible() const { return hwnd_ != nullptr; }
+  bool has_hold_image() const { return hold_bmp_ != nullptr; }
 
 private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
   void paint(HDC hdc) const;
+  void load_hold_bmp();
+  void release_hold_bmp();
 
   HWND hwnd_ = nullptr;
   std::wstring title_;
   std::wstring detail_;
+  HBITMAP hold_bmp_ = nullptr;
+  int hold_w_ = 0;
+  int hold_h_ = 0;
 };
+
+bool save_motor_hold_from_hwnd(HWND hwnd);
+void write_motor_hold_ready();
+void reset_motor_hold_ready();
+void clear_motor_hold_files();
+bool motor_hold_image_exists();
+bool wait_motor_hold_ready(int timeout_ms, RestartNotice* notice = nullptr);
 
 // Right-edge live strip: console / DLSS 1x–3x+ / FG x2-x4|off / FPS / frametime sparkline.
 // Per-pixel alpha (UpdateLayeredWindow) — crisp on high-DPI; click opens console picker.
@@ -203,6 +215,8 @@ public:
   ID3D11DeviceContext* context() const;
   bool present_frame(const FramePayload& frame, OverlayState& overlay, double& present_ms, std::string& err);
   void present_black();
+  // Same HWND: destroi e cria a swapchain para o ReShade reler o INI sem fechar a janela.
+  bool recycle_swapchain();
   uint32_t swapchain_flags() const { return swap_flags_; }
   bool waitable() const { return swap_waitable_; }
 

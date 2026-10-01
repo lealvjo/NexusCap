@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `5.2.1` |
+| **Versão** | `6.0.0` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -20,16 +20,16 @@
 
 Distribua o **instalador** ou o **zip portable** — sem pasta manual, sem código:
 
-**[NexusCap-Setup-5.2.1.exe](https://github.com/lealvjo/NexusCap/releases)** — instala na conta, sem admin.
+**[NexusCap-Setup-6.0.0.exe](https://github.com/lealvjo/NexusCap/releases)** — instala na conta, sem admin.
 
-**[NexusCap-Portable-5.2.1.zip](https://github.com/lealvjo/NexusCap/releases)** — extrai e roda. Settings e presets viajam com a pasta.
+**[NexusCap-Portable-6.0.0.zip](https://github.com/lealvjo/NexusCap/releases)** — extrai e roda. Settings e presets viajam com a pasta.
 
 O setup e o zip **não ficam no git**; sobem na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. **Setup:** instalar `NexusCap-Setup-5.2.1.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
-   **Portable:** extrair `NexusCap-Portable-5.2.1.zip` numa pasta gravável (SSD; não use Program Files).
+1. **Setup:** instalar `NexusCap-Setup-6.0.0.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+   **Portable:** extrair `NexusCap-Portable-6.0.0.zip` numa pasta gravável (SSD; não use Program Files).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup nem no zip). Page Down no CFG.
 
@@ -54,7 +54,7 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-5.2.1.exe` **ou** `NexusCap-Portable-5.2.1.zip` na Release do GitHub.
+1. Baixe `NexusCap-Setup-6.0.0.exe` **ou** `NexusCap-Portable-6.0.0.zip` na Release do GitHub.
 2. Setup: execute (instala em `%LOCALAPPDATA%\NexusCap`, sem admin). Portable: extraia numa pasta gravável e abra `NexusCap.exe` — o `portable.txt` faz settings/presets/logs ficarem nessa pasta.
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -71,6 +71,12 @@ Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que a
 **Ctrl+M** na captura ou **F12** no lobby — a mesma lista. Um nome (até 50). Aplicar devolve o look inteiro: escala, FG, NR, cena, Pass, HUD.
 
 O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
+
+### Novidades 6.0.0
+
+- Troca de X / NR / preset / escala **aplica o motor com a tela no sítio**. O aviso é “A aplicar o motor”; a imagem fica.
+- Um GPU: captura, Present e ReShade 8.5 no mesmo processo. Sem segunda janela.
+- O 8.5 só lê o X quando nasce — a sessão volta com `--autostart`, nunca no lobby.
 
 ### Novidades 5.2.1
 
@@ -333,6 +339,29 @@ Muitos viewers “bonitos” **capturam a tela** (ou a janela de outro app) para
 ```
 
 Resultado: imagem estável, latência previsível, sem o “tranco” clássico de recapturar a própria saída.
+
+### Arquitetura 6.0 — a tela fica, o motor aplica
+
+O Krish 8.5 lê Pass Count e look **só no init**. Não dá para reler o X no processo vivo. A 5.x matava a janela inteira. A 6.0 separa o que vês do que lê o INI:
+
+```mermaid
+flowchart LR
+  HDMI[Console HDMI] --> Cap[NexusCap captura DShow / WGC]
+  Cap --> Present[Present + ReShade 8.5]
+  Present --> Tela[Janela visivel]
+  X[Troca de X / NR / preset / escala] --> Hold[GDI segura o ultimo frame]
+  Hold --> Novo[Processo novo le o INI]
+  Novo --> Present
+```
+
+| Peça | Quem é | O que faz |
+|------|--------|-----------|
+| **Janela / imagem** | GDI do último frame | Não apaga. Sem segunda tela GPU. |
+| **Motor** | O mesmo `NexusCap.exe` no Present | ReShade 8.5 ao lado do exe. Um GPU. |
+| **Sessão** | `--autostart` | Volta à captura, não ao lobby. |
+| **HDMI / FG** | Host, como na 5.x | FLIP_DISCARD, waitable, Flow 80, WGC, FG FIXED. |
+
+O lobby não carrega `dxgi`. Iniciar / Benchmark ainda nascem num processo cujo primeiro swapchain é a sessão. Troca de X no lobby só grava — o motor entra no Iniciar.
 
 ---
 

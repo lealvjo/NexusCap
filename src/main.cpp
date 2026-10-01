@@ -15,6 +15,7 @@
 #include "nexuscap/lobby.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/perf_test.hpp"
+#include "nexuscap/pipeline.hpp"
 #include "nexuscap/renderer.hpp"
 #include "nexuscap/session_cfg.hpp"
 #include "nexuscap/session_report.hpp"
@@ -292,6 +293,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                     renodx_nr_preset_index(cfg.renodx_preset),
                     renodx_feed_model_preset(cfg.renodx_preset, cfg.nr_pass_count));
       }
+      // Um GPU: ReShade no Present desta janela. O filho GPU (segunda tela) pesa e nao corre.
+      pipeline_global().stop();
     }
 
     // Sessão sempre reinicia no NR: o feed pode seguir o NeuralUplift. Se ficar
@@ -325,7 +328,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (!w.empty() && w.back() == 0) w.pop_back();
     return w;
   }();
-  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, session_title.c_str(), false);
+  const bool hold_boot = cfg.autostart && motor_hold_image_exists();
+  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, session_title.c_str(), hold_boot);
   if (!hwnd) {
     std::fprintf(stderr, "create window failed\n");
     return 1;
@@ -388,10 +392,15 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       wchar_t exe_path[MAX_PATH]{};
       GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
       fs::path exe_dir = fs::path(exe_path).parent_path();
-      const bool has_dxgi = fs::exists(exe_dir / "dxgi.dll");
-      const bool has_renodx = fs::exists(exe_dir / "addons-multipass" / "renodx-dlss5.addon64") ||
+      const fs::path worker = exe_dir / "worker";
+      const bool has_dxgi = fs::exists(worker / "dxgi.dll") || fs::exists(exe_dir / "dxgi.dll") ||
+                            fs::exists(exe_dir / "dxgi.session.dll");
+      const bool has_renodx = fs::exists(worker / "addons-multipass" / "renodx-dlss5.addon64") ||
+                              fs::exists(exe_dir / "addons-multipass" / "renodx-dlss5.addon64") ||
                               fs::exists(exe_dir / "renodx-dlss5.addon64");
-      const bool has_feed = fs::exists(exe_dir / "dlss5-feed.addon64") ||
+      const bool has_feed = fs::exists(worker / "dlss5-feed.addon64") ||
+                            fs::exists(worker / "addons-multipass" / "dlss5-feed.addon64") ||
+                            fs::exists(exe_dir / "dlss5-feed.addon64") ||
                             fs::exists(exe_dir / "addons-multipass" / "dlss5-feed.addon64");
       std::printf("enhance: backend=renodx (ReShade) dxgi=%d renodx=%d feed=%d\n", has_dxgi ? 1 : 0,
                   has_renodx ? 1 : 0, has_feed ? 1 : 0);
@@ -605,21 +614,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   info.dlss_mode = (cfg.enhance == EnhanceBackend::Renodx) ? "renodx-presets" : dlss_mode_name(cfg.dlss_mode);
   info.dlss_backend = (cfg.enhance == EnhanceBackend::Renodx) ? "renodx+feed" : enhance->backend_name();
   info.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
-
-  if (cfg.enhance == EnhanceBackend::Renodx && nr_pass_is_15x_plus(cfg.nr_pass_count) && info.width > 0 &&
-      info.height > 0) {
-    wchar_t exe_path[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-    const int want =
-        feed_work_resolution_for_session(cfg.scale_percent, cfg.nr_pass_count, info.width, info.height);
-    if (sync_feed_work_resolution_in_dir(fs::path(exe_path).parent_path().string(), want, cfg.nr_pass_count)) {
-      feed_locked_scale = want;
-      char fbuf[160];
-      std::snprintf(fbuf, sizeof(fbuf), "scale feed 1.7x work_resolution=%d cap=%dx%d", want, info.width,
-                    info.height);
-      append_log(cfg.log_dir, fbuf);
-    }
-  }
 
   LosslessFgController fg;
   const int boot_hz = display_refresh_hz(hwnd);
@@ -1024,9 +1018,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         overlay.renodx_on = want_on;
         info.dlss_enabled = want_on;
         (void)sync_neural_rendering_enabled_files(exe_dir.string(), want_on, /*feed_on=*/want_on);
-        cfg_restart_kind = SessionCfgApply::RelaunchNr;
+        cfg_restart_kind = plan_session_cfg_nr_apply(true, true);
         cfg_restart_pending = true;
-        cfg_restart_until = now_nr + kDlss5MotorSwapHoldSec * 1000.0;
+        cfg_restart_until = now_nr;
         write_restart_toast(session_notice_nr_apply(want_on));
         append_log(cfg.log_dir, std::string("cfg nr restart → ") + (want_on ? "ON" : "OFF"));
         std::printf("neural rendering %s (Delete→reinicio) — Frame Gen nao muda\n", want_on ? "ON" : "OFF");
@@ -1336,11 +1330,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     const double now = clock.now_ms();
     const double interval = now - prev_t;
     prev_t = now;
-    const double instant_fps = interval > 0 ? 1000.0 / interval : 0;
+    const double ft_sample = interval;
+    const double instant_fps = ft_sample > 0 ? 1000.0 / ft_sample : 0;
     fps_smooth = fps_smooth <= 0 ? instant_fps : (fps_smooth * 0.9 + instant_fps * 0.1);
 
     if (presented > 0) {
-      ft_win.push(interval);
+      ft_win.push(ft_sample);
       overlay.ft_avg_ms = ft_win.avg();
       overlay.ft_p95_ms = ft_win.p95();
       overlay.ft_max_ms = ft_win.max();
@@ -1450,8 +1445,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       cfg_ui.presets_locked = cfg.perf_test;
       if (cfg_restart_pending) {
         cfg_ui.set_restart_hold(session_restart_notice_title(),
-                                session_restart_notice_detail(cfg_restart_kind),
-                                (cfg_restart_until - now) / 1000.0);
+                                session_restart_notice_detail(cfg_restart_kind));
         g_cfg_open = false;
       }
     }
@@ -1639,9 +1633,17 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           cfg.renodx_preset = clamp_renodx_visual_preset(ui.renodx_preset);
           (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
           (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset, cfg.nr_pass_count);
-          cfg_restart_kind = SessionCfgApply::RelaunchPreset;
+          if (!cfg.perf_test) {
+            PersistedSettings ps = default_settings();
+            std::string serr;
+            load_settings(ps, settings_default_path(), serr);
+            ps.renodx_preset = cfg.renodx_preset;
+            ps.nr_pass_count = cfg.nr_pass_count;
+            save_settings(ps, settings_default_path(), serr);
+          }
+          cfg_restart_kind = plan_session_cfg_preset_apply(true);
           cfg_restart_pending = true;
-          cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
+          cfg_restart_until = now;
           write_restart_toast(session_notice_preset_apply(preset_before, cfg.renodx_preset, cfg.nr_pass_count));
           overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
           append_log(cfg.log_dir, std::string("cfg preset restart → ") +
@@ -1671,14 +1673,23 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
               exe_dir_cfg, feed_work_resolution_for_session(cfg.scale_percent, cfg.nr_pass_count, info.width,
                                                            info.height),
               cfg.nr_pass_count);
+          if (!cfg.perf_test) {
+            PersistedSettings ps = default_settings();
+            std::string serr;
+            load_settings(ps, settings_default_path(), serr);
+            ps.nr_pass_count = cfg.nr_pass_count;
+            ps.renodx_preset = cfg.renodx_preset;
+            ps.scale_percent = cfg.scale_percent;
+            save_settings(ps, settings_default_path(), serr);
+          }
           cfg_restart_kind = plan;
           cfg_restart_pending = true;
-          cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
+          cfg_restart_until = now;
           const bool motor = (plan == SessionCfgApply::RelaunchMotor);
           write_restart_toast(motor ? session_notice_dlss5_motor_swap(act.pass_count_before, cfg.nr_pass_count)
                                     : session_notice_nr_pass_count_apply(act.pass_count_before,
                                                                          cfg.nr_pass_count));
-          append_log(cfg.log_dir, std::string(motor ? "cfg motor swap → " : "cfg pass count restart → ") +
+          append_log(cfg.log_dir, std::string(motor ? "cfg motor swap → " : "cfg pass count recycle → ") +
                                       nr_pass_count_label(cfg.nr_pass_count));
         } else {
           cfg.nr_pass_count = clamp_nr_pass_count(ui.nr_pass_count);
@@ -1704,11 +1715,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                                                            info.height),
               cfg.nr_pass_count);
           append_log(cfg.log_dir, "cfg feed scale (com restart) → " + std::to_string(want_scale) + "%");
-        } else if (plan == SessionCfgApply::RelaunchFeedScale) {
+        } else if (plan == SessionCfgApply::RecycleWorker) {
           cfg.scale_percent = want_scale;
-          cfg_restart_kind = SessionCfgApply::RelaunchFeedScale;
+          cfg_restart_kind = SessionCfgApply::RecycleWorker;
           cfg_restart_pending = true;
-          cfg_restart_until = now + kDlss5MotorSwapHoldSec * 1000.0;
+          cfg_restart_until = now;
           write_restart_toast(session_notice_feed_scale_apply(
               effective_scale_percent(renodx_now, feed_locked_scale, cfg.nr_pass_count, info.width, info.height),
               effective_scale_percent(renodx_now, want_scale, cfg.nr_pass_count, info.width, info.height)));
@@ -1762,8 +1773,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
     }
 
-    // Aviso na tela do começo ao fim: contagem aqui, janela GDI no teardown, e de novo no boot.
+    // 8.5 só lê o X no init: GDI segura o último frame (sem GPU); o processo novo é o motor.
     if (cfg_restart_pending && now >= cfg_restart_until) {
+      (void)save_motor_hold_from_hwnd(hwnd);
       g_restart_notice.show(hi, session_restart_notice_title(),
                             session_restart_notice_detail(cfg_restart_kind));
       append_log(cfg.log_dir, "session end → relaunch (--autostart)");
@@ -1796,7 +1808,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
     // Sessão de volta na tela: só agora o aviso de reinício pode sair.
     // No teste, o aviso fica até o DLSS 5 ligar — o relógio não começa no 1º frame.
-    if (presented == 1 && g_restart_notice.visible() && !cfg.perf_test) g_restart_notice.destroy();
+    if (g_restart_notice.visible() && !cfg.perf_test && have_new && !holding) {
+      if (hold_boot) {
+        ShowWindow(hwnd, g_session_fullscreen ? SW_SHOW : SW_SHOWMAXIMIZED);
+        UpdateWindow(hwnd);
+      }
+      g_restart_notice.destroy();
+      clear_motor_hold_files();
+    }
     if (presented == 1 && !session_boot_toast.empty()) {
       session_notice.push(session_boot_toast, now);
       session_boot_toast.clear();
@@ -2062,8 +2081,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   cfg_ui.shutdown();
   g_cfg_open = false;
   g_hdmi_notice.destroy();
-  g_restart_notice.pump();  // o aviso segue vivo enquanto FG/captura/D3D caem
-  renderer.present_black();
+  g_restart_notice.pump();  // o aviso (último frame) segue vivo enquanto FG/captura/D3D caem
+  if (!cfg_restart_pending) renderer.present_black();
   // Esc/timer do Benchmark: mata FG+LS ANTES de esconder a janela (WM_CLOSE so vai ao tray).
   if (cfg.perf_test) {
     if (overlay.fg_on || fg.overlay_reads_on(hwnd) || fg.state().active) fg.pulse_fg_hotkey();
@@ -2094,6 +2113,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   }
   audio.stop();
   clip_audio.stop();
+  pipeline_global().stop();
   renderer.shutdown();
   if (hwnd) {
     DestroyWindow(hwnd);
@@ -2213,8 +2233,10 @@ int main(int argc, char** argv) {
   } else if (nexuscap::restart_notice_visible_at_boot(cfg.autostart)) {
     g_restart_notice.show(GetModuleHandleW(nullptr), nexuscap::session_restart_notice_title(),
                           nexuscap::session_restart_notice_detail(nexuscap::SessionCfgApply::Live));
+    if (g_restart_notice.has_hold_image()) nexuscap::write_motor_hold_ready();
   }
   (void)nexuscap::prepare_renodx_runtime_dirs(base.string());
+  // Park/restore happens after settings — o lobby não carrega o ReShade.
   if (!fs::path(cfg.log_dir).is_absolute() && cfg.log_dir == "logs") {
     cfg.log_dir = (base / cfg.log_dir).string();
   }
@@ -2272,6 +2294,19 @@ int main(int argc, char** argv) {
         lobby_first ? 1 : boot_pass);
   }
   // CLI overrides persisted where explicit.
+  {
+    const std::string exe = base.string();
+    const bool session_dxgi = cfg.autostart || cfg.perf_test || !cfg.show_lobby;
+    const bool lobby_dxgi =
+        !session_dxgi &&
+        nexuscap::lobby_loads_reshade_dxgi(settings.ui.preview_enabled, settings.ui.preview_cfg_live,
+                                           settings.enhance_renodx);
+    if (session_dxgi || lobby_dxgi) {
+      (void)nexuscap::restore_reshade_dxgi(exe);
+    } else {
+      (void)nexuscap::park_reshade_dxgi_wait(exe, 2500);
+    }
+  }
   if (!cfg.show_lobby) {
     // keep cfg from CLI
   } else if (cfg.perf_test) {
@@ -2344,7 +2379,11 @@ int main(int argc, char** argv) {
           nexuscap::session_cfg_relaunch_args_for_hud(cfg.show_overlay, cfg.mini_overlay,
                                                      cfg.advanced_metrics, cfg.live_overlay);
       std::printf("cfg restart: relaunch %s\n", relaunch.c_str());
-      if (nexuscap::relaunch_current_process(relaunch.c_str())) return 0;
+      nexuscap::reset_motor_hold_ready();
+      if (nexuscap::relaunch_current_process(relaunch.c_str())) {
+        (void)nexuscap::wait_motor_hold_ready(2500, &g_restart_notice);
+        return 0;
+      }
       g_restart_notice.destroy();
       std::fprintf(stderr, "cfg restart: falha ao reiniciar\n");
       return rc;
@@ -2429,7 +2468,11 @@ int main(int argc, char** argv) {
           nexuscap::session_cfg_relaunch_args_for_hud(cfg.show_overlay, cfg.mini_overlay,
                                                      cfg.advanced_metrics, cfg.live_overlay);
       std::printf("cfg restart: relaunch %s\n", relaunch.c_str());
-      if (nexuscap::relaunch_current_process(relaunch.c_str())) return 0;
+      nexuscap::reset_motor_hold_ready();
+      if (nexuscap::relaunch_current_process(relaunch.c_str())) {
+        (void)nexuscap::wait_motor_hold_ready(2500, &g_restart_notice);
+        return 0;
+      }
       }
       // Não deu pra relançar: fecha o aviso e abre o lobby em vez de sair calado.
       g_restart_notice.destroy();
@@ -2439,7 +2482,7 @@ int main(int argc, char** argv) {
     if (rc != kExitBackToLobby) return rc;
     // Benchmark: processo novo. Pass/tom/NR/Feed/LS do teste morrem com o processo antigo.
     // Escala <100%: o Feed travou no swapchain e borraria o menu.
-    if (nexuscap::perf_test_return_needs_fresh_process(was_perf_test) ||
+    if (session_renodx || nexuscap::perf_test_return_needs_fresh_process(was_perf_test) ||
         nexuscap::feed_scale_change_needs_relaunch(session_renodx, session_scale,
                                                    nexuscap::kLobbyFeedWorkResolution)) {
       nexuscap::PerfTestResult last_perf{};

@@ -53,6 +53,7 @@ add_library(nexuscap_core STATIC
   src/lobby_imgui.cpp
   src/session_cfg.cpp
   src/system_metrics.cpp
+  src/pipeline_host.cpp
 )
 target_include_directories(nexuscap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_definitions(nexuscap_core PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
@@ -106,6 +107,23 @@ target_compile_definitions(nexuscap_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX U
 add_executable(nexuscap_hdmi_recover_probe tools/probe_hdmi_recover.cpp)
 target_link_libraries(nexuscap_hdmi_recover_probe PRIVATE nexuscap_core)
 target_compile_definitions(nexuscap_hdmi_recover_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+
+# Binario auxiliar (nao e o Present da sessao). ReShade 8.5 vive ao lado do NexusCap.exe.
+add_executable(nexuscap_pipeline src/pipeline_worker.cpp)
+target_include_directories(nexuscap_pipeline PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(nexuscap_pipeline PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_link_libraries(nexuscap_pipeline PRIVATE d3d11 dxgi d3dcompiler user32)
+if(MSVC)
+  target_link_options(nexuscap_pipeline PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup)
+endif()
+add_custom_command(TARGET nexuscap_pipeline POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:NexusCap>/worker"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "$<TARGET_FILE:nexuscap_pipeline>"
+    "$<TARGET_FILE_DIR:NexusCap>/worker/nexuscap_pipeline.exe"
+  COMMENT "Stage nexuscap_pipeline.exe em worker/"
+)
+add_dependencies(NexusCap nexuscap_pipeline)
 
 enable_testing()
 add_test(NAME unit COMMAND nexuscap_tests)

@@ -99,9 +99,6 @@ public:
 
   // Recycle do motor: só o aviso, sem controles e sem timer.
   void set_restart_hold(const std::string& title, const std::string& line);
-  void set_restart_hold(const std::string& title, const std::string& line, double /*seconds_left*/) {
-    set_restart_hold(title, line);
-  }
   void clear_restart_hold();
 
   SessionCfgState state;

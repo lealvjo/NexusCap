@@ -3942,19 +3942,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(5, 2, 1));
+  CHECK(app_version_is(6, 0, 0));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "5.2.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v5.2.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-5.2.1");
+  CHECK(std::string(kAppVersion) == "6.0.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.0.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.0.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("5.2.1") != std::string::npos);
+  CHECK(lobby_t.find("6.0.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("5.2.1") != std::string::npos);
+  CHECK(sess_t.find("6.0.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v5.2.1 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.0.0 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
@@ -5136,7 +5136,7 @@ TEST_CASE("live overlay active follows setting without live.on") {
 
 TEST_CASE("dlss5 motor swap notice names both engines") {
   const std::string msg = session_notice_dlss5_motor_swap(1, 2);
-  CHECK(msg.find("Otimizando o pipeline") != std::string::npos);
+  CHECK(msg.find("A aplicar o motor") != std::string::npos);
   CHECK(msg.find("motor") != std::string::npos);
   CHECK(msg.find("1x") != std::string::npos);
   CHECK(msg.find("2x") != std::string::npos);
@@ -5631,7 +5631,7 @@ TEST_CASE("session CFG NR on/off restarts on every RenoDX motor") {
   CHECK(on.find("ON") != std::string::npos);
   CHECK(off.find("OFF") != std::string::npos);
   CHECK(on.find("DLSS 5") != std::string::npos);
-  CHECK(on.find("reinicio") != std::string::npos);
+  CHECK(on.find("reinicio") == std::string::npos);
 }
 
 TEST_CASE("session CFG changes survive the restart through settings.ini") {
@@ -5944,12 +5944,12 @@ TEST_CASE("perf test lobby says Benchmark") {
 
 TEST_CASE("restart notice explains the reason and covers the new process boot") {
   const std::string title = session_restart_notice_title();
-  CHECK(title.find("pipeline") != std::string::npos);
-  CHECK(title.find("Otimizando") != std::string::npos);
+  CHECK(title.find("motor") != std::string::npos);
+  CHECK(title.find("aplicar") != std::string::npos);
+  CHECK(title.find("reinicio") == std::string::npos);
   CHECK(lobby_pipeline_hold_title() == title);
   const std::string recycle = session_restart_notice_detail(SessionCfgApply::RecycleWorker);
-  CHECK(recycle.find("motor") != std::string::npos);
-  CHECK(recycle.find("aplicar") != std::string::npos);
+  CHECK(recycle.find("tela") != std::string::npos);
   const std::string motor = session_restart_notice_detail(SessionCfgApply::RelaunchMotor);
   const std::string scale = session_restart_notice_detail(SessionCfgApply::RelaunchFeedScale);
   const std::string pass = session_restart_notice_detail(SessionCfgApply::RelaunchPassCount);
@@ -5964,7 +5964,7 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(pass != motor);
   CHECK(preset != pass);
   CHECK(nr != preset);
-  CHECK(pass.find("sessao") != std::string::npos);
+  CHECK(pass.find("tela") != std::string::npos);
   CHECK(motor.find("\xE2\x80\x94") == std::string::npos);
   CHECK(pass.find("\xE2\x80\x94") == std::string::npos);
   CHECK(session_notice_nr_pass_count_apply(1, 2).find("\xE2\x80\x94") == std::string::npos);
@@ -5977,20 +5977,18 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   const std::string preset_toast = session_notice_preset_apply(0, 2);
   CHECK(preset_toast.find("Model A") != std::string::npos);
   CHECK(preset_toast.find("Model C") != std::string::npos);
-  CHECK(preset_toast.find("reinicio") != std::string::npos);
+  CHECK(preset_toast.find("reinicio") == std::string::npos);
   const std::string model_toast = session_notice_preset_apply(0, 2, 4);
   CHECK(model_toast.find("Model A") != std::string::npos);
   CHECK(model_toast.find("Model C") != std::string::npos);
   CHECK(model_toast.find("Cinematic") == std::string::npos);
-  // Toast na sessao diz de onde pra onde, igual a troca de motor.
   const std::string toast = session_notice_nr_pass_count_apply(4, 2);
   CHECK(toast.find("1,5x") != std::string::npos);
   CHECK(toast.find("2x default") != std::string::npos);
   CHECK(toast.find("Pass Count") != std::string::npos);
-  CHECK(toast.find("pipeline") != std::string::npos);
-  // Os dois prometem a volta para a sessao, nunca para o lobby.
-  CHECK(motor.find("sessao") != std::string::npos);
-  CHECK(scale.find("sessao") != std::string::npos);
+  CHECK(toast.find("reinicio") == std::string::npos);
+  CHECK(motor.find("tela") != std::string::npos);
+  CHECK(scale.find("tela") != std::string::npos);
   CHECK(restart_notice_visible_at_boot(/*autostart=*/true));
   CHECK_FALSE(restart_notice_visible_at_boot(false));
   CHECK(session_hdmi_notice_title().find("console") != std::string::npos);
@@ -6414,7 +6412,7 @@ TEST_CASE("lobby gear and Ctrl+M session CFG share motor names, disk, and scale"
         CHECK(lobby_toast.find(want) != std::string::npos);
         const std::string cfg_toast = session_notice_preset_apply(0, v, p);
         CHECK(cfg_toast.find(want) != std::string::npos);
-        CHECK(cfg_toast.find("reinicio") != std::string::npos);
+        CHECK(cfg_toast.find("reinicio") == std::string::npos);
       }
     }
   }
@@ -8083,7 +8081,7 @@ TEST_CASE("window capture list filter and factory gate") {
   CHECK(window_capture_is_self_class("NexusCapLobby"));
   CHECK(window_capture_is_self_class("NexusCapWnd"));
   CHECK_FALSE(window_capture_is_self_class("PCSX2"));
-  CHECK(window_capture_is_self_title("Nexus Cap v5.2.1"));
+  CHECK(window_capture_is_self_title("Nexus Cap v6.0.0"));
   CHECK_FALSE(window_capture_is_self_title("YouTube"));
   CHECK(window_title_matches_capture("PCSX2 v2.2", "PCSX2"));
   CHECK(window_title_matches_capture("YouTube - Chrome", "YouTube - Chrome"));

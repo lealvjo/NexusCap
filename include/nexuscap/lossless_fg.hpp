@@ -74,6 +74,25 @@ inline const char* fg_queue_label(int q) {
   }
 }
 
+// Escala de fluxo: Padrao e o nosso valor (80). 70, 90 e 100 so se a pessoa escolher.
+inline constexpr int kFgFlowScaleDefault = 80;
+inline constexpr int kFgFlowScaleChoices[] = {80, 70, 90, 100};
+inline constexpr int kFgFlowScaleChoiceCount = 4;
+
+inline int clamp_fg_flow_scale(int v) {
+  if (v == 70 || v == 90 || v == 100 || v == kFgFlowScaleDefault) return v;
+  return kFgFlowScaleDefault;
+}
+
+inline const char* fg_flow_scale_label(int v) {
+  switch (clamp_fg_flow_scale(v)) {
+    case 70: return "70";
+    case 90: return "90";
+    case 100: return "100";
+    default: return "Padrao";
+  }
+}
+
 // Adaptive LSFG3Target: digitado. Teto = Hz do monitor. Piso = FPS da captura sem FG
 // (se a captura vai a 40, o alvo nao pode ser 30). Sem captura conhecida, piso 30.
 inline constexpr int kFgAdaptiveTargetMin = 30;
@@ -135,12 +154,19 @@ inline int clamp_fg_multiplier(int m) {
   return m;
 }
 
-// Overlay: "Fixo x2" vs "Adaptive 70" — mesmo texto no HUD, mini e live.
+// Overlay: "Fixo x2" vs "Adaptive 70". flow_scale >= 0 acrescenta Padrao/70/90/100.
 inline void format_fg_mode_tag(char* out, size_t n, bool adaptive, int mult,
-                               int target = kFgAdaptiveTargetDefault) {
+                               int target = kFgAdaptiveTargetDefault, int flow_scale = -1) {
   if (!out || n == 0) return;
   if (adaptive) {
-    std::snprintf(out, n, "Adaptive %d", clamp_fg_adaptive_target_stored(target));
+    if (flow_scale >= 0) {
+      std::snprintf(out, n, "Adaptive %d %s", clamp_fg_adaptive_target_stored(target),
+                    fg_flow_scale_label(flow_scale));
+    } else {
+      std::snprintf(out, n, "Adaptive %d", clamp_fg_adaptive_target_stored(target));
+    }
+  } else if (flow_scale >= 0) {
+    std::snprintf(out, n, "Fixo x%d %s", clamp_fg_multiplier(mult), fg_flow_scale_label(flow_scale));
   } else {
     std::snprintf(out, n, "Fixo x%d", clamp_fg_multiplier(mult));
   }
@@ -184,7 +210,7 @@ inline int fg_frametime_plot_y(int gy, int gh, double cap_ms, int trace_k, doubl
   return gy + 2 + static_cast<int>(t * static_cast<double>(span));
 }
 
-inline int fg_frametime_fps_gutter_px() { return 36; }
+inline int fg_frametime_fps_gutter_px() { return 52; }
 
 inline int fg_frametime_fps(double capture_ms, int trace_k) {
   const double ms = fg_frametime_trace_ms(capture_ms, trace_k);
@@ -341,7 +367,8 @@ inline void join_hud_fps_parts(char* out, size_t out_n, const HudFpsParts& p) {
 
 inline void fill_session_hud_fps_parts(HudFpsParts& o, double fps_cap, double fps_fg_est, bool fg_on,
                                        int fg_mult, bool compact, bool ft_stable = true,
-                                       bool fg_adaptive = false, int fg_target = kFgAdaptiveTargetDefault) {
+                                       bool fg_adaptive = false, int fg_target = kFgAdaptiveTargetDefault,
+                                       int flow_scale = -1) {
   o = HudFpsParts{};
   const int m = clamp_fg_multiplier(fg_mult);
   const FgFtRgb cap = fg_frametime_trace_rgb(1, ft_stable);
@@ -349,8 +376,8 @@ inline void fill_session_hud_fps_parts(HudFpsParts& o, double fps_cap, double fp
   char num[24]{};
   std::snprintf(num, sizeof(num), "%.1f", fps_cap);
   hud_fps_push(o, num, cap.r, cap.g, cap.b);
-  char tag[24]{};
-  format_fg_mode_tag(tag, sizeof(tag), fg_adaptive, m, fg_target);
+  char tag[40]{};
+  format_fg_mode_tag(tag, sizeof(tag), fg_adaptive, m, fg_target, flow_scale);
   if (fg_on && m >= 2) {
     const double fg = fps_fg_est > 0 ? fps_fg_est
                                     : (fg_adaptive ? static_cast<double>(clamp_fg_adaptive_target_stored(fg_target))
@@ -359,7 +386,7 @@ inline void fill_session_hud_fps_parts(HudFpsParts& o, double fps_cap, double fp
     std::snprintf(num, sizeof(num), "%.1f", fg);
     const FgFtRgb fgc = fg_frametime_trace_rgb(m, ft_stable);
     hud_fps_push(o, num, fgc.r, fgc.g, fgc.b);
-    char suf[48]{};
+    char suf[64]{};
     if (compact) {
       std::snprintf(suf, sizeof(suf), "  cap|FG %s ON", tag);
     } else {
@@ -367,7 +394,7 @@ inline void fill_session_hud_fps_parts(HudFpsParts& o, double fps_cap, double fp
     }
     hud_fps_push(o, suf, fgc.r, fgc.g, fgc.b);
   } else if (m >= 2) {
-    char suf[48]{};
+    char suf[64]{};
     if (compact) {
       std::snprintf(suf, sizeof(suf), "   FG %s off", tag);
     } else {
@@ -379,7 +406,7 @@ inline void fill_session_hud_fps_parts(HudFpsParts& o, double fps_cap, double fp
 
 inline void fill_lobby_hud_fps_parts(HudFpsParts& o, double fps, bool fg_enabled, int fg_mult,
                                      bool ft_stable = true, bool fg_adaptive = false,
-                                     int fg_target = kFgAdaptiveTargetDefault) {
+                                     int fg_target = kFgAdaptiveTargetDefault, int flow_scale = -1) {
   o = HudFpsParts{};
   const int m = clamp_fg_multiplier(fg_mult);
   const FgFtRgb cap = fg_frametime_trace_rgb(1, ft_stable);
@@ -388,9 +415,9 @@ inline void fill_lobby_hud_fps_parts(HudFpsParts& o, double fps, bool fg_enabled
   std::snprintf(num, sizeof(num), "%.0f", fps);
   hud_fps_push(o, num, cap.r, cap.g, cap.b);
   if (fg_enabled && m >= 2) {
-    char tag[24]{};
-    format_fg_mode_tag(tag, sizeof(tag), fg_adaptive, m, fg_target);
-    char suf[48]{};
+    char tag[40]{};
+    format_fg_mode_tag(tag, sizeof(tag), fg_adaptive, m, fg_target, flow_scale);
+    char suf[64]{};
     std::snprintf(suf, sizeof(suf), "   FG %s off", tag);
     const FgFtRgb fgc = fg_frametime_trace_rgb(m, ft_stable);
     hud_fps_push(o, suf, fgc.r, fgc.g, fgc.b);
@@ -399,18 +426,20 @@ inline void fill_lobby_hud_fps_parts(HudFpsParts& o, double fps, bool fg_enabled
 
 // Lobby HUD: checkbox on = "off" until session PageDn (never imply running dual FPS).
 inline void format_lobby_hud_fps_line(char* out, size_t out_n, double fps, bool fg_enabled, int fg_mult,
-                                      bool fg_adaptive = false, int fg_target = kFgAdaptiveTargetDefault) {
+                                      bool fg_adaptive = false, int fg_target = kFgAdaptiveTargetDefault,
+                                      int flow_scale = -1) {
   HudFpsParts parts{};
-  fill_lobby_hud_fps_parts(parts, fps, fg_enabled, fg_mult, true, fg_adaptive, fg_target);
+  fill_lobby_hud_fps_parts(parts, fps, fg_enabled, fg_mult, true, fg_adaptive, fg_target, flow_scale);
   join_hud_fps_parts(out, out_n, parts);
 }
 
 // Session stats when FG is ON: real capture FPS | estimated FG output FPS.
 inline void format_session_hud_fps_line(char* out, size_t out_n, double fps_cap, double fps_fg_est, bool fg_on,
                                        int fg_mult, bool compact, bool fg_adaptive = false,
-                                       int fg_target = kFgAdaptiveTargetDefault) {
+                                       int fg_target = kFgAdaptiveTargetDefault, int flow_scale = -1) {
   HudFpsParts parts{};
-  fill_session_hud_fps_parts(parts, fps_cap, fps_fg_est, fg_on, fg_mult, compact, true, fg_adaptive, fg_target);
+  fill_session_hud_fps_parts(parts, fps_cap, fps_fg_est, fg_on, fg_mult, compact, true, fg_adaptive,
+                            fg_target, flow_scale);
   join_hud_fps_parts(out, out_n, parts);
 }
 
@@ -508,7 +537,7 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                                         bool console_flag = true, unsigned char cons_r = 0,
                                         unsigned char cons_g = 55, unsigned char cons_b = 145,
                                         int fg_queue = 0, bool fg_adaptive = false,
-                                        int fg_target = kFgAdaptiveTargetDefault) {
+                                        int fg_target = kFgAdaptiveTargetDefault, int fg_flow_scale = -1) {
   if (line0 && n0) line0[0] = '\0';
   if (line1 && n1) line1[0] = '\0';
   int n = 0;
@@ -529,7 +558,7 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
 
   HudFpsParts fps_parts{};
   fill_session_hud_fps_parts(fps_parts, fps_cap, fps_fg_est, fg_on, fg_mult, true, ft_stable, fg_adaptive,
-                            fg_target);
+                            fg_target, fg_flow_scale);
   for (int i = 0; i < fps_parts.count; ++i) {
     push(fps_parts.parts[i].text, fps_parts.parts[i].r, fps_parts.parts[i].g, fps_parts.parts[i].b);
   }
@@ -702,7 +731,7 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                       bool console_flag = true, unsigned char cons_r = 0,
                                       unsigned char cons_g = 55, unsigned char cons_b = 145,
                                       int fg_queue = 0, bool fg_adaptive = false,
-                                      int fg_target = kFgAdaptiveTargetDefault) {
+                                      int fg_target = kFgAdaptiveTargetDefault, int fg_flow_scale = -1) {
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
   format_mini_overlay_segments(segs, kMiniOverlayMaxSegs, line0, n0, line1, n1, fps_cap, fps_fg_est, fg_on,
                                fg_mult, dlss5_on, sync_image, frame_ms, ft_avg_ms, ft_p95_ms, ft_max_ms,
@@ -710,7 +739,8 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                work_w, work_h, output_w, output_h, scale_percent, has_stats600, s600_fps,
                                s600_p95_e2e, s600_p95_present, s600_stalls, renodx_preset, hw_compact, dlss_ms,
                                frames, s600_max_interval, fg_backend, target_fps, nr_pass_count, console_label,
-                               console_flag, cons_r, cons_g, cons_b, fg_queue, fg_adaptive, fg_target);
+                               console_flag, cons_r, cons_g, cons_b, fg_queue, fg_adaptive, fg_target,
+                               fg_flow_scale);
 }
 
 // Back-compat one-liner.
@@ -740,22 +770,20 @@ inline void format_session_hud_fg_status_line(char* out, size_t out_n, bool fg_o
   const char* be = backend && backend[0] ? backend : "lsfg3";
   const char* api = capture_api && capture_api[0] ? capture_api : "WGC";
   const char* st = status && status[0] ? status : (fg_on ? "On" : "Ready");
-  char tag[24]{};
-  format_fg_mode_tag(tag, sizeof(tag), adaptive, m, target);
+  char tag[40]{};
+  format_fg_mode_tag(tag, sizeof(tag), adaptive, m, target, flow_scale);
   if (fg_on && m >= 2) {
     const double fg = fps_fg_est > 0
                           ? fps_fg_est
                           : (adaptive ? static_cast<double>(clamp_fg_adaptive_target_stored(target))
                                       : (fps_cap > 0 ? fps_cap * static_cast<double>(m) : 0));
     if (fps_cap > 0 && fg > 0) {
-      std::snprintf(out, out_n, "FG      ON   %s  %s  flow%d  %s  fila%d  |  %.0f->%.0f", tag, be, flow_scale,
-                    api, q, fps_cap, fg);
+      std::snprintf(out, out_n, "FG      ON   %s  %s  %s  fila%d  |  %.0f->%.0f", tag, be, api, q, fps_cap, fg);
     } else {
-      std::snprintf(out, out_n, "FG      ON   %s  %s  flow%d  %s  fila%d", tag, be, flow_scale, api, q);
+      std::snprintf(out, out_n, "FG      ON   %s  %s  %s  fila%d", tag, be, api, q);
     }
   } else {
-    std::snprintf(out, out_n, "FG      %s  %s  %s  flow%d  %s  fila%d  [%s]", fg_on ? "ON" : "off", tag, be,
-                  flow_scale, api, q, st);
+    std::snprintf(out, out_n, "FG      %s  %s  %s  %s  fila%d  [%s]", fg_on ? "ON" : "off", tag, be, api, q, st);
   }
 }
 
@@ -863,14 +891,15 @@ inline bool mira_lock_ini_ok(const std::string& ini) {
   return ini.find("flow_scale = 80") != std::string::npos && ini.find("ui_detection_rate = 2") != std::string::npos;
 }
 
-// Patch or inject mira-lock tags into existing Settings.xml text. Never writes Flow 70.
+// Patch or inject mira-lock tags. Default flow is 80 (Padrao). 70/90/100 only when chosen.
 std::string patch_mira_settings_xml(const std::string& xml, int multiplier, int queue = 0,
                                     bool adaptive = false, int target_fps = kFgAdaptiveTargetDefault,
-                                    int monitor_hz = 60);
+                                    int monitor_hz = 60, int flow_scale = kFgFlowScaleDefault);
 
 // Build a minimal valid Settings.xml with mira lock + LSFG3 FIXED (default) or Adaptive.
 std::string build_mira_settings_xml(int multiplier, int queue = 0, bool adaptive = false,
-                                    int target_fps = kFgAdaptiveTargetDefault, int monitor_hz = 60);
+                                    int target_fps = kFgAdaptiveTargetDefault, int monitor_hz = 60,
+                                    int flow_scale = kFgFlowScaleDefault);
 // Read LSFG3Multiplier from Settings.xml text; 0 = missing/invalid.
 inline int parse_lsfg3_multiplier_from_xml(const std::string& xml) {
   const std::string open = "<LSFG3Multiplier>";
@@ -940,8 +969,8 @@ inline bool fg_ls_profile_confirmed_on_disk(int want_mult, bool adaptive, int ta
   return fg_adaptive_confirmed_on_disk(adaptive, target, xml);
 }
 
-// Patch [lsfg] section in config.ini text for mira lock.
-std::string patch_lsfg_ini(const std::string& ini);
+// Patch [lsfg] section in config.ini text for mira lock. Default flow is 80.
+std::string patch_lsfg_ini(const std::string& ini, int flow_scale = kFgFlowScaleDefault);
 
 // Só o bloco [fps_counter]. Usado no re-hide depois do LS abrir: mexer em
 // flow_scale / ui_detection_* com a sessao viva reabre a briga de perfil.
@@ -977,7 +1006,7 @@ public:
 
   // Configure before use. multiplier 1 = off semantics.
   void configure(int multiplier, const std::string& exe_override = {}, int queue = -1, int adaptive = -1,
-                 int target_fps = -1, int monitor_hz = -1, double capture_fps = -1);
+                 int target_fps = -1, int monitor_hz = -1, double capture_fps = -1, int flow_scale = -1);
 
   const FgState& state() const { return state_; }
   bool busy() const { return pending_ != FgPending::None; }
@@ -988,7 +1017,8 @@ public:
   // Lobby / pos-Benchmark: mata LS leftover, grava mira HDMI, nao lanca processo.
   bool apply_hdmi_profile_without_launch(bool fg_enabled, int fg_mult, const std::string& path,
                                          std::string& err, int queue = 0, bool adaptive = false,
-                                         int target_fps = kFgAdaptiveTargetDefault, int monitor_hz = 60);
+                                         int target_fps = kFgAdaptiveTargetDefault, int monitor_hz = 60,
+                                         int flow_scale = kFgFlowScaleDefault);
 
   // Esc/fim do teste: F24 off se estiver gerando, TerminateProcess em todo LS, espera count=0.
   // Nao usa WM_CLOSE (tray). Chamar com a janela da sessao ainda viva.
@@ -1007,8 +1037,19 @@ public:
   // Returns true when an async op just finished this frame (success or fail in last_error).
   bool tick(double now_ms);
 
-  // Sync wrapper (selftests / boot). Prefer request_* + tick in the session loop.
+  // Sync wrapper (selftests). Prefer request_* + tick in the session loop.
   bool toggle(HWND target, std::string& err);
+
+  // Boot com FG ligado: adota o Lossless já aberto e segura o atalho até o 1º frame.
+  // Sem processo vivo, arma o lançamento sem bloquear o primeiro frame.
+  bool arm_autostart(HWND target, std::string& err);
+  // O 1º frame HDMI já está na tela: agora o atalho pode ir.
+  void release_autostart_hotkey();
+  bool autostart_waits_first_frame() const { return defer_hotkey_; }
+
+  // Restart do motor: tira o Lossless do Job deste processo sem matá-lo.
+  // false: o Job ainda tinha a flag de matar e o processo pode ter caído.
+  bool detach_for_restart();
 
   void shutdown(DWORD wait_ms = 800);
 
@@ -1064,6 +1105,7 @@ private:
   bool pending_was_active_ = false;
   int pending_retries_ = 0;
   bool pending_finished_ok_ = false;
+  bool defer_hotkey_ = false;  // atalho do boot só depois do primeiro frame HDMI
   bool confirmed_on_ = false;  // F24 confirmou — HUD nao volta a off se o Toolhelp mentir
 };
 

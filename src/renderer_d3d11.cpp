@@ -175,7 +175,7 @@ void paint_frametime_graph(HDC hdc, int gx, int gy, int gw, int gh, const Overla
   paint_frametime_traces(hdc, gx, gy, gw, gh, o, pen_w, gutter);
 
   const int traces = fg_frametime_trace_count(o.fg_on, o.fg_multiplier);
-  HFONT lf = g_hud_fonts.graph.get(13, FW_SEMIBOLD, NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS,
+  HFONT lf = g_hud_fonts.graph.get(16, FW_SEMIBOLD, NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS,
                                    L"Segoe UI");
   HGDIOBJ oldf = SelectObject(hdc, lf);
   SetBkMode(hdc, TRANSPARENT);
@@ -367,6 +367,7 @@ bool RendererD3D11::init(HWND hwnd, int width, int height, std::string& err) {
     err = "D3D11CreateDevice failed";
     return false;
   }
+  silence_reshade_home_splash();
   impl_->device = dev;
   impl_->ctx = ctx;
 
@@ -808,6 +809,7 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   }
 
   const UINT interval = (overlay.fg_on || vsync_) ? present_interval_ : 0u;
+  silence_reshade_home_splash();
   impl_->swap->Present(interval, 0);
   present_ms = clk.now_ms() - t0;
   (void)err;
@@ -816,6 +818,7 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
 
 void RendererD3D11::present_black() {
   if (!impl_ || !impl_->swap) return;
+  silence_reshade_home_splash();
   const float clear[4] = {0, 0, 0, 1};
   impl_->ctx->OMSetRenderTargets(1, impl_->rtv.GetAddressOf(), nullptr);
   impl_->ctx->ClearRenderTargetView(impl_->rtv.Get(), clear);
@@ -954,12 +957,12 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
       o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count,
       overlay_console_label_or_null(o.overlay_console, clamp_live_console(o.live_console)), false, cr, cg, cb,
-      o.fg_queue, o.fg_adaptive, o.fg_target_fps);
+      o.fg_queue, o.fg_adaptive, o.fg_target_fps, o.fg_flow_scale);
   (void)line0;
   (void)line1;
 
   const int pad = 8;
-  const int graph_w = 220;
+  const int graph_w = hud_mini_frametime_graph_w(static_cast<int>(rc.right - rc.left));
   const int gap = 8;
   const int bar_w = static_cast<int>(rc.right - rc.left);
   const int bar_h = static_cast<int>(rc.bottom - rc.top);
@@ -1397,7 +1400,7 @@ void RendererD3D11::burn_live_overlay(const OverlayState& overlay) {
     fill_live_strip_lines(strip, overlay.overlay_console, cons, overlay.renodx_on || overlay.dlss_on,
                           overlay.nr_pass_count, overlay.fg_on, overlay.fg_multiplier, show_fps,
                           overlay.fps_fg_est, overlay.ft_stable, overlay.fg_queue, overlay.frame_ms,
-                          overlay.fg_adaptive, overlay.fg_target_fps);
+                          overlay.fg_adaptive, overlay.fg_target_fps, overlay.fg_flow_scale);
     const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
     const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
     const std::wstring fg_w = utf8_to_wide_hud(strip.fg);
@@ -1812,7 +1815,7 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     HudFpsParts fps_parts{};
     {
       fill_session_hud_fps_parts(fps_parts, show_fps, o.fps_fg_est, o.fg_on, o.fg_multiplier, true,
-                                o.ft_stable, o.fg_adaptive, o.fg_target_fps);
+                                o.ft_stable, o.fg_adaptive, o.fg_target_fps, o.fg_flow_scale);
       char fps_line[128]{};
       join_hud_fps_parts(fps_line, sizeof(fps_line), fps_parts);
       swprintf(lines[n++], 180, L"%s", utf8_to_wide_hud(fps_line).c_str());
@@ -1907,7 +1910,7 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   }
   HudFpsParts fps_parts{};
   fill_session_hud_fps_parts(fps_parts, o.fps_smooth, o.fps_fg_est, o.fg_on, o.fg_multiplier, false,
-                            o.ft_stable, o.fg_adaptive, o.fg_target_fps);
+                            o.ft_stable, o.fg_adaptive, o.fg_target_fps, o.fg_flow_scale);
   {
     char fps_line[128]{};
     join_hud_fps_parts(fps_line, sizeof(fps_line), fps_parts);
@@ -2278,6 +2281,10 @@ LRESULT CALLBACK RestartNotice::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     return TRUE;
   }
   auto* self = reinterpret_cast<RestartNotice*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_SETCURSOR) {
+    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+    return TRUE;
+  }
   if (msg == WM_PAINT && self) {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(hwnd, &ps);
@@ -2519,7 +2526,7 @@ void LiveOverlay::present() const {
   fill_live_strip_lines(strip, state_.overlay_console, cons, state_.renodx_on || state_.dlss_on,
                         state_.nr_pass_count, state_.fg_on, state_.fg_multiplier, show_fps, state_.fps_fg_est,
                         state_.ft_stable, state_.fg_queue, state_.frame_ms, state_.fg_adaptive,
-                        state_.fg_target_fps);
+                        state_.fg_target_fps, state_.fg_flow_scale);
   const std::wstring cons_w = strip.has_console ? utf8_to_wide_hud(strip.console) : std::wstring{};
   const std::wstring dlss_w = utf8_to_wide_hud(strip.dlss);
   const std::wstring fg_w = utf8_to_wide_hud(strip.fg);

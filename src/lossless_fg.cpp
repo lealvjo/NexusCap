@@ -193,9 +193,10 @@ int display_refresh_hz(HWND hwnd) {
 }
 
 std::string build_mira_settings_xml(int multiplier, int queue, bool adaptive, int target_fps,
-                                    int monitor_hz) {
+                                    int monitor_hz, int flow_scale) {
   multiplier = clamp_fg_multiplier(multiplier);
   queue = clamp_fg_queue(queue);
+  flow_scale = clamp_fg_flow_scale(flow_scale);
   if (multiplier < 2) multiplier = 2;  // profile template always stores a valid FG factor
   const int tgt = clamp_fg_adaptive_target(target_fps, monitor_hz);
   std::ostringstream o;
@@ -215,7 +216,7 @@ std::string build_mira_settings_xml(int multiplier, int queue, bool adaptive, in
     << "      <LSFG3Mode1>" << lsfg3_mode1_xml(adaptive) << "</LSFG3Mode1>\n"
     << "      <LSFG3Multiplier>" << multiplier << "</LSFG3Multiplier>\n"
     << "      <LSFG3Target>" << tgt << "</LSFG3Target>\n"
-    << "      <LSFGFlowScale>80</LSFGFlowScale>\n"
+    << "      <LSFGFlowScale>" << flow_scale << "</LSFGFlowScale>\n"
     << "      <LSFGSize>BALANCED</LSFGSize>\n"
     << "      <FrameGeneration>LSFG3</FrameGeneration>\n"
     << "      <SyncMode>DEFAULT</SyncMode>\n"
@@ -232,23 +233,15 @@ std::string build_mira_settings_xml(int multiplier, int queue, bool adaptive, in
 }
 
 std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier, int queue, bool adaptive,
-                                    int target_fps, int monitor_hz) {
+                                    int target_fps, int monitor_hz, int flow_scale) {
   multiplier = clamp_fg_multiplier(multiplier);
   queue = clamp_fg_queue(queue);
+  flow_scale = clamp_fg_flow_scale(flow_scale);
   if (multiplier < 2) multiplier = 2;
   const int tgt = clamp_fg_adaptive_target(target_fps, monitor_hz);
-  std::string xml = xml_in.empty() ? build_mira_settings_xml(multiplier, queue, adaptive, tgt, monitor_hz)
-                                   : xml_in;
-
-  while (xml.find("<LSFGFlowScale>70</LSFGFlowScale>") != std::string::npos) {
-    replace_tag(xml, "LSFGFlowScale", "80");
-  }
-  while (xml.find("<LSFGFlowScale>90</LSFGFlowScale>") != std::string::npos) {
-    replace_tag(xml, "LSFGFlowScale", "80");
-  }
-  while (xml.find("<LSFGFlowScale>100</LSFGFlowScale>") != std::string::npos) {
-    replace_tag(xml, "LSFGFlowScale", "80");
-  }
+  std::string xml = xml_in.empty()
+                        ? build_mira_settings_xml(multiplier, queue, adaptive, tgt, monitor_hz, flow_scale)
+                        : xml_in;
 
   auto upsert = [&](const char* tag, const std::string& value) {
     const std::string open = std::string("<") + tag + ">";
@@ -269,7 +262,7 @@ std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier, i
   upsert("HotkeyModifierKeys", "None");
   upsert("LSFG3Mode1", lsfg3_mode1_xml(adaptive));
   upsert("LSFG3Multiplier", std::to_string(multiplier));
-  upsert("LSFGFlowScale", "80");
+  upsert("LSFGFlowScale", std::to_string(flow_scale));
   upsert("LSFGSize", "BALANCED");
   upsert("FrameGeneration", "LSFG3");
   upsert("SyncMode", "DEFAULT");
@@ -281,34 +274,38 @@ std::string patch_mira_settings_xml(const std::string& xml_in, int multiplier, i
   upsert("MultiDisplayMode", "true");
 
   if (xml.find("<LSFGFlowScale>") == std::string::npos) {
-    return build_mira_settings_xml(multiplier, queue, adaptive, tgt, monitor_hz);
+    return build_mira_settings_xml(multiplier, queue, adaptive, tgt, monitor_hz, flow_scale);
   }
   return xml;
 }
 
-std::string patch_lsfg_ini(const std::string& ini_in) {
-  const char* good = "[rendering]\r\n"
-                     "flush = 1\r\n"
-                     "\r\n"
-                     "[capture]\r\n"
-                     "frametime_buffer_size = 15\r\n"
-                     "frametime_buffer_reset_multiplier = 6\r\n"
-                     "queue_draining_momentum = 0.01\r\n"
-                     "\r\n"
-                     "[lsfg]\r\n"
-                     "ui_detection_rate = 2\r\n"
-                     "ui_detection_threshold = 0.30\r\n"
-                     "flow_scale = 80\r\n"
-                     "real_timestamp_tolerance = 0.05\r\n"
-                     "base_framerate_threshold = 10\r\n"
-                     "\r\n"
-                     "[fps_counter]\r\n"
-                     "scale = 0\r\n"
-                     "color = 0xD3D3D3\r\n"
-                     "font = Consolas\r\n"
-                     "offset_x = 0\r\n"
-                     "offset_y = 0\r\n"
-                     "show_captured = 0\r\n";
+std::string patch_lsfg_ini(const std::string& ini_in, int flow_scale) {
+  const int flow = clamp_fg_flow_scale(flow_scale);
+  const std::string flow_s = std::to_string(flow);
+  const std::string good = std::string("[rendering]\r\n"
+                                       "flush = 1\r\n"
+                                       "\r\n"
+                                       "[capture]\r\n"
+                                       "frametime_buffer_size = 15\r\n"
+                                       "frametime_buffer_reset_multiplier = 6\r\n"
+                                       "queue_draining_momentum = 0.01\r\n"
+                                       "\r\n"
+                                       "[lsfg]\r\n"
+                                       "ui_detection_rate = 2\r\n"
+                                       "ui_detection_threshold = 0.30\r\n"
+                                       "flow_scale = ") +
+                           flow_s +
+                           "\r\n"
+                           "real_timestamp_tolerance = 0.05\r\n"
+                           "base_framerate_threshold = 10\r\n"
+                           "\r\n"
+                           "[fps_counter]\r\n"
+                           "scale = 0\r\n"
+                           "color = 0xD3D3D3\r\n"
+                           "font = Consolas\r\n"
+                           "offset_x = 0\r\n"
+                           "offset_y = 0\r\n"
+                           "show_captured = 0\r\n";
   if (ini_in.empty()) return good;
 
   std::string out = ini_in;
@@ -323,9 +320,9 @@ std::string patch_lsfg_ini(const std::string& ini_in) {
   if (out.find("[lsfg]") == std::string::npos) return good;
   set_kv("ui_detection_rate", "2");
   set_kv("ui_detection_threshold", "0.30");
-  set_kv("flow_scale", "80");
+  set_kv("flow_scale", flow_s.c_str());
   // If keys missing, rewrite whole file.
-  if (out.find("flow_scale = 80") == std::string::npos ||
+  if (out.find("flow_scale = " + flow_s) == std::string::npos ||
       out.find("ui_detection_rate = 2") == std::string::npos) {
     return good;
   }
@@ -359,7 +356,8 @@ std::string patch_lsfg_ini_fps_counter_only(const std::string& ini_in) {
 }
 
 void LosslessFgController::configure(int multiplier, const std::string& exe_override, int queue,
-                                     int adaptive, int target_fps, int monitor_hz, double capture_fps) {
+                                     int adaptive, int target_fps, int monitor_hz, double capture_fps,
+                                     int flow_scale) {
   state_.multiplier = clamp_fg_multiplier(multiplier);
   if (queue >= 0) state_.queue_target = clamp_fg_queue(queue);
   if (adaptive >= 0) state_.adaptive = adaptive != 0;
@@ -368,7 +366,7 @@ void LosslessFgController::configure(int multiplier, const std::string& exe_over
   if (target_fps >= 0) {
     state_.target_fps = clamp_fg_adaptive_target(target_fps, state_.monitor_hz, state_.capture_fps);
   }
-  state_.flow_scale = 80;
+  if (flow_scale >= 0) state_.flow_scale = clamp_fg_flow_scale(flow_scale);
   state_.capture_api = "WGC";
   state_.backend = "lsfg3";
   state_.exe_path = resolve_lossless_exe(exe_override);
@@ -439,7 +437,7 @@ bool LosslessFgController::write_ls_ini_verified(const std::string& ini_path, co
 bool LosslessFgController::write_ini_alongside_exe(std::string& err) {
   const std::string ini_path = config_ini_alongside_exe(state_.exe_path);
   if (ini_path.empty()) return true;
-  const std::string patched = patch_lsfg_ini(read_file_utf8(ini_path));
+  const std::string patched = patch_lsfg_ini(read_file_utf8(ini_path), state_.flow_scale);
   return write_ls_ini_verified(ini_path, patched, err);
 }
 
@@ -493,11 +491,11 @@ void LosslessFgController::pulse_fg_hotkey() { (void)send_ls_hotkey(); }
 bool LosslessFgController::apply_hdmi_profile_without_launch(bool fg_enabled, int fg_mult,
                                                              const std::string& path, std::string& err,
                                                              int queue, bool adaptive, int target_fps,
-                                                             int monitor_hz) {
+                                                             int monitor_hz, int flow_scale) {
   if (confirmed_on_ || state_.active) pulse_fg_hotkey();
   (void)kill_all_lossless_and_wait(static_cast<DWORD>(fg_kill_wait_max_ms()));
   configure(hdmi_lobby_fg_multiplier(fg_enabled, fg_mult), path, queue, adaptive ? 1 : 0, target_fps,
-            monitor_hz);
+            monitor_hz, -1.0, flow_scale);
   const bool ok = apply_profile(err);
   bool snap_ok = true;
   const unsigned left = count_running_lossless_processes(true, &snap_ok);
@@ -518,17 +516,22 @@ bool LosslessFgController::apply_profile(std::string& err) {
   const int tgt = clamp_fg_adaptive_target(state_.target_fps, state_.monitor_hz, state_.capture_fps);
   const std::string path = localappdata_settings_path();
   std::string cur = path.empty() ? std::string() : read_file_utf8(path);
-  const std::string xml =
-      patch_mira_settings_xml(cur, m, state_.queue_target, state_.adaptive, tgt, state_.monitor_hz);
-  if (xml.find("LSFGFlowScale>80") == std::string::npos) {
-    err = "mira profile missing FlowScale 80";
+  const int flow = clamp_fg_flow_scale(state_.flow_scale);
+  const std::string xml = patch_mira_settings_xml(cur, m, state_.queue_target, state_.adaptive, tgt,
+                                                  state_.monitor_hz, flow);
+  const std::string want_flow = "LSFGFlowScale>" + std::to_string(flow);
+  if (xml.find(want_flow) == std::string::npos) {
+    err = "mira profile missing flow scale";
     state_.status = FgStatus::Error;
     return false;
   }
-  if (xml.find("LSFGFlowScale>70") != std::string::npos) {
-    err = "refusing FlowScale 70";
-    state_.status = FgStatus::Error;
-    return false;
+  for (int other : {70, 80, 90, 100}) {
+    if (other == flow) continue;
+    if (xml.find("LSFGFlowScale>" + std::to_string(other)) != std::string::npos) {
+      err = "mira profile flow scale mismatch";
+      state_.status = FgStatus::Error;
+      return false;
+    }
   }
   if (!write_settings_file(xml, err)) {
     state_.status = FgStatus::Error;
@@ -548,7 +551,7 @@ bool LosslessFgController::apply_profile(std::string& err) {
   // Falhar aqui nao derruba o FG: fica em state_.ini_hide_error, nao no err desta chamada.
   std::string ini_err;
   write_ini_alongside_exe(ini_err);
-  state_.flow_scale = 80;
+  state_.flow_scale = flow;
   state_.capture_api = "WGC";
   if (state_.multiplier <= 1) {
     state_.status = FgStatus::Off;
@@ -822,6 +825,8 @@ bool LosslessFgController::request_cycle_multiplier(HWND target, std::string& er
 
 bool LosslessFgController::tick(double now_ms) {
   if (pending_ == FgPending::None) return false;
+  // O atalho do boot espera o primeiro frame HDMI. Não mostra a janela antes.
+  if (defer_hotkey_ && pending_ == FgPending::OnSendHotkey) return false;
   // Negative due = delay ms from first tick.
   if (pending_due_ms_ < 0) {
     pending_due_ms_ = now_ms + (-pending_due_ms_);
@@ -989,6 +994,65 @@ bool LosslessFgController::toggle(HWND target, std::string& err) {
   return run_sync_until_idle(err);
 }
 
+bool LosslessFgController::arm_autostart(HWND target, std::string& err) {
+  if (!configured_) {
+    err = "not configured";
+    return false;
+  }
+  if (state_.multiplier < 2) return true;
+  if (pending_ != FgPending::None) {
+    err = "fg op already pending";
+    return false;
+  }
+  pending_hwnd_ = target;
+  pending_finished_ok_ = false;
+  pending_retries_ = 0;
+  if (count_running_lossless_processes(true) > 0) {
+    if (!ensure_process(err, /*allow_adopt=*/true)) return false;
+    pending_ = FgPending::OnSendHotkey;
+    pending_due_ms_ = 0;
+    defer_hotkey_ = true;
+    return true;
+  }
+  defer_hotkey_ = false;
+  return request_toggle(target, err);
+}
+
+void LosslessFgController::release_autostart_hotkey() {
+  if (!defer_hotkey_) return;
+  defer_hotkey_ = false;
+  if (pending_ == FgPending::OnSendHotkey) pending_due_ms_ = -120;
+}
+
+bool LosslessFgController::detach_for_restart() {
+  bool kept = true;
+  if (job_) {
+    auto clear_kill = [&]() {
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+      DWORD returned = 0;
+      if (QueryInformationJobObject(job_, JobObjectExtendedLimitInformation, &info, sizeof(info), &returned)) {
+        info.BasicLimitInformation.LimitFlags &= ~static_cast<DWORD>(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
+        if (SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &info, sizeof(info))) return true;
+      }
+      JOBOBJECT_EXTENDED_LIMIT_INFORMATION blank{};
+      return SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &blank, sizeof(blank)) != FALSE;
+    };
+    kept = clear_kill();
+    CloseHandle(job_);
+    job_ = nullptr;
+  }
+  if (proc_) {
+    CloseHandle(proc_);
+    proc_ = nullptr;
+  }
+  state_.pid = 0;
+  state_.active = false;
+  pending_ = FgPending::None;
+  defer_hotkey_ = false;
+  confirmed_on_ = false;
+  return kept;
+}
+
 void LosslessFgController::hide_ls_windows() { EnumWindows(enum_hide_ls, 0); }
 
 bool LosslessFgController::focus_window(HWND hwnd) {
@@ -1018,18 +1082,22 @@ bool LosslessFgController::send_ls_hotkey() {
 }
 
 void LosslessFgController::shutdown(DWORD wait_ms) {
+  if (job_) {
+    CloseHandle(job_);  // KILL_ON_JOB_CLOSE mata quem ainda está no Job
+    job_ = nullptr;
+  }
   if (proc_) {
-    // Prefer graceful close of main window, then terminate via job.
-    if (state_.pid && wait_ms > 0) WaitForSingleObject(proc_, wait_ms);
+    DWORD code = STILL_ACTIVE;
+    if (state_.pid && GetExitCodeProcess(proc_, &code) && code == STILL_ACTIVE) {
+      TerminateProcess(proc_, 0);
+      if (wait_ms > 0) WaitForSingleObject(proc_, wait_ms);
+    }
     CloseHandle(proc_);
     proc_ = nullptr;
   }
-  if (job_) {
-    CloseHandle(job_);  // KILL_ON_JOB_CLOSE
-    job_ = nullptr;
-  }
   state_.pid = 0;
   state_.active = false;
+  defer_hotkey_ = false;
   confirmed_on_ = false;
   if (state_.status == FgStatus::On || state_.status == FgStatus::Ready) {
     state_.status = state_.multiplier <= 1 ? FgStatus::Off

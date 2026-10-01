@@ -50,6 +50,7 @@ std::atomic<bool> g_toggle_fs{false};
 std::atomic<bool> g_toggle_dlss{false};
 std::atomic<bool> g_toggle_fg{false};
 std::atomic<bool> g_toggle_nr{false};
+std::atomic<int> g_pass_step{0};
 // RenoDX runtime NR — carry from lobby via cfg.nr_runtime_on (same process often keeps NR ON).
 bool g_nr_runtime_on = false;
 bool g_renodx_multipass = false;  // active stack (AddonPath) — multipass owns NR, no hotkey
@@ -158,6 +159,10 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if (vk == g_hotkeys.vk_fg_cycle) g_cycle_fg = true;
       // Bit 30 = auto-repeat KEYDOWN — one Delete must be one Bridge pulse (else HUD/RenoDX desync).
       if (vk == g_hotkeys.vk_nr_toggle && (lp & (1u << 30)) == 0) g_toggle_nr = true;
+      if (!is_repeat) {
+        const int pass_step = nexuscap::pass_cycle_hotkey_step(vk, ctrl_down, g_hotkeys);
+        if (pass_step != 0) g_pass_step.store(pass_step);
+      }
       if (vk == g_hotkeys.vk_fullscreen) g_toggle_fs = true;
       return 0;
     }
@@ -178,12 +183,6 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       break;
   }
   return DefWindowProcW(hwnd, msg, wp, lp);
-}
-
-void append_log(const std::string& dir, const std::string& line) {
-  fs::create_directories(dir);
-  std::ofstream f(dir + "/nexuscap.log", std::ios::app);
-  if (f) f << line << "\n";
 }
 
 int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
@@ -209,7 +208,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   g_quit_clock = &clock;
   const bool esc_down = (GetAsyncKeyState(cfg.hotkeys.vk_quit) & 0x8000) != 0;
   g_quit_gate.reset(clock.now_ms(), esc_down, 750.0);
-  if (esc_down) append_log(cfg.log_dir, "quit-gate: Esc held at session start — waiting KEYUP");
 
   // Escala que o Feed travou neste processo (lobby abre em 100%, --autostart já entra escalado).
   // O CFG da sessão compara com ela pra saber se aplicar a escala pede reinício.
@@ -236,18 +234,15 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         g_nr_boot_retries = 0;
         g_nr_runtime_on = true;
         cfg.nr_runtime_on = true;
-        append_log(cfg.log_dir, "nr boot: perf-test trust NeuralUplift ON (no EvaluateFeature wait)");
       } else if (cfg.perf_test) {
         cfg.nr_runtime_on = false;
         g_nr_runtime_on = false;
         g_nr_boot_retries = 0;
-        append_log(cfg.log_dir, "nr boot: perf-test NR off");
       } else if (want_nr && !g_nr_runtime_on) {
         // Fresh session + NeuralUplift=1: RenoDX boots NR ON. Skip Bridge pulse.
         g_nr_boot_retries = 0;
         g_nr_runtime_on = true;
         cfg.nr_runtime_on = true;
-        append_log(cfg.log_dir, "nr boot: trust NeuralUplift ON (no enable-pulse)");
       } else {
         g_nr_boot_retries = boot.need_bridge_pulse ? 180 : 0;  // e.g. turn OFF after lobby
       }
@@ -270,8 +265,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         // O addon le o arquivo no init, entao o valor travado e o que acabamos de gravar.
         if (sync_feed_work_resolution_in_dir(exe_dir.string(), want, cfg.nr_pass_count)) {
           feed_locked_scale = want;
-          append_log(cfg.log_dir, "scale feed work_resolution " + std::to_string(before) + " -> " +
-                                      std::to_string(want) + " (session ui=" + std::to_string(cfg.scale_percent) + ")");
           if (before != want) {
             std::printf("renodx feed work_resolution %d → %d (session scale)\n", before, want);
           }
@@ -279,15 +272,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           feed_locked_scale = before;
         }
       }
-      if (sync_nr_pass_count_files(exe_dir.string(), cfg.nr_pass_count, cfg.renodx_preset)) {
-        append_log(cfg.log_dir, std::string("nr pass count → ") + std::to_string(clamp_nr_pass_count(cfg.nr_pass_count)));
+      const NrAdvancedLook* session_look = session_nr_look_for_sync(cfg);
+      if (sync_nr_pass_count_files(exe_dir.string(), cfg.nr_pass_count, cfg.renodx_preset, session_look)) {
         std::printf("nr pass count: %d (%s)\n", clamp_nr_pass_count(cfg.nr_pass_count),
                     nr_pass_count_label(cfg.nr_pass_count));
       }
       // Visual por ultimo: look defaults do Pass Count nao podem deixar NRStyle=0 no Cinema.
-      if (sync_renodx_visual_preset_files(exe_dir.string(), cfg.renodx_preset, cfg.nr_pass_count)) {
-        append_log(cfg.log_dir, std::string("renodx preset → ") +
-                                    renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count));
+      if (sync_renodx_visual_preset_files(exe_dir.string(), cfg.renodx_preset, cfg.nr_pass_count,
+                                         session_look)) {
         std::printf("renodx preset: %s (NR=%d model=%d)\n",
                     renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count),
                     renodx_nr_preset_index(cfg.renodx_preset),
@@ -301,15 +293,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     // enabled=1 com NR=OFF, o DLSS5 continua a avaliar (log: restart sem mudar a imagem).
     if (cfg.enhance == EnhanceBackend::Renodx) {
       if (sync_neural_rendering_enabled_files(exe_dir.string(), want_nr, /*feed_on=*/want_nr)) {
-        append_log(cfg.log_dir, std::string("neural rendering files NR=") + (want_nr ? "ON" : "OFF") +
-                                    " feed=" + (want_nr ? "ON" : "OFF") + " (runtime pulse pending=" +
-                                    std::to_string(g_nr_boot_retries > 0) + ")");
         std::printf("neural rendering: NR=%s feed=%s (Delete=reinicio)\n", want_nr ? "ON" : "OFF",
                     want_nr ? "ON" : "OFF");
       }
     } else if (session_writes_renodx_off_files(cfg) &&
                sync_neural_rendering_enabled_files(exe_dir.string(), false, false)) {
-      append_log(cfg.log_dir, "neural rendering files OFF (runtime pulse pending=0)");
       std::printf("neural rendering files: OFF\n");
     }
   }
@@ -361,6 +349,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
     return 2;
   }
+  if (g_restart_notice.visible()) g_restart_notice.pump();
   renderer.present_black();  // Benchmark/sessao: sem clarão branco no primeiro Present
   renderer.set_vsync(cfg.sync_image);
   // v2.0: RenoDX → Present native; UI scale only drives Feed work_resolution.
@@ -483,17 +472,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   } else if (!try_start_capture()) {
     // Mode churn / exclusive device: one settle+retry before fake fallback.
     if (!synthetic_capture && !window_source) {
-      append_log(cfg.log_dir, "capture start fail: " + err + " — retry apos settle");
       Sleep(static_cast<DWORD>(capture_device_settle_ms()));
       capture = std::make_unique<DShowCapture>();
       if (try_start_capture()) {
-        append_log(cfg.log_dir, "capture start ok on retry");
       }
     }
   }
   if (!capture->running()) {
     std::fprintf(stderr, "capture: %s\n", err.c_str());
-    append_log(cfg.log_dir, "capture start FAILED: " + err);
     if (cfg.selftest_cap) {
       std::printf("SKIP selftest-cap: %s\n", err.c_str());
       g_session_renderer = nullptr;
@@ -508,7 +494,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       Sleep(1600);
       g_restart_notice.destroy();
       std::fprintf(stderr, "perf-test: %s — voltando ao lobby\n", err.c_str());
-      append_log(cfg.log_dir, "perf-test fail → lobby: " + err);
       g_session_renderer = nullptr;
       if (enhance) {
         renderer.set_enhance(nullptr);
@@ -526,7 +511,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       const std::string fail_title = session_capture_fail_title();
       const std::string fail_detail = session_capture_fail_detail(err);
       std::fprintf(stderr, "capture falhou — voltando ao lobby (sem fake): %s\n", fail_detail.c_str());
-      append_log(cfg.log_dir, "capture fail → lobby (no fake fallback): " + fail_detail);
       g_restart_notice.show(hi, fail_title, fail_detail);
       g_restart_notice.pump();
       Sleep(1800);
@@ -557,6 +541,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       return 3;
     }
   }
+  if (g_restart_notice.visible()) g_restart_notice.pump();
 
   const std::string opened = capture->opened_device();
   std::printf("capture format: %s  color %s/%s  buf %s\n", video_fourcc_name(capture->opened_fourcc()),
@@ -575,15 +560,20 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
   AudioMonitor audio;
   ClipAudioPlayer clip_audio;
+  // No restart, o som espera o primeiro frame HDMI. Não segura a imagem.
+  bool audio_start_pending = false;
   if (!synthetic_capture && !cfg.smoke && session_hdmi_audio_wanted(false, false, window_source)) {
+    if (hold_boot && !cfg.perf_test) {
+      audio_start_pending = true;
+    } else {
     std::string aerr;
     if (!audio.start(audio_prefer, aerr)) {
       std::fprintf(stderr, "audio: %s (continuando sem som)\n", aerr.c_str());
     } else {
       std::printf("audio: monitorando %s -> saida padrao\n",
                   audio_prefer.empty() ? "auto" : audio_prefer.c_str());
-      append_log(cfg.log_dir, "audio monitor started (" + (audio_prefer.empty() ? "auto" : audio_prefer) + ")");
       audio.set_volume(cfg.capture_volume);
+    }
     }
   } else if (cfg.perf_test && cfg.perf_test_audio && !cfg.smoke) {
     std::string aerr;
@@ -591,9 +581,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     clip_audio.set_volume(cfg.capture_volume);
     if (!clip_audio.start(cfg.video_path, audio_side, aerr)) {
       std::fprintf(stderr, "perf-test audio: %s (continuando sem som)\n", aerr.c_str());
-      append_log(cfg.log_dir, "perf-test clip audio fail: " + aerr);
     } else {
-      append_log(cfg.log_dir, "perf-test clip audio ready sidecar=" + audio_side);
     }
   }
 
@@ -619,8 +607,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   const int boot_hz = display_refresh_hz(hwnd);
   cfg.fg_target_fps = clamp_fg_adaptive_target(cfg.fg_target_fps, boot_hz);
   fg.configure(cfg.fg_multiplier, cfg.fg_path, cfg.fg_queue, cfg.fg_adaptive ? 1 : 0, cfg.fg_target_fps,
-               boot_hz);
-  {
+               boot_hz, -1.0, cfg.fg_flow_scale);
+  // No restart o XML do Lossless espera o primeiro frame. O arm_autostart grava de novo.
+  bool profile_pending = hold_boot && !cfg.perf_test;
+  if (!profile_pending) {
     std::string ferr;
     // Sempre grava mira-lock (Flow 80 / WGC), auto Steam ou Pasta — mesmo com FG off.
     if (!fg.apply_profile(ferr)) {
@@ -643,7 +633,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     char hbuf[128];
     std::snprintf(hbuf, sizeof(hbuf), "hitch threshold=%.1fms (cfg=%.1f @ %.0ffps)", hitch_ms,
                   cfg.hitch_threshold_ms, cfg.fps);
-    append_log(cfg.log_dir, hbuf);
     std::printf("%s\n", hbuf);
   }
   ClusterDetector clusters;
@@ -708,7 +697,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
   SystemMetricsSampler hw_sampler;
   const bool sample_hw = cfg.hw_info || cfg.mini_overlay;
-  if (sample_hw) {
+  // A primeira leitura de CPU/GPU (NVML) não pode atrasar o frame do restart.
+  if (sample_hw && !(hold_boot && !cfg.perf_test)) {
     SystemMetricsSample hw{};
     hw_sampler.sample(renderer.device(), hw);
     overlay.cpu_ok = hw.cpu_ok;
@@ -798,7 +788,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         collect_renodx_report_snippets(exe_dir, snap.reshade_snippet, snap.feed_snippet, snap.mgf_snippet);
       }
       w.start(kind, path, snap);
-      append_log(cfg.log_dir, std::string(session_report_subdir(kind)) + " -> " + path);
       std::printf("%s report: %s\n", session_report_file_prefix(kind), path.c_str());
     };
 
@@ -828,7 +817,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     std::printf("session cfg: Ctrl+%s abre o menu na captura\n", vk_display_name(cfg.hotkeys.vk_cfg));
   } else {
     std::fprintf(stderr, "session cfg: ImGui nao inicializou — menu na captura indisponivel\n");
-    append_log(cfg.log_dir, "session cfg init failed");
   }
   g_cfg_open = false;
   g_toggle_cfg = false;
@@ -838,6 +826,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     cfg_ui.set_open(true);
     g_cfg_open = true;
     std::printf("selftest-cfg: menu aberto na sessao\n");
+  } else if (cfg.open_session_cfg && cfg_ui_ready) {
+    cfg_ui.set_open(true);
+    g_cfg_open = true;
+    cfg.open_session_cfg = false;
+    if (cfg.open_nr_advanced) cfg_ui.reopen_advanced_section();
+    cfg.open_nr_advanced = false;
+    std::printf("session cfg: voltou aberto (so fecha se o utilizador fechar)\n");
   }
 
   std::printf("session panel: off (captura limpa)\n");
@@ -926,14 +921,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
   // Gear FG on → liga na abertura (não só perfil pronto). Off = PageDn habilita.
   // No teste a janela fica oculta até o NR aquecer; o LS precisa dela visível.
-  if (cfg.fg_auto_start && cfg.fg_multiplier >= 2 && !cfg.perf_test) {
+  // No restart, adotar o Lossless só depois do primeiro frame HDMI.
+  bool fg_arm_pending = cfg.fg_auto_start && cfg.fg_multiplier >= 2 && !cfg.perf_test;
+  if (!fg_arm_pending && cfg.fg_auto_start && cfg.fg_multiplier >= 2 && !cfg.perf_test) {
     std::string ferr;
-    if (fg.toggle(hwnd, ferr)) {
-      std::printf("fg auto-on x%d\n", fg.state().multiplier);
-      append_log(cfg.log_dir, "fg auto-on x" + std::to_string(fg.state().multiplier));
+    if (fg.arm_autostart(hwnd, ferr)) {
+      std::printf("fg auto-on x%d (async)\n", fg.state().multiplier);
     } else {
       std::fprintf(stderr, "fg auto-on: %s\n", ferr.c_str());
-      append_log(cfg.log_dir, "fg auto-on fail: " + ferr);
       bug_exc("fg_auto_on", ferr);
       if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
         session_notice.push(session_notice_fg_missing(), clock.now_ms());
@@ -944,10 +939,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     info.fg_status = fg_status_name(fg.state().status);
   }
 
-  append_log(cfg.log_dir,
-             std::string("session start device=") + info.device +
-                 " hud=" + (cfg.show_overlay ? "on" : "off") +
-                 " advanced=" + (cfg.advanced_metrics ? "1" : "0"));
 
   while (g_running) {
     MSG msg;
@@ -970,12 +961,18 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     // Ctrl+M / Esc / botão Fechar — sempre pela flag, nunca dentro da janela.
     if (g_toggle_cfg.exchange(false) && cfg_ui_ready && !cfg_restart_pending) {
-      cfg_ui.toggle_open();
-      g_cfg_open = cfg_ui.open();
+      if (cfg_ui.open()) cfg_ui.request_user_close();
+      else {
+        cfg_ui.set_open(true);
+        g_cfg_open = true;
+      }
     }
     if (g_close_cfg.exchange(false) && cfg_ui_ready) {
-      cfg_ui.set_open(false);
-      g_cfg_open = false;
+      if (cfg_ui.open()) cfg_ui.request_user_close();
+      else {
+        cfg_ui.set_open(false);
+        g_cfg_open = false;
+      }
     }
 
     if (g_toggle_dlss.exchange(false)) {
@@ -988,7 +985,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg.dlss = eo.enabled;
         if (eo.enabled) cfg.enhance = EnhanceBackend::Streamline;
         info.dlss_enabled = eo.enabled && enhance->feature_supported();
-        append_log(cfg.log_dir, std::string("DLSS toggle ") + (eo.enabled ? "ON" : "OFF"));
         std::printf("DLSS %s\n", eo.enabled ? "ON" : "OFF");
       }
     }
@@ -996,14 +992,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (g_toggle_nr.exchange(false)) {
       const double now_nr = clock.now_ms();
       if (cfg_restart_pending) {
-        append_log(cfg.log_dir, "nr toggle ignored (restart pending)");
       } else if (g_nr_confirm.active) {
-        append_log(cfg.log_dir, "nr toggle ignored (confirm pending)");
       } else if (!nr_toggle_debounce_ok(now_nr, g_nr_toggle_last_ms)) {
-        append_log(cfg.log_dir, "nr toggle ignored (debounce <350ms)");
       } else if (!session_nr_hotkey_allowed(cfg.enhance)) {
         std::printf("nr toggle: RenoDX off — marque RenoDX no lobby (FG continua independente)\n");
-        append_log(cfg.log_dir, "nr toggle blocked: RenoDX not loaded this session");
         bug_exc("nr_toggle", "blocked: RenoDX not loaded this session");
         session_notice.push(session_notice_nr_needs_renodx(), clock.now_ms());
       } else {
@@ -1022,8 +1014,33 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg_restart_pending = true;
         cfg_restart_until = now_nr;
         write_restart_toast(session_notice_nr_apply(want_on));
-        append_log(cfg.log_dir, std::string("cfg nr restart → ") + (want_on ? "ON" : "OFF"));
         std::printf("neural rendering %s (Delete→reinicio) — Frame Gen nao muda\n", want_on ? "ON" : "OFF");
+      }
+    }
+
+    if (const int step = g_pass_step.exchange(0)) {
+      if (!cfg_restart_pending && !cfg.perf_test && cfg.enhance == EnhanceBackend::Renodx) {
+        const int before = clamp_nr_pass_count(cfg.nr_pass_count);
+        const int after = step_nr_pass_count(before, step);
+        wchar_t exe_path[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+        const std::string exe_dir = fs::path(exe_path).parent_path().string();
+        if (!prepare_renodx_runtime_dirs(exe_dir)) {
+          session_notice.push(renodx_write_denied_notice(), clock.now_ms());
+        } else {
+          const int pass = clamp_nr_pass_count(after);
+          cfg.nr_pass_count = pass;
+          (void)sync_nr_pass_count_files(exe_dir, pass, cfg.renodx_preset, &cfg.nr_advanced[pass]);
+          (void)sync_feed_work_resolution_in_dir(
+              exe_dir,
+              feed_work_resolution_for_session(cfg.scale_percent, pass, info.width, info.height), pass);
+          cfg_restart_kind =
+              plan_session_cfg_apply(true, before, after, feed_locked_scale, cfg.scale_percent);
+          cfg_restart_pending = true;
+          cfg_restart_until = clock.now_ms();
+          write_restart_toast(session_notice_nr_pass_count_apply(before, after));
+          overlay.nr_pass_count = pass;
+        }
       }
     }
 
@@ -1035,8 +1052,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg.nr_runtime_on = g_nr_runtime_on;
         apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
         info.dlss_enabled = g_nr_runtime_on;
-        append_log(cfg.log_dir, std::string("neural rendering ") + (g_nr_runtime_on ? "ON" : "OFF") +
-                                    " (log confirm)");
         std::printf("neural rendering %s (confirm) — Frame Gen nao muda\n",
                     g_nr_runtime_on ? "ON" : "OFF");
       }
@@ -1060,11 +1075,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
             overlay.renodx_on = g_nr_runtime_on;
             info.dlss_enabled = g_nr_runtime_on;
             cfg.nr_runtime_on = g_nr_runtime_on;
-            append_log(cfg.log_dir, std::string("neural rendering runtime ") +
-                                        (g_nr_runtime_on ? "ON" : "OFF") + " (Bridge pulse)");
             std::printf("neural rendering runtime: %s (Bridge pulse)\n", g_nr_runtime_on ? "ON" : "OFF");
           } else {
-            append_log(cfg.log_dir, "neural rendering boot pulse sent (await log confirm)");
           }
         }
       }
@@ -1076,8 +1088,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       int cw = 0, ch = 0;
       if (apply_display_mode(hwnd, renderer, g_session_fullscreen, g_session_signal_w, g_session_signal_h, &cw,
                              &ch)) {
-        append_log(cfg.log_dir, std::string("display ") + (g_session_fullscreen ? "fullscreen" : "windowed") +
-                                    " client=" + std::to_string(cw) + "x" + std::to_string(ch));
         std::printf("display: %s (%dx%d)\n", g_session_fullscreen ? "fullscreen" : "windowed", cw, ch);
       }
     }
@@ -1085,10 +1095,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     if (g_toggle_fg.exchange(false)) {
       std::string ferr;
       if (fg.busy()) {
-        append_log(cfg.log_dir, "fg toggle ignored (op pending)");
       } else if (!fg.request_toggle(hwnd, ferr)) {
         std::printf("fg toggle: %s\n", ferr.c_str());
-        append_log(cfg.log_dir, "fg toggle fail: " + ferr);
         bug_exc("fg_toggle", ferr);
         if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
           session_notice.push(session_notice_fg_missing(), clock.now_ms());
@@ -1098,19 +1106,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       } else {
         session_notice.push(fg.state().active ? "Frame Gen — desligando…" : "Frame Gen — aplicando…",
                             clock.now_ms());
-        append_log(cfg.log_dir, "fg toggle requested (async)");
       }
     }
     if (g_cycle_fg.exchange(false)) {
       std::string ferr;
       if (fg.busy()) {
-        append_log(cfg.log_dir, "fg cycle ignored (op pending)");
       } else if (!fg.request_cycle_multiplier(hwnd, ferr)) {
         std::printf("fg cycle: %s\n", ferr.c_str());
       } else {
         session_notice.push("Frame Gen — trocando x" + std::to_string(fg.state().multiplier) + "…",
                             clock.now_ms());
-        append_log(cfg.log_dir, "fg cycle requested (async)");
       }
     }
     if (g_cycle_overlay.exchange(false)) {
@@ -1132,15 +1137,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       info.fg_status = fg_status_name(fg.state().status);
       if (!fg.state().last_error.empty() && fg.state().status == FgStatus::Error) {
         session_notice.push("Frame Gen — " + fg.state().last_error, clock.now_ms());
-        append_log(cfg.log_dir, "fg async fail: " + fg.state().last_error);
         bug_exc("fg_async", fg.state().last_error);
       } else {
         std::printf("fg %s x%d\n", fg.state().active ? "ON" : "off", fg.state().multiplier);
-        append_log(cfg.log_dir, std::string("fg ") + (fg.state().active ? "ON" : "off") + " x" +
-                                    std::to_string(fg.state().multiplier) + " (async confirm)");
         // Contador do LS: FG segue valendo, mas o hide falhado nao fica invisivel no log.
         if (!fg.state().ini_hide_error.empty()) {
-          append_log(cfg.log_dir, "fg ls fps counter hide: " + fg.state().ini_hide_error);
         }
         if (session_notice_for_fg_toggle(fg.state().active)) {
           session_notice.push(session_notice_fg_on(), clock.now_ms());
@@ -1156,14 +1157,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     const bool analyze_on = g_analyze.load();
     if (analyze_on && !analyze_was) {
       analyze.set_verbose(true);
-      append_log(cfg.log_dir, "ANALYZE ON");
     }
     if (!analyze_on && analyze_was) {
       analyze.set_verbose(false);
       analyze.session_end(clock.now_ms());
       std::string jsonl, summary;
       if (write_analyze_files(cfg.log_dir, analyze, clock.now_ms(), jsonl, summary)) {
-        append_log(cfg.log_dir, "ANALYZE flush " + summary);
         std::printf("Analyze written:\n  %s\n  %s\n", jsonl.c_str(), summary.c_str());
       }
       // start a fresh session buffer for continued run
@@ -1206,11 +1205,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         const size_t last_bytes = capture->last_sample_bytes();
         const int prev_w = ow;
         const int prev_h = oh;
-        char hbuf[192];
-        std::snprintf(hbuf, sizeof(hbuf),
-                      "hdmi recover: Stop/Run bytes=%zu rejected=%llu opened=%dx%d user=%dx%d", last_bytes,
-                      static_cast<unsigned long long>(capture->rejected_samples()), ow, oh, cap_w, cap_h);
-        append_log(cfg.log_dir, hbuf);
         slot.clear();
         capture = std::make_unique<DShowCapture>();
         CaptureStartOptions rec = cap_opt;
@@ -1227,7 +1221,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         err.clear();
         bool ok = capture->start(cfg.device_name, rec, slot, clock, err);
         if (!ok && (try_w != cap_opt.width || try_h != cap_opt.height)) {
-          append_log(cfg.log_dir, std::string("hdmi recover retry user mode: ") + err);
           capture = std::make_unique<DShowCapture>();
           rec.width = cap_opt.width;
           rec.height = cap_opt.height;
@@ -1255,10 +1248,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           std::snprintf(okbuf, sizeof(okbuf), "hdmi recover ok signal %dx%d (pedido %dx%d) feed_rebuild=%d",
                         capture->opened_width(), capture->opened_height(), rec.width, rec.height,
                         size_changed ? 1 : 0);
-          append_log(cfg.log_dir, okbuf);
           std::printf("%s\n", okbuf);
         } else {
-          append_log(cfg.log_dir, std::string("hdmi recover fail: ") + err);
         }
         have_new = false;
         hdmi_act = HdmiRecoverAction::Hold;
@@ -1296,12 +1287,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           hdmi_notice_until_ms = now_idle + static_cast<double>(hdmi_notice_dwell_ms());
         }
         if (hdmi_lost_long_enough(hdmi, now_idle) && !hdmi_hold_logged) {
-          char hbuf[256];
-          std::snprintf(hbuf, sizeof(hbuf),
-                        "hdmi hold: console dropped HDMI — last good frozen, notice burned (lost=%d discard=%d u=%d v=%d yrange=%d)",
-                        hdmi.lost ? 1 : 0, hdmi.discard_left, last_reject_ch.u, last_reject_ch.v,
-                        last_reject_ch.y_range);
-          append_log(cfg.log_dir, hbuf);
           hdmi_hold_logged = true;
         }
         if (!last_good_ok) {
@@ -1421,11 +1406,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.nr_busy = g_nr_confirm.active;
       ui.renodx_preset = clamp_renodx_visual_preset(cfg.renodx_preset);
       ui.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
+      copy_nr_advanced(ui.nr_advanced, cfg.nr_advanced);
       ui.scale_percent = clamp_scale_percent(cfg.scale_percent);
       ui.feed_loaded_scale = feed_locked_scale;
       ui.fg_on = fg.state().active;
       ui.fg_multiplier = fg.state().multiplier >= 2 ? fg.state().multiplier : cfg.fg_multiplier;
       ui.fg_queue = clamp_fg_queue(fg.state().queue_target);
+      ui.fg_flow_scale = clamp_fg_flow_scale(fg.state().flow_scale);
       ui.fg_adaptive = fg.state().adaptive;
       ui.fg_target_fps = fg.state().target_fps;
       ui.monitor_hz = display_refresh_hz(hwnd);
@@ -1438,22 +1425,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.overlay_console = cfg.overlay_console;
       ui.signal_w = overlay.capture_w > 0 ? overlay.capture_w : cap_w;
       ui.signal_h = overlay.capture_h > 0 ? overlay.capture_h : cap_h;
-      ui.vk_cfg = g_hotkeys.vk_cfg;
-      ui.cfg_ctrl = g_hotkeys.cfg_ctrl;
+      if (!cfg_ui.hotkeys_edit_locked()) {
+        ui.hotkeys = g_hotkeys;
+        ui.vk_cfg = g_hotkeys.vk_cfg;
+        ui.cfg_ctrl = g_hotkeys.cfg_ctrl;
+      }
       ui.status = overlay.session_notice;
       cfg_ui.fg_can_enable = lobby_fg_can_enable(cfg.fg_path);
       cfg_ui.presets_locked = cfg.perf_test;
-      if (cfg_restart_pending) {
-        cfg_ui.set_restart_hold(session_restart_notice_title(),
-                                session_restart_notice_detail(cfg_restart_kind));
-        g_cfg_open = false;
-      }
     }
 
     const FramePayload& present_src =
         holding ? (last_good_ok ? last_good : hold_black) : (file_repeat ? file_last : frame);
     if (!renderer.present_frame(present_src, overlay, present_ms, err)) {
-      append_log(cfg.log_dir, "present error: " + err);
       bug_exc("present", err);
       if (perf_rep.active()) perf_rep.note_event(now, "present_error", err.c_str());
     }
@@ -1496,6 +1480,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         ui.fg_on = act.apply_fg_on;
         ui.fg_multiplier = act.apply_fg_multiplier;
         ui.fg_queue = clamp_fg_queue(act.apply_fg_queue);
+        ui.fg_flow_scale = clamp_fg_flow_scale(act.apply_fg_flow_scale);
         ui.fg_adaptive = act.apply_fg_adaptive;
         ui.fg_target_fps = act.apply_fg_target_fps;
         // Restart do Pass/look grava cfg no settings.ini. Sem isto, escala/FG/NR
@@ -1503,11 +1488,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg.scale_percent = clamp_scale_percent(act.apply_scale_percent);
         apply_session_fg_to_config(act.apply_fg_on, act.apply_fg_multiplier, cfg);
         cfg.fg_queue = clamp_fg_queue(act.apply_fg_queue);
+        cfg.fg_flow_scale = clamp_fg_flow_scale(act.apply_fg_flow_scale);
         cfg.fg_adaptive = act.apply_fg_adaptive;
         cfg.fg_target_fps = clamp_fg_adaptive_target_stored(act.apply_fg_target_fps);
         cfg.neural_rendering = act.apply_nr_on;
         cfg.renodx_preset = clamp_renodx_visual_preset(act.apply_renodx_preset);
         cfg.nr_pass_count = clamp_nr_pass_count(act.apply_nr_pass_count);
+        copy_nr_advanced(cfg.nr_advanced, ui.nr_advanced);
         cfg.overlay_no_bg = act.apply_overlay_no_bg;
         cfg.overlay_console = act.apply_overlay_console;
         cfg.live_console = static_cast<int>(clamp_live_console(act.apply_live_console));
@@ -1516,6 +1503,19 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (act.close_requested) {
         cfg_ui.set_open(false);
         g_cfg_open = false;
+      }
+      if (act.hotkeys_changed) {
+        g_hotkeys = ui.hotkeys;
+        cfg.hotkeys = ui.hotkeys;
+        ui.vk_cfg = ui.hotkeys.vk_cfg;
+        ui.cfg_ctrl = ui.hotkeys.cfg_ctrl;
+        if (!cfg.perf_test) {
+          PersistedSettings ps = default_settings();
+          std::string serr;
+          load_settings(ps, settings_default_path(), serr);
+          ps.hotkeys = ui.hotkeys;
+          save_settings(ps, settings_default_path(), serr);
+        }
       }
       if (act.hud_changed) g_overlay = ui.hud_visible;
       if (act.overlay_no_bg_changed) {
@@ -1558,16 +1558,18 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (act.toggle_nr) g_toggle_nr = true;
       if (act.toggle_fg) g_toggle_fg = true;
       // Fixo/Adaptive antes do xN: o restart do multiplier tem de gravar o modo novo, nao o Adaptive leftover.
-      if (act.fg_queue_changed || act.fg_adaptive_changed || act.fg_target_changed) {
+      if (act.fg_queue_changed || act.fg_flow_changed || act.fg_adaptive_changed || act.fg_target_changed) {
         const int hz = display_refresh_hz(hwnd);
         const double cap_fps = overlay.fps_smooth > 1.0 ? overlay.fps_smooth : overlay.fps;
         cfg.fg_queue = clamp_fg_queue(ui.fg_queue);
+        cfg.fg_flow_scale = clamp_fg_flow_scale(ui.fg_flow_scale);
         cfg.fg_adaptive = ui.fg_adaptive;
         cfg.fg_target_fps = clamp_fg_adaptive_target(ui.fg_target_fps, hz, cap_fps);
         const int keep_mult = fg.state().multiplier >= 2 ? fg.state().multiplier : cfg.fg_multiplier;
         fg.configure(keep_mult, cfg.fg_path, cfg.fg_queue, cfg.fg_adaptive ? 1 : 0, cfg.fg_target_fps, hz,
-                     cap_fps);
+                     cap_fps, cfg.fg_flow_scale);
         overlay.fg_queue = cfg.fg_queue;
+        overlay.fg_flow_scale = cfg.fg_flow_scale;
         overlay.fg_adaptive = cfg.fg_adaptive;
         overlay.fg_target_fps = cfg.fg_target_fps;
         if (!cfg.perf_test) {
@@ -1575,34 +1577,35 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           std::string serr;
           load_settings(ps, settings_default_path(), serr);
           ps.fg_queue = cfg.fg_queue;
+          ps.fg_flow_scale = cfg.fg_flow_scale;
           ps.fg_adaptive = cfg.fg_adaptive;
           ps.fg_target_fps = cfg.fg_target_fps;
           save_settings(ps, settings_default_path(), serr);
         }
         const bool fg_live = fg.overlay_reads_on(hwnd) || fg.state().active;
         const bool mode_or_target = act.fg_adaptive_changed || act.fg_target_changed;
+        const bool flow_notice = act.fg_flow_changed && !act.fg_queue_changed && !mode_or_target;
         const std::string notice_live =
             mode_or_target ? session_notice_fg_adaptive_apply(cfg.fg_adaptive, cfg.fg_target_fps, hz, true, cap_fps)
+            : flow_notice  ? session_notice_fg_flow_apply(cfg.fg_flow_scale, true)
                            : session_notice_fg_queue_apply(cfg.fg_queue, true);
         const std::string notice_idle =
             mode_or_target ? session_notice_fg_adaptive_apply(cfg.fg_adaptive, cfg.fg_target_fps, hz, false, cap_fps)
+            : flow_notice  ? session_notice_fg_flow_apply(cfg.fg_flow_scale, false)
                            : session_notice_fg_queue_apply(cfg.fg_queue, false);
         if (act.fg_multiplier_changed) {
           // xN ja vai reabrir o LS; apply_profile la pega a fila/modo novos.
         } else if (fg.busy()) {
-          append_log(cfg.log_dir, "cfg fg profile ignored (op pending)");
         } else if (fg_live) {
           std::string ferr;
           if (!fg.request_set_multiplier(keep_mult, hwnd, ferr)) {
             std::printf("cfg fg perfil: %s\n", ferr.c_str());
-            append_log(cfg.log_dir, "cfg fg profile restart fail: " + ferr);
           } else {
             session_notice.push(notice_live, now);
           }
         } else {
           std::string ferr;
           if (!fg.apply_profile(ferr)) {
-            append_log(cfg.log_dir, "cfg fg profile write fail: " + ferr);
           }
           session_notice.push(notice_idle, now);
         }
@@ -1610,10 +1613,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (act.fg_multiplier_changed) {
         std::string ferr;
         if (fg.busy()) {
-          append_log(cfg.log_dir, "cfg fg multiplier ignored (op pending)");
         } else if (!fg.request_set_multiplier(ui.fg_multiplier, hwnd, ferr)) {
           std::printf("cfg fg x%d: %s\n", ui.fg_multiplier, ferr.c_str());
-          append_log(cfg.log_dir, "cfg fg multiplier fail: " + ferr);
         } else {
           session_notice.push(session_notice_fg_multiplier_up(ui.fg_multiplier), now);
         }
@@ -1631,8 +1632,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         } else {
           const int preset_before = clamp_renodx_visual_preset(cfg.renodx_preset);
           cfg.renodx_preset = clamp_renodx_visual_preset(ui.renodx_preset);
-          (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
-          (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset, cfg.nr_pass_count);
+          (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset,
+                                         &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)]);
+          (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset, cfg.nr_pass_count,
+                                                &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)]);
           if (!cfg.perf_test) {
             PersistedSettings ps = default_settings();
             std::string serr;
@@ -1646,8 +1649,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           cfg_restart_until = now;
           write_restart_toast(session_notice_preset_apply(preset_before, cfg.renodx_preset, cfg.nr_pass_count));
           overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
-          append_log(cfg.log_dir, std::string("cfg preset restart → ") +
-                                      renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count));
         }
       }
 
@@ -1668,7 +1669,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         } else if (plan != SessionCfgApply::Live) {
           // Motor novo ou PassCount novo: o addon só lê isso no init, então processo novo.
           cfg.nr_pass_count = clamp_nr_pass_count(ui.nr_pass_count);
-          (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset);
+          (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset,
+                                         &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)]);
           (void)sync_feed_work_resolution_in_dir(
               exe_dir_cfg, feed_work_resolution_for_session(cfg.scale_percent, cfg.nr_pass_count, info.width,
                                                            info.height),
@@ -1689,18 +1691,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           write_restart_toast(motor ? session_notice_dlss5_motor_swap(act.pass_count_before, cfg.nr_pass_count)
                                     : session_notice_nr_pass_count_apply(act.pass_count_before,
                                                                          cfg.nr_pass_count));
-          append_log(cfg.log_dir, std::string(motor ? "cfg motor swap → " : "cfg pass count recycle → ") +
-                                      nr_pass_count_label(cfg.nr_pass_count));
         } else {
           cfg.nr_pass_count = clamp_nr_pass_count(ui.nr_pass_count);
           const bool want = want_neural_rendering(true, cfg.neural_rendering);
           apply_lobby_nr_pass_count_live(exe_dir_cfg, cfg.nr_pass_count, want, &g_nr_runtime_on,
-                                         cfg.renodx_preset);
+                                         cfg.renodx_preset,
+                                         &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)]);
           cfg.nr_runtime_on = g_nr_runtime_on;
           overlay.nr_pass_count = cfg.nr_pass_count;
           overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
           session_notice.push(std::string("Pass Count: ") + nr_pass_count_label(cfg.nr_pass_count), now);
-          append_log(cfg.log_dir, "cfg pass count → " + std::string(nr_pass_count_label(cfg.nr_pass_count)));
         }
       } else if (act.pass_count_changed) {
         ui.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
@@ -1714,7 +1714,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
               exe_dir_cfg, feed_work_resolution_for_session(want_scale, cfg.nr_pass_count, info.width,
                                                            info.height),
               cfg.nr_pass_count);
-          append_log(cfg.log_dir, "cfg feed scale (com restart) → " + std::to_string(want_scale) + "%");
         } else if (plan == SessionCfgApply::RecycleWorker) {
           cfg.scale_percent = want_scale;
           cfg_restart_kind = SessionCfgApply::RecycleWorker;
@@ -1723,7 +1722,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           write_restart_toast(session_notice_feed_scale_apply(
               effective_scale_percent(renodx_now, feed_locked_scale, cfg.nr_pass_count, info.width, info.height),
               effective_scale_percent(renodx_now, want_scale, cfg.nr_pass_count, info.width, info.height)));
-          append_log(cfg.log_dir, "cfg feed scale → " + std::to_string(want_scale) + "% (reinicio)");
         } else {
           cfg.scale_percent = want_scale;
           renderer.set_scale_percent(app_present_scale_percent(renodx_now, want_scale));
@@ -1737,7 +1735,36 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                                                                   info.width, info.height)) +
                   "%",
                               now);
-          append_log(cfg.log_dir, "cfg scale → " + std::to_string(want_scale) + "% (ao vivo)");
+        }
+      }
+
+      if ((act.nr_advanced_apply || act.nr_advanced_changed) && renodx_now) {
+        if (!prepare_renodx_runtime_dirs(exe_dir_cfg)) {
+          session_notice.push(renodx_write_denied_notice(), now);
+        } else {
+          if (act.nr_advanced_apply) copy_nr_advanced(cfg.nr_advanced, ui.nr_advanced);
+          const int pass = clamp_nr_pass_count(cfg.nr_pass_count);
+          (void)sync_nr_pass_count_files(exe_dir_cfg, pass, cfg.renodx_preset, &cfg.nr_advanced[pass]);
+          (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset, pass, &cfg.nr_advanced[pass]);
+          if (!cfg.perf_test) {
+            PersistedSettings ps = default_settings();
+            std::string serr;
+            load_settings(ps, settings_default_path(), serr);
+            copy_nr_advanced(ps.nr_advanced, cfg.nr_advanced);
+            ps.nr_pass_count = pass;
+            ps.renodx_preset = cfg.renodx_preset;
+            save_settings(ps, settings_default_path(), serr);
+          }
+          if (!cfg_restart_pending) {
+            cfg_restart_kind = plan_session_cfg_preset_apply(true);
+            cfg_restart_pending = true;
+            cfg_restart_until = now;
+            if (act.nr_advanced_apply && !act.close_requested) {
+              cfg.open_session_cfg = true;
+              cfg.open_nr_advanced = true;
+            }
+            write_restart_toast(std::string("Configs avancadas: ") + nr_pass_count_label(pass));
+          }
         }
       }
 
@@ -1757,28 +1784,30 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         snap.fg_enabled = act.apply_fg_on;
         snap.fg_multiplier = act.apply_fg_multiplier;
         snap.fg_queue = act.apply_fg_queue;
+        snap.fg_flow_scale = act.apply_fg_flow_scale;
         snap.fg_adaptive = act.apply_fg_adaptive;
         snap.fg_target_fps = act.apply_fg_target_fps;
         snap.scale_percent = act.apply_scale_percent;
+        copy_nr_advanced(snap.nr_advanced, cfg.nr_advanced);
         apply_user_preset_to_persisted(ps, snap, cfg_ui.fg_can_enable);
         save_settings(ps, settings_default_path(), serr);
         cfg.show_overlay = act.apply_hud;
         cfg.neural_rendering = act.apply_nr_on;
-        append_log(cfg.log_dir, "cfg user preset applied");
+        if (!act.apply_preset_name.empty()) {
+          const std::string msg = session_notice_named_preset_apply(act.apply_preset_name);
+          if (cfg_restart_pending) write_restart_toast(msg);
+          else session_notice.push(msg, now);
+        }
       }
 
-      if (cfg_restart_pending) {
-        cfg_ui.set_open(false);
-        g_cfg_open = false;
-      }
     }
 
     // 8.5 só lê o X no init: GDI segura o último frame (sem GPU); o processo novo é o motor.
     if (cfg_restart_pending && now >= cfg_restart_until) {
+      if (cfg_ui.open() || g_cfg_open.load()) cfg.open_session_cfg = true;
       (void)save_motor_hold_from_hwnd(hwnd);
       g_restart_notice.show(hi, session_restart_notice_title(),
                             session_restart_notice_detail(cfg_restart_kind));
-      append_log(cfg.log_dir, "session end → relaunch (--autostart)");
       std::printf("cfg restart: saindo para reiniciar na sessao\n");
       g_running = false;
       break;
@@ -1797,15 +1826,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.present_ms = present_ms;
     ++presented;
     overlay.frames = presented;
-    if (cfg.perf_test && presented % 120 == 0) {
-      char vbuf[192];
-      std::snprintf(vbuf, sizeof(vbuf),
-                    "perf-test video idx=%llu published=%llu dropped=%llu",
-                    static_cast<unsigned long long>(file_last.frame_index),
-                    static_cast<unsigned long long>(slot.published()),
-                    static_cast<unsigned long long>(slot.dropped()));
-      append_log(cfg.log_dir, vbuf);
-    }
     // Sessão de volta na tela: só agora o aviso de reinício pode sair.
     // No teste, o aviso fica até o DLSS 5 ligar — o relógio não começa no 1º frame.
     if (g_restart_notice.visible() && !cfg.perf_test && have_new && !holding) {
@@ -1815,6 +1835,39 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
       g_restart_notice.destroy();
       clear_motor_hold_files();
+    }
+    if ((fg_arm_pending || profile_pending || audio_start_pending) && presented >= 1 &&
+        ((have_new && !holding) || presented >= 5)) {
+      if (fg_arm_pending) {
+        fg_arm_pending = false;
+        profile_pending = false;
+        std::string ferr;
+        if (fg.arm_autostart(hwnd, ferr)) {
+          std::printf("fg auto-on x%d (async, after frame)\n", fg.state().multiplier);
+        } else {
+          std::fprintf(stderr, "fg auto-on: %s\n", ferr.c_str());
+          bug_exc("fg_auto_on", ferr);
+          if (ferr.find("LosslessScaling") != std::string::npos || ferr.find("missing") != std::string::npos) {
+            session_notice.push(session_notice_fg_missing(), clock.now_ms());
+          }
+        }
+      } else if (profile_pending) {
+        profile_pending = false;
+        std::string ferr;
+        if (!fg.apply_profile(ferr)) std::fprintf(stderr, "fg profile: %s\n", ferr.c_str());
+      }
+      if (audio_start_pending) {
+        audio_start_pending = false;
+        std::string aerr;
+        if (!audio.start(audio_prefer, aerr)) {
+          std::fprintf(stderr, "audio: %s (continuando sem som)\n", aerr.c_str());
+        } else {
+          audio.set_volume(cfg.capture_volume);
+        }
+      }
+    }
+    if (fg.autostart_waits_first_frame() && have_new && !holding) {
+      fg.release_autostart_hotkey();
     }
     if (presented == 1 && !session_boot_toast.empty()) {
       session_notice.push(session_boot_toast, now);
@@ -1833,7 +1886,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg.nr_runtime_on = true;
         overlay.renodx_on = true;
         overlay.dlss_on = true;
-        append_log(cfg.log_dir, "perf-test nr live evals=" + std::to_string(nr_evals));
         capture->rebase_playhead(now);
         if (clip_audio.running()) clip_audio.rebase_playhead();
       }
@@ -1849,12 +1901,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         if (perf_nr_ready_t0 <= 0) perf_nr_ready_t0 = now;
         fg_wait_ms = now - perf_nr_ready_t0;
       }
-      if (want_fg && !perf_fg_kicked && !fg.busy() &&
-          perf_test_dlss5_ready(g_nr_runtime_on, presented, nr_live)) {
+      // FG começa com o vídeo, em paralelo com os 120 frames do NR. O relógio espera os dois.
+      if (want_fg && !perf_fg_kicked && !fg.busy() && presented >= 1) {
         std::string ferr;
-        perf_fg_kicked = true;
-        if (!fg.request_toggle(hwnd, ferr)) {
-          append_log(cfg.log_dir, "perf-test fg kick fail: " + ferr);
+        const bool warm = LosslessFgController::count_running_lossless_processes(true) > 0;
+        const bool ok = warm ? fg.arm_autostart(hwnd, ferr) : fg.request_toggle(hwnd, ferr);
+        if (ok) {
+          perf_fg_kicked = true;
+        } else if (presented <= 3) {
         }
       }
       const bool clock_ready =
@@ -1863,9 +1917,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       if (!clock_ready && perf_test_should_fail_pipeline(false, now - perf_hold_t0)) {
         write_perf_test_session_result(cfg, nullptr, "Pipeline timeout");
         perf_result_written = true;
-        append_log(cfg.log_dir, "perf-test pipeline timeout evals=" + std::to_string(nr_evals) +
-                                    " nr=" + std::to_string(g_nr_runtime_on ? 1 : 0) +
-                                    " fg=" + std::to_string(fg_on ? 1 : 0));
         g_restart_notice.show(GetModuleHandleW(nullptr), perf_test_pipeline_fail_title(),
                               perf_test_pipeline_fail_detail());
         g_restart_notice.pump();
@@ -1879,8 +1930,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           show_session_window(hwnd, true);
           perf_revealed = true;
           perf_window_shown = true;
-          append_log(cfg.log_dir, "perf-test window reveal nr=" + std::to_string(g_nr_runtime_on ? 1 : 0) +
-                                      " frames=" + std::to_string(presented));
         }
         g_restart_notice.destroy();
         perf_scoring = true;
@@ -1888,9 +1937,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         capture->rebase_playhead(now);
         if (clip_audio.running()) {
           clip_audio.rebase_playhead();
-          append_log(cfg.log_dir, "perf-test clip audio play");
         } else if (cfg.perf_test_audio) {
-          append_log(cfg.log_dir, "perf-test clip audio missing at clock");
         }
         perf_score_skip = 2;
         stats600.reset();
@@ -1900,10 +1947,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         overlay.has_stats600 = false;
         if (g_restart_notice.visible()) g_restart_notice.destroy();
         session_notice.push(perf_test_counting_notice(), now);
-        append_log(cfg.log_dir, "perf-test clock start nr=" + std::to_string(g_nr_runtime_on ? 1 : 0) +
-                                    " fg=" + std::to_string(fg_on ? 1 : 0) +
-                                    " evals=" + std::to_string(nr_evals) +
-                                    " frames=" + std::to_string(presented));
       }
     }
 
@@ -1927,7 +1970,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       std::snprintf(wbuf, sizeof(wbuf),
                     "stats warmup done frames=%llu max_boot_interval=%.1f (excluded from 600-window)",
                     static_cast<unsigned long long>(kStatsWarmupFrames), max_boot_interval_ms);
-      append_log(cfg.log_dir, wbuf);
       std::printf("%s\n", wbuf);
     }
     if (hdmi_perf && past_warmup) {
@@ -1952,9 +1994,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         if (past_warmup) ++clusters_after_warmup;
         overlay.clusters = cluster_count;
         analyze.cluster(*c);
-        append_log(cfg.log_dir,
-                   "CLUSTER n=" + std::to_string(c->n) + " gap_ms=" + std::to_string(c->gap_since_prev_cluster_ms) +
-                       " fgap=" + std::to_string(c->frames_since_prev));
         if (bug_rep.active()) bug_rep.note_event(now, "cluster", "");
         if (perf_rep.active()) perf_rep.note_event(now, "cluster", "");
       }
@@ -1985,7 +2024,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                       s->fps, s->mean_interval_ms, s->p95_e2e_ms, s->p95_present_ms,
                       static_cast<unsigned long long>(s->stalls), s->max_interval_ms,
                       g_nr_runtime_on ? "on" : "off", overlay.fg_on ? "on" : "off", nr_evals, last_dlss_ms);
-      append_log(cfg.log_dir, buf);
       std::printf("%s\n", buf);
       }
     }
@@ -2084,11 +2122,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   g_restart_notice.pump();  // o aviso (último frame) segue vivo enquanto FG/captura/D3D caem
   if (!cfg_restart_pending) renderer.present_black();
   // Esc/timer do Benchmark: mata FG+LS ANTES de esconder a janela (WM_CLOSE so vai ao tray).
-  if (cfg.perf_test) {
+    if (cfg.perf_test) {
     if (overlay.fg_on || fg.overlay_reads_on(hwnd) || fg.state().active) fg.pulse_fg_hotkey();
-    const bool dead = fg.kill_all_lossless_and_wait();
-    append_log(cfg.log_dir, dead ? "perf-test teardown: LS morto (terminate)"
-                                 : "perf-test teardown: LS ainda vivo apos terminate");
+    (void)fg.kill_all_lossless_and_wait();
   }
   hide_session_window(hwnd);
   analyze.update_runtime_flags(g_nr_runtime_on, overlay.fg_on, overlay.fg_multiplier, overlay.fg_status);
@@ -2097,7 +2133,13 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     std::string jsonl, summary;
     write_analyze_files(cfg.log_dir, analyze, clock.now_ms(), jsonl, summary);
   }
-  fg.shutdown();
+  if (cfg_restart_pending) {
+    (void)fg.detach_for_restart();
+  } else if (g_return_to_lobby.load() && cfg.fg_auto_start && cfg.fg_multiplier >= 2) {
+    (void)fg.detach_for_restart();
+  } else {
+    fg.shutdown();
+  }
 
   // Release capture device + D3D before HWND so lobby preview can reopen.
   g_session_exiting = true;
@@ -2131,8 +2173,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
   // CFG pediu reinício: main() salva e relança com --autostart (o aviso continua na tela).
   if (cfg_restart_pending) {
-    g_restart_notice.show(hi, session_restart_notice_title(),
-                          session_restart_notice_detail(cfg_restart_kind));
+    if (!g_restart_notice.visible()) {
+      g_restart_notice.show(hi, session_restart_notice_title(),
+                            session_restart_notice_detail(cfg_restart_kind));
+    } else {
+      g_restart_notice.pump();
+    }
     g_quit_clock = nullptr;
     return kSessionExitRelaunch;
   }
@@ -2148,13 +2194,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       const fs::path exe_dir = fs::path(exe_path).parent_path();
       const int lobby_feed = feed_work_resolution_for_lobby();
       if (sync_feed_work_resolution_in_dir(exe_dir.string(), lobby_feed)) {
-        append_log(cfg.log_dir, "lobby feed work_resolution -> " + std::to_string(lobby_feed) +
-                                    " (ui=" + std::to_string(cfg.scale_percent) +
-                                    "; Feed locks at first swapchain)");
       }
       sync_mgf_techniques_for_phase(exe_dir.string(), cfg.enhance == EnhanceBackend::Renodx);
     }
-    append_log(cfg.log_dir, "session end → lobby (Esc/X)");
     std::printf("back to lobby\n");
     g_quit_clock = nullptr;
     return kExitBackToLobby;
@@ -2230,12 +2272,13 @@ int main(int argc, char** argv) {
   if (cfg.perf_test) {
     g_restart_notice.show(GetModuleHandleW(nullptr), nexuscap::perf_test_pipeline_notice_title(),
                           nexuscap::perf_test_pipeline_notice_detail());
-  } else if (nexuscap::restart_notice_visible_at_boot(cfg.autostart)) {
+  } else if (nexuscap::restart_notice_visible_at_boot(cfg.autostart, nexuscap::motor_hold_image_exists())) {
     g_restart_notice.show(GetModuleHandleW(nullptr), nexuscap::session_restart_notice_title(),
                           nexuscap::session_restart_notice_detail(nexuscap::SessionCfgApply::Live));
     if (g_restart_notice.has_hold_image()) nexuscap::write_motor_hold_ready();
   }
   (void)nexuscap::prepare_renodx_runtime_dirs(base.string());
+  if (g_restart_notice.visible()) g_restart_notice.pump();
   // Park/restore happens after settings — o lobby não carrega o ReShade.
   if (!fs::path(cfg.log_dir).is_absolute() && cfg.log_dir == "logs") {
     cfg.log_dir = (base / cfg.log_dir).string();
@@ -2256,6 +2299,7 @@ int main(int argc, char** argv) {
       nexuscap::apply_perf_test_plan_to_config(nexuscap::perf_test_plan_from_config(cfg), cfg);
     }
     cfg.capture_volume = nexuscap::clamp_capture_volume_percent(settings.capture_volume);
+    cfg.fg_flow_scale = nexuscap::clamp_fg_flow_scale(settings.fg_flow_scale);
     if (cfg.fg_path.empty()) cfg.fg_path = settings.fg_path;
     {
       std::string bundled;
@@ -2263,6 +2307,8 @@ int main(int argc, char** argv) {
         cfg.video_path = bundled;
     }
   }
+  // --autostart / --no-lobby não passam pelo lobby. O cfg vazio apagaria o 1,5x no sync da sessão.
+  if (!cfg.perf_test) nexuscap::seed_cfg_nr_advanced_from_settings(cfg, settings);
   // Before ReShade loads: AddonPath → addons-multipass (corrige ini antigo em addons-stable).
   {
     const int boot_pass = cfg.perf_test ? cfg.nr_pass_count : settings.nr_pass_count;
@@ -2276,8 +2322,10 @@ int main(int argc, char** argv) {
     } else if (ar == nexuscap::RenodxAddonSyncResult::MissingVariant) {
       std::printf("renodx addon: stack missing (run tools\\setup_renodx.ps1)\n");
     }
-    (void)nexuscap::sync_nr_pass_count_files(base.string(), boot_pass, boot_preset);
-    (void)nexuscap::sync_renodx_visual_preset_files(base.string(), boot_preset, boot_pass);
+    const nexuscap::NrAdvancedLook* boot_look =
+        cfg.perf_test ? nullptr : &settings.nr_advanced[nexuscap::clamp_nr_pass_count(boot_pass)];
+    (void)nexuscap::sync_nr_pass_count_files(base.string(), boot_pass, boot_preset, boot_look);
+    (void)nexuscap::sync_renodx_visual_preset_files(base.string(), boot_preset, boot_pass, boot_look);
     // Feed locks work_resolution at the first swapchain: 100% when the lobby opens first
     // (sharp menus), session scale when we boot straight into capture (--autostart / --perf-test).
     const bool lobby_first = cfg.show_lobby && !cfg.autostart && !cfg.perf_test;
@@ -2293,6 +2341,7 @@ int main(int argc, char** argv) {
         nexuscap::feed_work_resolution_at_boot(lobby_first, boot_scale, boot_pass, boot_w, boot_h),
         lobby_first ? 1 : boot_pass);
   }
+  if (g_restart_notice.visible()) g_restart_notice.pump();
   // CLI overrides persisted where explicit.
   {
     const std::string exe = base.string();
@@ -2307,6 +2356,7 @@ int main(int argc, char** argv) {
       (void)nexuscap::park_reshade_dxgi_wait(exe, 2500);
     }
   }
+  if (g_restart_notice.visible()) g_restart_notice.pump();
   if (!cfg.show_lobby) {
     // keep cfg from CLI
   } else if (cfg.perf_test) {
@@ -2352,6 +2402,8 @@ int main(int argc, char** argv) {
     }
     if (cfg.fg_path.empty()) cfg.fg_path = settings.fg_path;
     cfg.fg_queue = nexuscap::clamp_fg_queue(settings.fg_queue);
+    cfg.fg_flow_scale = nexuscap::clamp_fg_flow_scale(settings.fg_flow_scale);
+    cfg.fg_adaptive = settings.fg_adaptive;
     if (settings.enhance_renodx) {
       cfg.enhance = nexuscap::EnhanceBackend::Renodx;
       cfg.dlss = false;
@@ -2377,7 +2429,8 @@ int main(int argc, char** argv) {
       }
       const std::string relaunch =
           nexuscap::session_cfg_relaunch_args_for_hud(cfg.show_overlay, cfg.mini_overlay,
-                                                     cfg.advanced_metrics, cfg.live_overlay);
+                                                     cfg.advanced_metrics, cfg.live_overlay,
+                                                     cfg.open_session_cfg, cfg.open_nr_advanced);
       std::printf("cfg restart: relaunch %s\n", relaunch.c_str());
       nexuscap::reset_motor_hold_ready();
       if (nexuscap::relaunch_current_process(relaunch.c_str())) {
@@ -2424,16 +2477,16 @@ int main(int argc, char** argv) {
         if (!fg.apply_hdmi_profile_without_launch(settings.fg_enabled, settings.fg_multiplier,
                                                   settings.fg_path, ferr, settings.fg_queue,
                                                   settings.fg_adaptive, settings.fg_target_fps,
-                                                  nexuscap::display_refresh_hz(nullptr))) {
-          append_log(cfg.log_dir, "lobby HDMI restore: " + ferr);
+                                                  nexuscap::display_refresh_hz(nullptr),
+                                                  settings.fg_flow_scale)) {
         } else {
-          append_log(cfg.log_dir, "lobby HDMI restore: escala/Pass/tom/NR/Feed + LS off");
         }
       }
     } else {
       // PageDn/PageUp mid-session must stick after Esc → lobby (checkbox + xN).
       apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, settings);
       settings.fg_queue = nexuscap::clamp_fg_queue(cfg.fg_queue);
+      settings.fg_flow_scale = nexuscap::clamp_fg_flow_scale(cfg.fg_flow_scale);
       settings.fg_adaptive = cfg.fg_adaptive;
       settings.fg_target_fps = nexuscap::clamp_fg_adaptive_target_stored(cfg.fg_target_fps);
       // Delete mid-session must stick after Esc → lobby (NR flag), but keep RenoDX loaded.
@@ -2466,7 +2519,8 @@ int main(int argc, char** argv) {
       }
       const std::string relaunch =
           nexuscap::session_cfg_relaunch_args_for_hud(cfg.show_overlay, cfg.mini_overlay,
-                                                     cfg.advanced_metrics, cfg.live_overlay);
+                                                     cfg.advanced_metrics, cfg.live_overlay,
+                                                     cfg.open_session_cfg, cfg.open_nr_advanced);
       std::printf("cfg restart: relaunch %s\n", relaunch.c_str());
       nexuscap::reset_motor_hold_ready();
       if (nexuscap::relaunch_current_process(relaunch.c_str())) {

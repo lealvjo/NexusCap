@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "6.0.0",
+  [string]$Version = "6.0.4",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -91,11 +91,7 @@ New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
 Copy-Item -LiteralPath $Exe -Destination (Join-Path $Stage "NexusCap.exe") -Force
 
-$workerSrc = Join-Path $Release "worker"
-if (Test-Path -LiteralPath $workerSrc) {
-  Copy-Item -LiteralPath $workerSrc -Destination (Join-Path $Stage "worker") -Recurse -Force
-  Write-Host "stage worker/"
-}
+# worker/ era a segunda copia do motor (processo antigo). O ReShade carrega o que esta ao lado do exe.
 
 $logoSrc = Join-Path $Root "assets\logo.png"
 $watermarkSrc = Join-Path $Root "assets\watermark.png"

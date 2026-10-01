@@ -3,7 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -21,8 +23,13 @@ struct HotkeyConfig {
   int vk_nr_toggle = 0x2E;  // VK_DELETE — Neural Rendering on/off (FG independente)
   int vk_fullscreen = 0x7A; // VK_F11
   int vk_gear = 0x7B;       // VK_F12 — open gear in lobby
+  bool gear_ctrl = false;   // optional Ctrl for the lobby CFG
   int vk_cfg = 0x4D;        // 'M' — with cfg_ctrl → Ctrl+M abre o CFG na captura
   bool cfg_ctrl = true;     // require Ctrl for the session CFG menu
+  int vk_pass_next = 0xBB;  // VK_OEM_PLUS — with pass_next_ctrl → Ctrl++
+  bool pass_next_ctrl = true;
+  int vk_pass_prev = 0xBD;  // VK_OEM_MINUS — with pass_prev_ctrl → Ctrl+-
+  bool pass_prev_ctrl = true;
 };
 
 struct SessionUiFlags {
@@ -223,6 +230,26 @@ std::string sha256_hex(const void* data, size_t n);
 std::string sha256_file_hex(const std::string& path, std::uint64_t* size_out);
 BundledMotorProbe probe_bundled_motors(const std::string& exe_dir);
 
+// Painel "Configuracoes avancadas". Um bloco por X. -1 em skin = 1.00 (padrao) do mod.
+struct NrAdvancedLook {
+  double local_tone = 1;
+  double local_structure = 1;
+  double skin = -1;
+  int auto_mask = 1;
+  int skin_independent = 1;
+  int ui_correction = 1;
+  int look_mode = 0;
+  double look_strength = 1;
+  double look_brighten = 1;
+  double look_darken = 1;
+  double look_colour = 1;
+  double look_hue = 1;
+  double look_shadows = 1;
+  double look_midtones = 1;
+  double look_highlights = 1;
+  int detail_stability = 0;  // 0 Auto, 1 Desligado, 2 Sempre
+};
+
 struct PersistedSettings {
   HotkeyConfig hotkeys{};
   SessionUiFlags ui{};
@@ -230,6 +257,7 @@ struct PersistedSettings {
   bool fg_enabled = false;     // default OFF
   int fg_multiplier = 2;       // used when fg_enabled
   int fg_queue = 0;            // 0 menor latência, 1 equilibrado, 2 maior estabilidade
+  int fg_flow_scale = 80;      // Padrao = 80; 70/90/100 so se a pessoa escolher
   bool fg_adaptive = false;    // LSFG3Mode1 Adaptive; default FIXED
   int fg_target_fps = 60;      // LSFG3Target; clamp ao Hz do monitor na hora de gravar
   // Optional override of LosslessScaling.exe; empty = auto (Steam path / registry).
@@ -245,6 +273,8 @@ struct PersistedSettings {
   int renodx_preset = 0;  // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
   // Pass Count: 1=1x, 2=2x default, 3=3x, 4=1.5x, 5=2x otimizado, 6=3x otimizado.
   int nr_pass_count = 1;
+  // Receita avançada de cada X (índice = Pass Count 1..6). Ausente no ini = fábrica.
+  NrAdvancedLook nr_advanced[7]{};
   // Origem (OBS-style). Defaults = validated HDMI path.
   int video_fourcc = 0;       // VideoFourcc::Nv12
   int color_space = 0;        // ColorSpace::Default (BT.709)
@@ -294,6 +324,149 @@ inline bool nr_pass_uses_optimized_look(int ui) {
   return v == 1 || v == 4 || v == 5 || v == 6;
 }
 
+inline double clamp_nr_knob(double v, double lo, double hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+
+inline int clamp_nr_choice(int v, int hi) {
+  if (v < 0) return 0;
+  if (v > hi) return hi;
+  return v;
+}
+
+inline NrAdvancedLook clamp_nr_advanced(NrAdvancedLook a) {
+  a.local_tone = clamp_nr_knob(a.local_tone, 0, 3);
+  a.local_structure = clamp_nr_knob(a.local_structure, 0, 3);
+  a.skin = clamp_nr_knob(a.skin, -1, 3);
+  a.auto_mask = a.auto_mask ? 1 : 0;
+  a.skin_independent = a.skin_independent ? 1 : 0;
+  a.ui_correction = clamp_nr_choice(a.ui_correction, 2);
+  a.look_mode = a.look_mode ? 1 : 0;
+  a.look_strength = clamp_nr_knob(a.look_strength, 0, 3);
+  a.look_brighten = clamp_nr_knob(a.look_brighten, 0, 3);
+  a.look_darken = clamp_nr_knob(a.look_darken, 0, 3);
+  a.look_colour = clamp_nr_knob(a.look_colour, 0, 3);
+  a.look_hue = clamp_nr_knob(a.look_hue, 0, 3);
+  a.look_shadows = clamp_nr_knob(a.look_shadows, 0, 3);
+  a.look_midtones = clamp_nr_knob(a.look_midtones, 0, 3);
+  a.look_highlights = clamp_nr_knob(a.look_highlights, 0, 3);
+  a.detail_stability = clamp_nr_choice(a.detail_stability, 2);
+  return a;
+}
+
+// Fábrica de cada X: o que apply_nr_edit_recipe e o gancho já gravavam.
+inline NrAdvancedLook nr_advanced_default(int pass) {
+  NrAdvancedLook a;
+  const int p = clamp_nr_pass_count(pass);
+  a.ui_correction = nr_pass_uses_optimized_look(p) ? 2 : 1;
+  if (nr_pass_is_15x_plus(p)) {
+    a.look_mode = 1;
+    a.look_strength = 1.75;
+    a.look_brighten = 0.50;
+    a.look_darken = 0.86;
+    a.look_colour = 1.12;
+    a.look_hue = 0.62;
+    a.look_shadows = 0.90;
+    a.look_midtones = 1.00;
+    a.look_highlights = 0.50;
+  }
+  return a;
+}
+
+inline void fill_nr_advanced_defaults(NrAdvancedLook* slots) {
+  if (!slots) return;
+  for (int i = 0; i <= 6; ++i) slots[i] = nr_advanced_default(i == 0 ? 1 : i);
+}
+
+inline bool nr_advanced_near(double a, double b) {
+  const double d = a - b;
+  return d < 0.0005 && d > -0.0005;
+}
+
+inline bool nr_advanced_equal(const NrAdvancedLook& a, const NrAdvancedLook& b) {
+  const NrAdvancedLook x = clamp_nr_advanced(a);
+  const NrAdvancedLook y = clamp_nr_advanced(b);
+  return nr_advanced_near(x.local_tone, y.local_tone) && nr_advanced_near(x.local_structure, y.local_structure) &&
+         nr_advanced_near(x.skin, y.skin) && x.auto_mask == y.auto_mask &&
+         x.skin_independent == y.skin_independent && x.ui_correction == y.ui_correction &&
+         x.look_mode == y.look_mode && nr_advanced_near(x.look_strength, y.look_strength) &&
+         nr_advanced_near(x.look_brighten, y.look_brighten) && nr_advanced_near(x.look_darken, y.look_darken) &&
+         nr_advanced_near(x.look_colour, y.look_colour) && nr_advanced_near(x.look_hue, y.look_hue) &&
+         nr_advanced_near(x.look_shadows, y.look_shadows) && nr_advanced_near(x.look_midtones, y.look_midtones) &&
+         nr_advanced_near(x.look_highlights, y.look_highlights) && x.detail_stability == y.detail_stability;
+}
+
+inline bool nr_advanced_slots_equal(const NrAdvancedLook* a, const NrAdvancedLook* b) {
+  if (!a || !b) return a == b;
+  for (int i = 1; i <= 6; ++i) {
+    if (!nr_advanced_equal(a[i], b[i])) return false;
+  }
+  return true;
+}
+
+inline bool nr_advanced_draft_unapplied(const NrAdvancedLook& draft, const NrAdvancedLook& saved) {
+  return !nr_advanced_equal(draft, saved);
+}
+
+inline void copy_nr_advanced(NrAdvancedLook* dst, const NrAdvancedLook* src) {
+  if (!dst || !src) return;
+  for (int i = 0; i <= 6; ++i) dst[i] = src[i];
+}
+
+inline std::string format_nr_decimal(double v) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.2f", v);
+  return buf;
+}
+
+inline std::string serialize_nr_advanced_csv(const NrAdvancedLook& raw) {
+  const NrAdvancedLook a = clamp_nr_advanced(raw);
+  char buf[320];
+  std::snprintf(buf, sizeof(buf),
+                "%.4f,%.4f,%.4f,%d,%d,%d,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%d", a.local_tone,
+                a.local_structure, a.skin, a.auto_mask, a.skin_independent, a.ui_correction, a.look_mode,
+                a.look_strength, a.look_brighten, a.look_darken, a.look_colour, a.look_hue, a.look_shadows,
+                a.look_midtones, a.look_highlights, a.detail_stability);
+  return buf;
+}
+
+inline bool parse_nr_advanced_csv(const std::string& val, NrAdvancedLook& out) {
+  NrAdvancedLook a;
+  int mask = 0, skin_i = 0, ui = 0, mode = 0, stab = 0;
+  const int n = std::sscanf(val.c_str(), "%lf,%lf,%lf,%d,%d,%d,%d,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%d", &a.local_tone,
+                             &a.local_structure, &a.skin, &mask, &skin_i, &ui, &mode, &a.look_strength,
+                             &a.look_brighten, &a.look_darken, &a.look_colour, &a.look_hue, &a.look_shadows,
+                             &a.look_midtones, &a.look_highlights, &stab);
+  if (n != 16) return false;
+  a.auto_mask = mask;
+  a.skin_independent = skin_i;
+  a.ui_correction = ui;
+  a.look_mode = mode;
+  a.detail_stability = stab;
+  out = clamp_nr_advanced(a);
+  return true;
+}
+
+inline void write_nr_advanced_lines(std::ostream& o, const NrAdvancedLook* slots) {
+  if (!slots) return;
+  for (int p = 1; p <= 6; ++p) {
+    if (nr_advanced_equal(slots[p], nr_advanced_default(p))) continue;
+    o << "nr_adv_" << p << "=" << serialize_nr_advanced_csv(slots[p]) << "\n";
+  }
+}
+
+// true se a chave era nr_adv_N (consumida, mesmo se o índice for ignorado).
+inline bool parse_nr_advanced_setting_key(const std::string& key, const std::string& val, NrAdvancedLook* slots) {
+  if (key.compare(0, 7, "nr_adv_") != 0) return false;
+  const int p = std::atoi(key.c_str() + 7);
+  if (!slots || p < 1 || p > 6) return true;
+  NrAdvancedLook look;
+  if (parse_nr_advanced_csv(val, look)) slots[p] = look;
+  return true;
+}
+
 // What DirectNeuralRenderingPassCount we write (UI 4 → INI 1; UI 5 → INI 2; UI 6 → INI 3).
 inline int nr_reshade_pass_count(int ui) {
   switch (clamp_nr_pass_count(ui)) {
@@ -325,6 +498,48 @@ inline const char* nr_pass_count_label(int v) {
   }
 }
 
+// Ordem dos radios: 1x, 1,5x, 2x default, 2x otimizado, 3x default, 3x otimizado.
+inline constexpr int kNrPassCycleOrder[] = {1, 4, 2, 5, 3, 6};
+inline constexpr int kNrPassCycleCount = 6;
+
+inline int nr_pass_cycle_index(int pass) {
+  const int c = clamp_nr_pass_count(pass);
+  for (int i = 0; i < kNrPassCycleCount; ++i) {
+    if (kNrPassCycleOrder[i] == c) return i;
+  }
+  return 0;
+}
+
+// delta +1 avanca, -1 volta. No ultimo volta ao 1x; no 1x o menos cai no 3x otimizado.
+inline int step_nr_pass_count(int pass, int delta) {
+  if (delta == 0) return clamp_nr_pass_count(pass);
+  const int n = kNrPassCycleCount;
+  int step = delta % n;
+  if (step < 0) step += n;
+  return kNrPassCycleOrder[(nr_pass_cycle_index(pass) + step) % n];
+}
+
+// + do teclado e do numpad sao o mesmo atalho, e o mesmo para o -.
+inline bool pass_hotkey_vk_match(int vk, int bound) {
+  if (bound == 0 || vk == 0) return false;
+  if (vk == bound) return true;
+  if ((bound == 0xBB && vk == 0x6B) || (bound == 0x6B && vk == 0xBB)) return true;
+  if ((bound == 0xBD && vk == 0x6D) || (bound == 0x6D && vk == 0xBD)) return true;
+  return false;
+}
+
+// Atalho configuravel do ciclo de Pass Count. +1 avanca, -1 volta.
+inline int pass_cycle_hotkey_step(int vk, bool ctrl_down, const HotkeyConfig& hk) {
+  auto fires = [&](int bound, bool need_ctrl) {
+    if (!pass_hotkey_vk_match(vk, bound)) return false;
+    if (need_ctrl && !ctrl_down) return false;
+    return true;
+  };
+  if (fires(hk.vk_pass_next, hk.pass_next_ctrl)) return 1;
+  if (fires(hk.vk_pass_prev, hk.pass_prev_ctrl)) return -1;
+  return 0;
+}
+
 // Hint under the Pass Count radios (lobby F12 e Ctrl+M).
 inline const char* nr_pass_count_1x_hint() {
   return "1x exclusivo NexusCap: gancho do 2x otimizado — menos flicker, melhor imagem, sem perder desempenho.";
@@ -338,6 +553,22 @@ inline const char* nr_pass_count_2x_opt_hint() {
 }
 inline const char* nr_pass_count_23x_hint() {
   return "2x default / 3x default: look antigo. 2x/3x otimizado: menos flicker.";
+}
+
+// Um hint — o do X escolhido. Os quatro de uma vez deixavam o CFG uma lista.
+inline const char* nr_pass_count_selected_hint(int ui) {
+  switch (clamp_nr_pass_count(ui)) {
+    case 1:
+      return nr_pass_count_1x_hint();
+    case 4:
+      return nr_pass_count_15x_hint();
+    case 5:
+      return nr_pass_count_2x_opt_hint();
+    case 6:
+      return nr_pass_count_2x_opt_hint();
+    default:
+      return nr_pass_count_23x_hint();
+  }
 }
 
 // Short HUD tag: "1x" / "1.5x" / "2x" / "2x+" / "3x" / "3x+".
@@ -397,21 +628,26 @@ inline const char* renodx_addon_stack_rel(int /*pass_count*/) { return ".\\addon
 // Spawn a new NexusCap.exe then return true (caller should ExitProcess).
 bool relaunch_current_process(const char* extra_args = nullptr);
 
-// Todo Pass Count (addons-multipass): Model A / B / C.
+// Mesmo nome do mod (NR Style): Default / Natural / Cinematic.
 inline const char* renodx_visual_preset_name(int v, int /*pass_count*/ = 1) {
   switch (clamp_renodx_visual_preset(v)) {
     case 1:
-      return "Model B";
+      return "Natural";
     case 2:
-      return "Model C";
+      return "Cinematic";
     default:
-      return "Model A";
+      return "Default";
   }
 }
 
-// RenoDX overlay "NR Preset" (Krish): Natural=0, Cinematic=1. Multipass keeps this dual-read.
+// RenoDX overlay "NR Preset" (Krish): Natural=0, Cinematic=1. Não é o NR Style.
 inline int renodx_nr_preset_index(int visual) {
   return clamp_renodx_visual_preset(visual) == static_cast<int>(RenodxVisualPreset::Cinematic) ? 1 : 0;
+}
+
+// Krish 8.5 lê NRStyle nesta ordem: Default=0, Natural=1, Cinematic=2.
+inline int renodx_nr_style_index(int visual) {
+  return clamp_renodx_visual_preset(visual);
 }
 
 // Multipass DirectNeuralRenderingStyle is the model slot (A=0, B=1, C=2).
@@ -787,35 +1023,49 @@ inline double parse_keyed_number(const std::string& text, const std::string& key
   return fallback;
 }
 
+// Grava a receita do painel nas chaves que o Krish 8.5 lê. NRStyle e Pass Count ficam de fora.
+inline std::string apply_nr_advanced_look(std::string text, const NrAdvancedLook& raw) {
+  const NrAdvancedLook a = clamp_nr_advanced(raw);
+  const std::string skin_nr = a.skin < 0 ? "-1" : format_nr_decimal(a.skin);
+  const std::string skin_direct = a.skin < 0 ? "1" : format_nr_decimal(a.skin);
+  auto live = [&](const char* key, const std::string& value) {
+    text = apply_keyed_value_all_live(std::move(text), key, value);
+  };
+  auto all = [&](const char* key, const std::string& value) {
+    text = apply_keyed_value_all(std::move(text), key, value);
+  };
+  live("NRLookMode=", std::to_string(a.look_mode));
+  live("NRLookStrength=", format_nr_decimal(a.look_strength));
+  live("NRLookBrighten=", format_nr_decimal(a.look_brighten));
+  live("NRLookDarken=", format_nr_decimal(a.look_darken));
+  live("NRLookColour=", format_nr_decimal(a.look_colour));
+  live("NRLookHue=", format_nr_decimal(a.look_hue));
+  live("NRLookShadows=", format_nr_decimal(a.look_shadows));
+  live("NRLookMidtones=", format_nr_decimal(a.look_midtones));
+  live("NRLookHighlights=", format_nr_decimal(a.look_highlights));
+  live("NRSkinIndependent=", std::to_string(a.skin_independent));
+  live("NRDetailStability=", std::to_string(a.detail_stability));
+  all("DirectNeuralRenderingIntensity=", "1");
+  all("NRIntensity=", "1");
+  all("DirectNeuralRenderingGlobalToneStrength=", "1");
+  all("NRGlobalTone=", "1");
+  all("DirectNeuralRenderingLocalToneStrength=", format_nr_decimal(a.local_tone));
+  all("NRLocalTone=", format_nr_decimal(a.local_tone));
+  all("DirectNeuralRenderingLocalStructureStrength=", format_nr_decimal(a.local_structure));
+  all("NRLocalStructure=", format_nr_decimal(a.local_structure));
+  all("DirectNeuralRenderingSkinStructureStrength=", skin_direct);
+  all("NRSkinStructure=", skin_nr);
+  all("DirectNeuralRenderingAutoMask=", std::to_string(a.auto_mask));
+  all("NRAutoMask=", std::to_string(a.auto_mask));
+  all("NRColorStrength=", "1.00");
+  all("NRTransferStrength=", "1.00");
+  return text;
+}
+
 // Receita do 1,5x no Krish 8.5 (NRLook*). Fora dele o look fica neutro e a
 // intensidade do passe fica 1 — esse e o 1x.
 inline std::string apply_nr_edit_recipe(std::string text, bool plus) {
-  const char* strength = plus ? "1.75" : "1";
-  const char* brighten = plus ? "0.50" : "1";
-  const char* hue = plus ? "0.62" : "1";
-  const char* highlights = plus ? "0.50" : "1";
-  text = apply_keyed_value_all_live(std::move(text), "NRLookMode=", plus ? "1" : "0");
-  text = apply_keyed_value_all_live(std::move(text), "NRLookStrength=", strength);
-  text = apply_keyed_value_all_live(std::move(text), "NRLookBrighten=", brighten);
-  text = apply_keyed_value_all_live(std::move(text), "NRLookDarken=", plus ? "0.86" : "1");
-  text = apply_keyed_value_all_live(std::move(text), "NRLookColour=", plus ? "1.12" : "1");
-  text = apply_keyed_value_all_live(std::move(text), "NRLookHue=", hue);
-  text = apply_keyed_value_all_live(std::move(text), "NRLookShadows=", plus ? "0.90" : "1");
-  text = apply_keyed_value_all_live(std::move(text), "NRLookMidtones=", plus ? "1.00" : "1");
-  text = apply_keyed_value_all_live(std::move(text), "NRLookHighlights=", highlights);
-  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingIntensity=", "1");
-  text = apply_keyed_value_all(std::move(text), "NRIntensity=", "1");
-  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingGlobalToneStrength=", "1");
-  text = apply_keyed_value_all(std::move(text), "NRGlobalTone=", "1");
-  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingLocalToneStrength=", "1");
-  text = apply_keyed_value_all(std::move(text), "NRLocalTone=", "1");
-  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingLocalStructureStrength=", "1");
-  text = apply_keyed_value_all(std::move(text), "NRLocalStructure=", "1");
-  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingSkinStructureStrength=", "1");
-  text = apply_keyed_value_all(std::move(text), "NRSkinStructure=", "-1");
-  text = apply_keyed_value_all(std::move(text), "NRColorStrength=", "1.00");
-  text = apply_keyed_value_all(std::move(text), "NRTransferStrength=", "1.00");
-  return text;
+  return apply_nr_advanced_look(std::move(text), nr_advanced_default(plus ? kNr15xPlusUi : 1));
 }
 
 // Capture signal → work resolution after lobby scale slider (25–100%).
@@ -885,15 +1135,12 @@ inline std::string apply_reshade_nr_preset(std::string text, int visual_preset) 
   return upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRPreset=", nr);
 }
 
-// Preset visual: NRPreset/NRStyle in every section. Multipass also writes Style
-// into the saved preset AND the live addon section (first-only left cinema stale).
-// Style on that motor is Model A/B/C = 0/1/2, not the Krish NR 0/1 knob.
+// NRPreset fica no knob 0/1. NRStyle é o combo do mod: Default/Natural/Cinematic = 0/1/2.
 inline std::string apply_reshade_visual_look_keys(std::string text, int visual_preset) {
-  const int nr = renodx_nr_preset_index(visual_preset);
   text = apply_reshade_nr_preset(std::move(text), visual_preset);
-  text = apply_keyed_int_all(std::move(text), "NRStyle=", nr);
-  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRStyle=", nr);
-  const int style = clamp_renodx_visual_preset(visual_preset);
+  const int style = renodx_nr_style_index(visual_preset);
+  text = apply_keyed_int_all(std::move(text), "NRStyle=", style);
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRStyle=", style);
   text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingStyle=", style);
   text = upsert_keyed_int_in_section(std::move(text), "RENODX-DLSS-preset1",
                                     "DirectNeuralRenderingStyle=", style);
@@ -1064,6 +1311,7 @@ inline constexpr const char* kReshadeDockingSelectAddons =
     "DockSpace ID=0xB0DF600F Window=0xCC18005E Pos=8,,8 Size=2544,,1424 CentralNode=1";
 
 // Sem o toast do ReShade ("Press Home to open the overlay" / "aperte Home").
+// 6.8 le TutorialProgress em [OVERLAY]. ShowStartupMessage nao existe nesse binario.
 inline std::string apply_reshade_quiet_overlay(std::string text) {
   text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowStartupMessage=", "0");
   text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowOSD=", "0");
@@ -1073,9 +1321,43 @@ inline std::string apply_reshade_quiet_overlay(std::string text) {
   text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowClock=", "0");
   text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowFrameTime=", "0");
   text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowPresetName=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "TutorialProgress=", "4");
   text = upsert_keyed_value_in_section(std::move(text), "GENERAL", "TutorialProgress=", "4");
   return text;
 }
+
+// ReShade 6.8: o aviso "Pressione Home..." e o splash. O byte apontado e o
+// salto que esconde a faixa (74 = so quando o flag esta off, EB = sempre escondido).
+inline size_t reshade68_home_splash_gate_offset(const uint8_t* data, size_t n, uint8_t gate = 0x74) {
+  static constexpr uint8_t kBefore[] = {
+      0x48, 0xBA, 0x00, 0xF2, 0x05, 0x2A, 0x01, 0x00, 0x00, 0x00,
+      0x44, 0x38, 0xAE, 0xF0, 0x04, 0x00, 0x00,
+  };
+  static constexpr uint8_t kMid[] = {0x50, 0x48, 0x8B, 0xCE, 0xE8};
+  static constexpr uint8_t kTail[] = {
+      0x84, 0xC0, 0x75, 0x34, 0x83, 0xBE, 0x08, 0x05, 0x00, 0x00, 0x01, 0x77, 0x13,
+      0x48, 0x8B, 0x86, 0xC8, 0x00, 0x00, 0x00, 0x48, 0x2B, 0x86, 0x50, 0x02, 0x00, 0x00, 0x48, 0x3B, 0xC2,
+  };
+  constexpr size_t kRel = 4;
+  const size_t need = sizeof(kBefore) + 1 + sizeof(kMid) + kRel + sizeof(kTail) + 2;
+  if (!data || n < need) return static_cast<size_t>(-1);
+  for (size_t i = 0; i + need <= n; ++i) {
+    if (std::memcmp(data + i, kBefore, sizeof(kBefore)) != 0) continue;
+    if (data[i + sizeof(kBefore)] != gate) continue;
+    if (std::memcmp(data + i + sizeof(kBefore) + 1, kMid, sizeof(kMid)) != 0) continue;
+    const size_t tail = i + sizeof(kBefore) + 1 + sizeof(kMid) + kRel;
+    if (std::memcmp(data + tail, kTail, sizeof(kTail)) != 0) continue;
+    const uint8_t b0 = data[tail + sizeof(kTail)];
+    const uint8_t b1 = data[tail + sizeof(kTail) + 1];
+    const bool open = (b0 == 0x7C && b1 == 0x18) || (b0 == 0x90 && b1 == 0x90);
+    if (!open) continue;
+    return i + sizeof(kBefore);
+  }
+  return static_cast<size_t>(-1);
+}
+
+// Desliga o aviso de Home no dxgi do ReShade ja carregado. Nao altera o arquivo.
+bool silence_reshade_home_splash();
 
 // Complete addon overlay of the active motor (cena / Pass Count / knobs).
 // Krish 8.5 regista "DLSS 5 Neural Rendering". Títulos V6.6/ShortFuse ficam fora do ecrã.
@@ -1103,12 +1385,14 @@ inline std::string sanitize_home_windows_for_pass(std::string text, int pass_cou
 
 // Align DirectNeuralRendering* keys (2/3 = default look; 4/5/6 = gancho otimizado).
 inline std::string apply_reshade_multipass_look_defaults(std::string text, int pass_count,
-                                                         int visual_preset = 0) {
+                                                         int visual_preset = 0,
+                                                         const NrAdvancedLook* custom = nullptr) {
   const bool opt = nr_pass_uses_optimized_look(pass_count);
   const int nits = opt ? 100 : 500;
   const int encoding = opt ? 2 : 0;
   const int hook = opt ? 2 : 1;
-  const int ui_corr = opt ? 2 : 1;
+  const NrAdvancedLook look = custom ? clamp_nr_advanced(*custom) : nr_advanced_default(pass_count);
+  const int ui_corr = look.ui_correction;
   // [RENODX-DLSS] global + live [RenoDX.DLSS5]. O 8.5 lê NR*; Direct* fica alinhado em todas as secções.
   text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingDiffuseWhiteNits=", nits);
   text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingDiffuseWhiteOverride=", 0);
@@ -1126,13 +1410,13 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = apply_keyed_int_all(std::move(text), "NRHookPoint=", hook);
   text = apply_keyed_int_all(std::move(text), "NRDiffuseWhiteNits=", nits);
   text = apply_keyed_int_all(std::move(text), "NRUICorrection=", ui_corr);
-  // [RENODX-DLSS-preset1] look knobs. 1,5x e o 1x com a receita da edição.
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingAutoMask=", 1);
-  text = apply_nr_edit_recipe(std::move(text), nr_pass_is_15x_plus(pass_count));
+  // [RENODX-DLSS-preset1] look knobs. A receita salva do X; sem ponteiro, a fábrica.
+  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingAutoMask=", look.auto_mask);
+  text = apply_nr_advanced_look(std::move(text), look);
   text = apply_reshade_nr_pass_count(std::move(text), pass_count);
   // Keep legacy NR* block in sync for tools / dual-read / Krish.
   text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", nits);
-  text = apply_keyed_int(std::move(text), "NRAutoMask=", 1);
+  text = apply_keyed_int(std::move(text), "NRAutoMask=", look.auto_mask);
   text = apply_keyed_int(std::move(text), "NRUICorrection=", ui_corr);
   text = apply_reshade_visual_look_keys(std::move(text), visual_preset);
   {
@@ -1176,9 +1460,11 @@ inline int infer_multipass_ui_pass_count(const std::string& text) {
 // INI 1 is both 1x and 1,5x: infer the UI slot from the look keys.
 // pass_count >= 0: honor the UI slot (needed to keep 2x otimizado when INI is also 2).
 inline std::string apply_reshade_look_for_current_stack(std::string text, int visual_preset,
-                                                         int pass_count = -1) {
+                                                         int pass_count = -1,
+                                                         const NrAdvancedLook* custom = nullptr) {
   const int ui = pass_count >= 0 ? clamp_nr_pass_count(pass_count) : infer_multipass_ui_pass_count(text);
-  return apply_reshade_multipass_look_defaults(std::move(text), ui, visual_preset);
+  const NrAdvancedLook look = custom ? clamp_nr_advanced(*custom) : nr_advanced_default(ui);
+  return apply_reshade_multipass_look_defaults(std::move(text), ui, visual_preset, &look);
 }
 
 // After gear Salvar / session start: feed + ReShade must match settings.renodx_preset.
@@ -1190,7 +1476,7 @@ inline bool renodx_files_reflect_visual_preset(const std::string& feed_text, con
   const int p = pass_count >= 0 ? clamp_nr_pass_count(pass_count) : infer_multipass_ui_pass_count(reshade_text);
   if (parse_feed_model_preset(feed_text, -1) != renodx_feed_model_preset(v, p)) return false;
   if (!every_keyed_int_is(reshade_text, "NRPreset=", nr)) return false;
-  if (!every_keyed_int_is(reshade_text, "NRStyle=", nr)) return false;
+  if (!every_keyed_int_is(reshade_text, "NRStyle=", renodx_nr_style_index(v))) return false;
   if (!every_keyed_int_is(reshade_text, "DirectNeuralRenderingStyle=",
                                renodx_direct_style_index(v, p))) {
     return false;
@@ -1358,10 +1644,15 @@ inline bool feed_scale_change_needs_relaunch(bool renodx_stack, int loaded_scale
 // Gravar o HDMI no disco nao descarrega o addon — precisa processo novo.
 inline bool perf_test_return_needs_fresh_process(bool was_perf_test) { return was_perf_test; }
 
-// Lobby Present is the process's first swapchain — Feed/ReShade lock there. Iniciar in the
-// same process cannot apply CFG (scale, Cinema, NR on/off). Ctrl+M works because it relaunches.
-// Always --autostart so the capture window is the first Present with disk already matching CFG.
-inline bool lobby_iniciar_needs_session_relaunch() { return true; }
+// O Feed e o RenoDX só leem NeuralUplift, enabled e a cadeia MGF no nascimento do processo.
+// O lobby grava isso desligado. Iniciar no mesmo processo deixa o CFG e o overlay em ON
+// com a imagem ainda OFF — o Delete que religa só funciona porque reinicia.
+inline bool lobby_iniciar_needs_session_relaunch(bool preview_enabled, bool preview_cfg_live,
+                                                bool enhance_renodx) {
+  (void)preview_enabled;
+  (void)preview_cfg_live;
+  return enhance_renodx;
+}
 
 // Menus must never inherit the session scale — the Feed would blur the whole lobby.
 inline int feed_work_resolution_for_lobby() { return kLobbyFeedWorkResolution; }
@@ -1468,10 +1759,13 @@ bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_l
 
 // Write renodx_preset into dlss5-feed.cfg + ReShade.ini next to the exe.
 // Feed model = visual index 0/1/2 (Model A/B/C) on every Pass Count.
-bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset, int pass_count = 1);
+bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset, int pass_count = 1,
+                                      const NrAdvancedLook* look = nullptr);
 
 // Pass Count + multipass look defaults (DirectNeural* + legacy NR*) in ReShade.ini.
-bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int visual_preset = 0);
+// look == nullptr grava a fábrica daquele X.
+bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int visual_preset = 0,
+                              const NrAdvancedLook* look = nullptr);
 
 // Persist Neural Rendering on/off (independent of Frame Gen). Updates feed+ReShade.
 bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on, bool feed_on);
@@ -1479,8 +1773,10 @@ bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on,
 // CFG do lobby → disco do RenoDX/Feed, na ordem que o addon le no boot da sessao.
 inline bool sync_persisted_session_files(const std::string& exe_dir, const PersistedSettings& s) {
   const bool want_nr = s.enhance_renodx && s.neural_rendering;
-  (void)sync_nr_pass_count_files(exe_dir, s.nr_pass_count, s.renodx_preset);
-  (void)sync_renodx_visual_preset_files(exe_dir, s.renodx_preset, s.nr_pass_count);
+  (void)sync_nr_pass_count_files(exe_dir, s.nr_pass_count, s.renodx_preset,
+                                 &s.nr_advanced[clamp_nr_pass_count(s.nr_pass_count)]);
+  (void)sync_renodx_visual_preset_files(exe_dir, s.renodx_preset, s.nr_pass_count,
+                                        &s.nr_advanced[clamp_nr_pass_count(s.nr_pass_count)]);
   (void)sync_neural_rendering_enabled_files(exe_dir, want_nr, want_nr);
   (void)sync_feed_work_resolution_in_dir(
       exe_dir, feed_work_resolution_at_boot(false, s.scale_percent, s.nr_pass_count, s.width, s.height),

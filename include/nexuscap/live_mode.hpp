@@ -190,15 +190,16 @@ inline void format_live_dlss5_line(char* out, size_t out_n, bool dlss5_on, int p
 
 // Frame Gen on the live strip. FG is always uppercase: "FG x2" / "FG x3" / "FG x4" / "FG off".
 inline void format_live_fg_line(char* out, size_t out_n, bool fg_on, int fg_mult, int queue = 0,
-                               bool adaptive = false, int target = kFgAdaptiveTargetDefault) {
+                               bool adaptive = false, int target = kFgAdaptiveTargetDefault,
+                               int flow_scale = -1) {
   if (!out || out_n == 0) return;
   int m = fg_mult;
   if (m < 1) m = 1;
   if (m > 4) m = 4;
   const int q = queue < 0 ? 0 : (queue > 2 ? 2 : queue);
   if (fg_on && m >= 2) {
-    char tag[24]{};
-    format_fg_mode_tag(tag, sizeof(tag), adaptive, m, target);
+    char tag[40]{};
+    format_fg_mode_tag(tag, sizeof(tag), adaptive, m, target, flow_scale);
     std::snprintf(out, out_n, "FG %s f%d", tag, q);
   } else {
     std::snprintf(out, out_n, "FG off f%d", q);
@@ -247,7 +248,7 @@ struct LiveFpsPart {
 struct LiveStripLines {
   char console[48]{};
   char dlss[32]{};
-  char fg[40]{};
+  char fg[56]{};
   LiveFpsPart fps_lab;
   LiveFpsPart fps_cap;
   LiveFpsPart fps_sep;
@@ -260,12 +261,13 @@ struct LiveStripLines {
 inline void fill_live_strip_lines(LiveStripLines& o, bool show_console, LiveConsole cons, bool dlss_on,
                                  int pass_count, bool fg_on, int fg_mult, double fps_cap,
                                  double fps_fg_est = 0.0, bool ft_stable = true, int fg_queue = 0,
-                                 double frame_ms = -1.0, bool fg_adaptive = false, int fg_target = 60) {
+                                 double frame_ms = -1.0, bool fg_adaptive = false, int fg_target = 60,
+                                 int flow_scale = -1) {
   o = LiveStripLines{};
   o.has_console = show_console;
   if (show_console) format_overlay_console_chip(o.console, sizeof(o.console), cons);
   format_live_dlss5_line(o.dlss, sizeof(o.dlss), dlss_on, pass_count, true);
-  format_live_fg_line(o.fg, sizeof(o.fg), fg_on, fg_mult, fg_queue, fg_adaptive, fg_target);
+  format_live_fg_line(o.fg, sizeof(o.fg), fg_on, fg_mult, fg_queue, fg_adaptive, fg_target, flow_scale);
   std::snprintf(o.fps_lab.text, sizeof(o.fps_lab.text), "FPS  ");
   o.fps_lab.r = 180;
   o.fps_lab.g = 184;

@@ -36,9 +36,11 @@ struct UserPreset {
   bool neural_rendering = true;
   int renodx_preset = 0;
   int nr_pass_count = 1;
+  NrAdvancedLook nr_advanced[7]{};
   bool fg_enabled = false;
   int fg_multiplier = 2;
   int fg_queue = 0;
+  int fg_flow_scale = 80;
   bool fg_adaptive = false;
   int fg_target_fps = 60;
   int scale_percent = 100;
@@ -155,8 +157,10 @@ inline void clamp_user_preset(UserPreset& p) {
   p.live_console = static_cast<int>(clamp_live_console(p.live_console));
   p.renodx_preset = clamp_renodx_visual_preset(p.renodx_preset);
   p.nr_pass_count = clamp_nr_pass_count(p.nr_pass_count);
+  for (int i = 0; i <= 6; ++i) p.nr_advanced[i] = clamp_nr_advanced(p.nr_advanced[i]);
   p.fg_multiplier = clamp_fg_multiplier(p.fg_multiplier >= 2 ? p.fg_multiplier : 2);
   p.fg_queue = clamp_fg_queue(p.fg_queue);
+  p.fg_flow_scale = clamp_fg_flow_scale(p.fg_flow_scale);
   p.fg_target_fps = clamp_fg_adaptive_target_stored(p.fg_target_fps);
   p.scale_percent = clamp_scale_percent(p.scale_percent);
 }
@@ -176,8 +180,10 @@ inline bool user_preset_already_active(const UserPreset& current, const UserPres
          a.overlay_console == b.overlay_console &&
          clamp_live_console(a.live_console) == clamp_live_console(b.live_console) &&
          a.neural_rendering == b.neural_rendering && a.renodx_preset == b.renodx_preset &&
-         a.nr_pass_count == b.nr_pass_count && a.fg_enabled == b.fg_enabled &&
-         a.fg_multiplier == b.fg_multiplier && a.fg_queue == b.fg_queue && a.fg_adaptive == b.fg_adaptive &&
+         a.nr_pass_count == b.nr_pass_count && nr_advanced_slots_equal(a.nr_advanced, b.nr_advanced) &&
+         a.fg_enabled == b.fg_enabled &&
+         a.fg_multiplier == b.fg_multiplier && a.fg_queue == b.fg_queue &&
+         a.fg_flow_scale == b.fg_flow_scale && a.fg_adaptive == b.fg_adaptive &&
          a.fg_target_fps == b.fg_target_fps && a.scale_percent == b.scale_percent;
 }
 
@@ -222,9 +228,11 @@ inline UserPreset user_preset_from_persisted(const std::string& name, const Pers
   p.neural_rendering = s.neural_rendering;
   p.renodx_preset = s.renodx_preset;
   p.nr_pass_count = s.nr_pass_count;
+  copy_nr_advanced(p.nr_advanced, s.nr_advanced);
   p.fg_enabled = s.fg_enabled;
   p.fg_multiplier = s.fg_multiplier;
   p.fg_queue = s.fg_queue;
+  p.fg_flow_scale = s.fg_flow_scale;
   p.fg_adaptive = s.fg_adaptive;
   p.fg_target_fps = s.fg_target_fps;
   p.scale_percent = s.scale_percent;
@@ -242,9 +250,11 @@ inline UserPreset user_preset_from_session(const std::string& name, const Sessio
   p.neural_rendering = s.nr_on;
   p.renodx_preset = s.renodx_preset;
   p.nr_pass_count = s.nr_pass_count;
+  copy_nr_advanced(p.nr_advanced, s.nr_advanced);
   p.fg_enabled = s.fg_on;
   p.fg_multiplier = s.fg_multiplier;
   p.fg_queue = s.fg_queue;
+  p.fg_flow_scale = s.fg_flow_scale;
   p.fg_adaptive = s.fg_adaptive;
   p.fg_target_fps = s.fg_target_fps;
   p.scale_percent = s.scale_percent;
@@ -265,9 +275,11 @@ inline std::string serialize_user_preset(const UserPreset& raw) {
   o << "neural_rendering=" << (p.neural_rendering ? 1 : 0) << "\n";
   o << "renodx_preset=" << p.renodx_preset << "\n";
   o << "nr_pass_count=" << p.nr_pass_count << "\n";
+  write_nr_advanced_lines(o, p.nr_advanced);
   o << "fg_enabled=" << (p.fg_enabled ? 1 : 0) << "\n";
   o << "fg_multiplier=" << p.fg_multiplier << "\n";
   o << "fg_queue=" << p.fg_queue << "\n";
+  o << "fg_flow_scale=" << p.fg_flow_scale << "\n";
   o << "fg_adaptive=" << (p.fg_adaptive ? 1 : 0) << "\n";
   o << "fg_target_fps=" << p.fg_target_fps << "\n";
   o << "scale_percent=" << p.scale_percent << "\n";
@@ -280,6 +292,7 @@ inline bool parse_bool_01(const std::string& v) {
 
 inline bool parse_user_preset(const std::string& text, UserPreset& out) {
   UserPreset p;
+  fill_nr_advanced_defaults(p.nr_advanced);
   bool saw_magic = false;
   std::istringstream in(text);
   std::string line;
@@ -306,9 +319,12 @@ inline bool parse_user_preset(const std::string& text, UserPreset& out) {
     } else if (k == "neural_rendering") p.neural_rendering = parse_bool_01(v);
     else if (k == "renodx_preset") p.renodx_preset = std::atoi(v.c_str());
     else if (k == "nr_pass_count") p.nr_pass_count = std::atoi(v.c_str());
+    else if (parse_nr_advanced_setting_key(k, v, p.nr_advanced)) {
+    }
     else if (k == "fg_enabled") p.fg_enabled = parse_bool_01(v);
     else if (k == "fg_multiplier") p.fg_multiplier = std::atoi(v.c_str());
     else if (k == "fg_queue") p.fg_queue = std::atoi(v.c_str());
+    else if (k == "fg_flow_scale") p.fg_flow_scale = std::atoi(v.c_str());
     else if (k == "fg_adaptive") p.fg_adaptive = parse_bool_01(v) || parse_fg_adaptive_ini(v);
     else if (k == "fg_target_fps") p.fg_target_fps = std::atoi(v.c_str());
     else if (k == "scale_percent") p.scale_percent = std::atoi(v.c_str());
@@ -340,9 +356,11 @@ inline SessionCfgActions plan_user_preset_apply(const SessionCfgState& cur, cons
     a.pass_count_changed = true;
     a.pass_count_before = clamp_nr_pass_count(cur.nr_pass_count);
   }
+  if (!nr_advanced_slots_equal(cur.nr_advanced, p.nr_advanced)) a.nr_advanced_changed = true;
   if (cur.fg_on != want_fg) a.toggle_fg = true;
   if (want_fg && clamp_fg_multiplier(cur.fg_multiplier) != p.fg_multiplier) a.fg_multiplier_changed = true;
   if (clamp_fg_queue(cur.fg_queue) != p.fg_queue) a.fg_queue_changed = true;
+  if (clamp_fg_flow_scale(cur.fg_flow_scale) != p.fg_flow_scale) a.fg_flow_changed = true;
   if (cur.fg_adaptive != p.fg_adaptive) a.fg_adaptive_changed = true;
   if (clamp_fg_adaptive_target_stored(cur.fg_target_fps) != p.fg_target_fps) a.fg_target_changed = true;
   if (clamp_scale_percent(cur.scale_percent) != p.scale_percent) {
@@ -360,6 +378,7 @@ inline SessionCfgActions plan_user_preset_apply(const SessionCfgState& cur, cons
   a.apply_fg_on = want_fg;
   a.apply_fg_multiplier = p.fg_multiplier;
   a.apply_fg_queue = p.fg_queue;
+  a.apply_fg_flow_scale = p.fg_flow_scale;
   a.apply_fg_adaptive = p.fg_adaptive;
   a.apply_fg_target_fps = p.fg_target_fps;
   a.apply_scale_percent = p.scale_percent;
@@ -376,9 +395,11 @@ inline void stamp_session_from_user_preset(SessionCfgState& cur, const UserPrese
   cur.nr_on = p.neural_rendering;
   cur.renodx_preset = p.renodx_preset;
   cur.nr_pass_count = p.nr_pass_count;
+  copy_nr_advanced(cur.nr_advanced, p.nr_advanced);
   cur.fg_on = p.fg_enabled && fg_can_enable;
   cur.fg_multiplier = p.fg_multiplier;
   cur.fg_queue = p.fg_queue;
+  cur.fg_flow_scale = p.fg_flow_scale;
   cur.fg_adaptive = p.fg_adaptive;
   cur.fg_target_fps = p.fg_target_fps;
   cur.scale_percent = p.scale_percent;
@@ -395,9 +416,11 @@ inline void apply_user_preset_to_persisted(PersistedSettings& s, const UserPrese
   if (p.neural_rendering) s.enhance_renodx = true;
   s.renodx_preset = p.renodx_preset;
   s.nr_pass_count = p.nr_pass_count;
+  copy_nr_advanced(s.nr_advanced, p.nr_advanced);
   s.fg_enabled = p.fg_enabled && fg_can_enable;
   s.fg_multiplier = p.fg_multiplier;
   s.fg_queue = p.fg_queue;
+  s.fg_flow_scale = p.fg_flow_scale;
   s.fg_adaptive = p.fg_adaptive;
   s.fg_target_fps = p.fg_target_fps;
   s.scale_percent = p.scale_percent;
@@ -408,6 +431,7 @@ struct LobbyUserPresetPlan {
   bool pass_relaunch = false;
   bool motor_relaunch = false;
   bool look_changed = false;
+  bool advanced_changed = false;
   int pass_before = 1;
   int pass_after = 1;
 };
@@ -422,6 +446,7 @@ inline LobbyUserPresetPlan plan_lobby_user_preset_apply(const PersistedSettings&
   r.pass_relaunch = !nr_pass_count_change_applies_live(r.pass_before, r.pass_after);
   r.motor_relaunch = nr_pass_count_change_needs_relaunch(r.pass_before, r.pass_after);
   r.look_changed = clamp_renodx_visual_preset(cur.renodx_preset) != p.renodx_preset;
+  r.advanced_changed = !nr_advanced_slots_equal(cur.nr_advanced, p.nr_advanced);
   r.fg_missing = p.fg_enabled && !fg_can_enable;
   return r;
 }

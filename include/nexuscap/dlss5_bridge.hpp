@@ -6,6 +6,8 @@
 
 namespace nexuscap {
 
+struct NrAdvancedLook;
+
 // dlss5-bridge.addon64 protocol (Version=1, Protocol=2).
 // RenoDX Neural Rendering always boots runtime OFF even when NeuralUplift=1 on disk —
 // writing ReShade.ini alone does NOT enable NR. The Bridge Submit opcode 6 queues a
@@ -255,10 +257,12 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
 
 // Lobby live preview: sync visual preset + apply NR (reload cycle when already ON).
 bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
-                                    bool* runtime_on, int pass_count = 1);
+                                    bool* runtime_on, int pass_count = 1,
+                                    const NrAdvancedLook* look = nullptr);
 
 // Sync Pass Count + look defaults + reload NR so RenoDX re-reads.
 bool apply_lobby_nr_pass_count_live(const std::string& exe_dir, int pass_count, bool want_nr,
-                                    bool* runtime_on, int visual_preset = 0);
+                                    bool* runtime_on, int visual_preset = 0,
+                                    const NrAdvancedLook* look = nullptr);
 
 }  // namespace nexuscap

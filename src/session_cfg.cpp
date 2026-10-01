@@ -4,6 +4,7 @@
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/imgui_theme.hpp"
 #include "nexuscap/live_mode.hpp"
+#include "nexuscap/nr_advanced_ui.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/user_preset.hpp"
 #include "nexuscap/version.hpp"
@@ -149,13 +150,30 @@ void SessionCfgOverlay::shutdown() {
 bool SessionCfgOverlay::wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   if (!ready_ || (!open_ && !hold_active_)) return false;
   ImGui::SetCurrentContext(static_cast<ImGuiContext*>(imgui_ctx_));
+  if (open_ && capture_vk_ && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)) {
+    if (wp == VK_ESCAPE) {
+      capture_vk_ = nullptr;
+      return true;
+    }
+    if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU) return true;
+    *capture_vk_ = static_cast<int>(wp);
+    capture_vk_ = nullptr;
+    state.vk_cfg = state.hotkeys.vk_cfg;
+    state.cfg_ctrl = state.hotkeys.cfg_ctrl;
+    actions_.hotkeys_changed = true;
+    return true;
+  }
   return ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp) != 0;
 }
 
 void SessionCfgOverlay::set_open(bool open) {
   if (open == open_) return;
   open_ = open;
+  capture_vk_ = nullptr;
+  user_close_pending_ = false;
+  if (!open_) adv_close_ask_ = false;
   if (open_) {
+    adv_draft_pass_ = -1;
     scale_slider_ = static_cast<float>(clamp_scale_percent(state.scale_percent));
     actions_ = SessionCfgActions{};
     force_pos_ = true;
@@ -169,6 +187,8 @@ void SessionCfgOverlay::set_open(bool open) {
     reload_presets();
   }
 }
+
+void SessionCfgOverlay::request_user_close() { user_close_pending_ = true; }
 
 void SessionCfgOverlay::set_restart_hold(const std::string& title, const std::string& line) {
   hold_active_ = true;
@@ -206,6 +226,10 @@ void SessionCfgOverlay::draw() {
   ImGui::NewFrame();
 
   if (hold_active_) {
+    if (user_close_pending_) {
+      user_close_pending_ = false;
+      actions_.close_requested = true;
+    }
     draw_restart_hold();
   } else {
     draw_panel();
@@ -219,7 +243,7 @@ void SessionCfgOverlay::draw() {
 
 void SessionCfgOverlay::draw_panel() {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
-  const float w = (std::max)(360.f, (std::min)(vp->WorkSize.x * 0.32f, 860.f));
+  const float w = (std::max)(hotkey_table_min_width(), (std::min)(vp->WorkSize.x * 0.40f, 980.f));
   const float h = (std::max)(240.f, (std::min)(vp->WorkSize.y - 60.f, 1120.f));
   const ImGuiCond cond = force_pos_ ? ImGuiCond_Always : ImGuiCond_Appearing;
   force_pos_ = false;
@@ -227,13 +251,24 @@ void SessionCfgOverlay::draw_panel() {
   const float y = (std::max)(vp->WorkPos.y, vp->WorkPos.y + (vp->WorkSize.y - h) * 0.5f);
   ImGui::SetNextWindowPos(ImVec2(x, y), cond);
   ImGui::SetNextWindowSize(ImVec2(w, h), cond);
+  auto request_close = [&]() {
+    const int slot = clamp_nr_pass_count(adv_draft_pass_ >= 1 ? adv_draft_pass_ : state.nr_pass_count);
+    if (!presets_locked && nr_advanced_draft_unapplied(adv_draft_, state.nr_advanced[slot]))
+      adv_close_ask_ = true;
+    else
+      actions_.close_requested = true;
+  };
+  if (user_close_pending_) {
+    user_close_pending_ = false;
+    request_close();
+  }
   bool keep_open = true;
   if (ImGui::Begin("Configuracoes (CFG)", &keep_open, ImGuiWindowFlags_NoCollapse)) {
     char hk[48]{};
-    if (state.cfg_ctrl) {
-      std::snprintf(hk, sizeof(hk), "Ctrl+%s", vk_display_name(state.vk_cfg));
+    if (state.hotkeys.cfg_ctrl) {
+      std::snprintf(hk, sizeof(hk), "Ctrl+%s", vk_display_name(state.hotkeys.vk_cfg));
     } else {
-      std::snprintf(hk, sizeof(hk), "%s", vk_display_name(state.vk_cfg));
+      std::snprintf(hk, sizeof(hk), "%s", vk_display_name(state.hotkeys.vk_cfg));
     }
     ImGui::TextColored(kAccent, "Ajuste sem sair da captura  |  %s fecha", hk);
     // Linha fixa: se o aviso sumisse, todos os controles subiriam e o clique erraria o alvo.
@@ -241,50 +276,14 @@ void SessionCfgOverlay::draw_panel() {
     ImGui::PushTextWrapPos(0.f);  // as notas longas não podem sair pela borda
     ImGui::Separator();
 
-    ImGui::TextUnformatted("Volume da captura");
-    if (ImGui::SliderInt("##capture_vol", &state.capture_volume, kMinCaptureVolumePercent,
-                         kMaxCaptureVolumePercent, "%d%%")) {
-      state.capture_volume = clamp_capture_volume_percent(state.capture_volume);
-      actions_.volume_changed = true;
+    if (!ImGui::BeginTabBar("##sess_cfg_tabs")) {
+      ImGui::PopTextWrapPos();
+      ImGui::End();
+      if (!keep_open) request_close();
+      return;
     }
-    ImGui::TextDisabled("HDMI no fone / caixa  |  0-100  |  nao vai para o preset");
-    ImGui::Separator();
 
-    if (ImGui::Checkbox("Overlay HUD", &state.hud_visible)) actions_.hud_changed = true;
-    if (ImGui::Checkbox("Overlay sem fundo", &state.overlay_no_bg)) actions_.overlay_no_bg_changed = true;
-    ImGui::TextDisabled(state.overlay_no_bg ? "so texto, sem placa preta"
-                                            : "placa preta atras do texto");
-
-    ImGui::Separator();
-      if (ImGui::Checkbox("Mostrar console", &state.overlay_console)) actions_.console_changed = true;
-      if (state.overlay_console) {
-        LiveConsole cur = clamp_live_console(state.live_console);
-        auto console_imcol = [](LiveConsole c) -> ImVec4 {
-          const COLORREF rgb = live_console_color(c);
-          return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
-        };
-        ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
-        char console_btn[48]{};
-        std::snprintf(console_btn, sizeof(console_btn), "%s##console_pick", live_console_label(cur));
-        if (ImGui::Button(console_btn)) ImGui::OpenPopup("##console_menu");
-        ImGui::PopStyleColor();
-        if (ImGui::BeginPopup("##console_menu")) {
-          for (LiveConsole o : kLiveConsoleOrder) {
-            const bool selected = (o == cur);
-            ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
-            if (ImGui::MenuItem(live_console_label(o), nullptr, selected)) {
-              state.live_console = static_cast<int>(o);
-              actions_.console_changed = true;
-            }
-            ImGui::PopStyleColor();
-          }
-          ImGui::EndPopup();
-        }
-        ImGui::TextDisabled("  -> nome no overlay (padrao PS5)");
-      }
-
-    ImGui::Separator();
+    if (ImGui::BeginTabItem(cfg_tab_image())) {
     ImGui::TextUnformatted("Neural Rendering");
     const bool nr_toggle_ok = session_cfg_nr_toggle_allowed(state.renodx_stack, state.multipass);
     ImGui::BeginDisabled(!nr_toggle_ok || state.nr_busy);
@@ -309,9 +308,27 @@ void SessionCfgOverlay::draw_panel() {
     if (ImGui::RadioButton(renodx_visual_preset_name(2, state.nr_pass_count), preset == 2)) preset = 2;
     state.renodx_preset = clamp_renodx_visual_preset(preset);
     if (state.renodx_preset != preset_before) actions_.preset_changed = true;
-    ImGui::TextColored(kWarn, "Trocar o preset aplica na sessao.");
 
     ImGui::Separator();
+    {
+      const int shown = clamp_nr_pass_count(state.nr_pass_count);
+      if (adv_draft_pass_ != shown) {
+        adv_draft_ = state.nr_advanced[shown];
+        adv_draft_pass_ = shown;
+      }
+      bool adv_apply = false;
+      bool adv_reset = false;
+      const bool force_adv = adv_section_force_;
+      adv_section_force_ = false;
+      draw_nr_advanced_panel(adv_draft_, shown, adv_apply, adv_reset, force_adv);
+      if ((adv_apply || adv_reset) && !presets_locked) {
+        state.nr_advanced[shown] = clamp_nr_advanced(adv_draft_);
+        adv_draft_ = state.nr_advanced[shown];
+        actions_.nr_advanced_apply = true;
+        state.status = std::string(adv_reset ? "Default do " : "Configs avancadas: ") +
+                       nr_pass_count_label(shown);
+      }
+    }
     ImGui::TextUnformatted("Pass Count");
     const int pass_before = clamp_nr_pass_count(state.nr_pass_count);
     int pass = pass_before;
@@ -336,15 +353,88 @@ void SessionCfgOverlay::draw_panel() {
       actions_.pass_count_changed = true;
       actions_.pass_count_before = pass_before;
     }
-    ImGui::TextDisabled("%s", nr_pass_count_1x_hint());
-    ImGui::TextDisabled("%s", nr_pass_count_15x_hint());
-    ImGui::TextDisabled("%s", nr_pass_count_2x_opt_hint());
-    ImGui::TextDisabled("%s", nr_pass_count_23x_hint());
-    // O addon só lê o PassCount no init: qualquer troca aqui passa por processo novo.
-    ImGui::TextColored(kWarn, "Trocar o Pass Count aplica na sessao.");
+    ImGui::TextDisabled("%s", nr_pass_count_selected_hint(state.nr_pass_count));
     ImGui::EndDisabled();
 
     ImGui::Separator();
+    ImGui::TextUnformatted("Escala de resolucao (trabalho GPU)");
+    int slider = static_cast<int>(std::lround(scale_slider_));
+    if (ImGui::SliderInt("##scale", &slider, kMinScalePercent, kMaxScalePercent, "%d%%")) {
+      scale_slider_ = static_cast<float>(clamp_scale_percent(slider));
+    }
+    const int want = clamp_scale_percent(static_cast<int>(std::lround(scale_slider_)));
+    const int eff = effective_scale_percent(state.renodx_stack, want, state.nr_pass_count, state.signal_w,
+                                           state.signal_h);
+    ImGui::TextColored(kAccent, "Trabalho Feed/NR: %dx%d (%d%%)", scaled_extent(state.signal_w, eff),
+                       scaled_extent(state.signal_h, eff), eff);
+    if (state.renodx_stack && feed_scale_below_floor(true, want)) {
+      ImGui::TextColored(kWarn, "Feed nao aceita abaixo de %d%% - usando %d%%", kMinFeedWorkResolution, eff);
+    }
+    const bool scale_restarts = feed_scale_change_needs_relaunch(state.renodx_stack, state.feed_loaded_scale,
+                                                                 want, state.nr_pass_count, state.signal_w,
+                                                                 state.signal_h);
+    if (scale_restarts) {
+      ImGui::TextColored(kWarn, "Feed ativo em %d%% - aplicar na sessao.",
+                         effective_scale_percent(state.renodx_stack, state.feed_loaded_scale,
+                                                state.nr_pass_count, state.signal_w, state.signal_h));
+    }
+    ImGui::BeginDisabled(want == clamp_scale_percent(state.scale_percent) && !scale_restarts);
+    if (ImGui::Button("Aplicar escala", ImVec2(240, 0))) {
+      actions_.scale_before = clamp_scale_percent(state.scale_percent);
+      state.scale_percent = want;
+      actions_.scale_apply = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::Separator();
+    draw_presets();
+    ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem(cfg_tab_hud())) {
+    ImGui::TextUnformatted("Volume da captura");
+    if (ImGui::SliderInt("##capture_vol", &state.capture_volume, kMinCaptureVolumePercent,
+                         kMaxCaptureVolumePercent, "%d%%")) {
+      state.capture_volume = clamp_capture_volume_percent(state.capture_volume);
+      actions_.volume_changed = true;
+    }
+    ImGui::TextDisabled("HDMI no fone / caixa  |  0-100  |  nao vai para o preset");
+    ImGui::Separator();
+    if (ImGui::Checkbox("Overlay HUD", &state.hud_visible)) actions_.hud_changed = true;
+    if (ImGui::Checkbox("Overlay sem fundo", &state.overlay_no_bg)) actions_.overlay_no_bg_changed = true;
+    ImGui::TextDisabled(state.overlay_no_bg ? "so texto, sem placa preta"
+                                            : "placa preta atras do texto");
+    ImGui::Separator();
+    if (ImGui::Checkbox("Mostrar console", &state.overlay_console)) actions_.console_changed = true;
+    if (state.overlay_console) {
+      LiveConsole cur = clamp_live_console(state.live_console);
+      auto console_imcol = [](LiveConsole c) -> ImVec4 {
+        const COLORREF rgb = live_console_color(c);
+        return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
+      };
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
+      char console_btn[48]{};
+      std::snprintf(console_btn, sizeof(console_btn), "%s##console_pick", live_console_label(cur));
+      if (ImGui::Button(console_btn)) ImGui::OpenPopup("##console_menu");
+      ImGui::PopStyleColor();
+      if (ImGui::BeginPopup("##console_menu")) {
+        for (LiveConsole o : kLiveConsoleOrder) {
+          const bool selected = (o == cur);
+          ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
+          if (ImGui::MenuItem(live_console_label(o), nullptr, selected)) {
+            state.live_console = static_cast<int>(o);
+            actions_.console_changed = true;
+          }
+          ImGui::PopStyleColor();
+        }
+        ImGui::EndPopup();
+      }
+      ImGui::TextDisabled("  -> nome no overlay (padrao PS5)");
+    }
+    ImGui::EndTabItem();
+    }
+
+    if (ImGui::BeginTabItem(cfg_tab_fg())) {
     ImGui::TextUnformatted("Frame Gen (Lossless Scaling)");
     ImGui::BeginDisabled(state.fg_busy);
     bool fg = state.fg_on;
@@ -433,49 +523,168 @@ void SessionCfgOverlay::draw_panel() {
       ImGui::EndCombo();
     }
     ImGui::TextDisabled("0 menor latencia. Se o FG estiver ligado, reabre o Lossless.");
+    ImGui::TextUnformatted("Escala de fluxo");
+    state.fg_flow_scale = clamp_fg_flow_scale(state.fg_flow_scale);
+    if (ImGui::BeginCombo("##sess_fg_flow", fg_flow_scale_label(state.fg_flow_scale))) {
+      for (int i = 0; i < kFgFlowScaleChoiceCount; ++i) {
+        const int v = kFgFlowScaleChoices[i];
+        const bool selected = state.fg_flow_scale == v;
+        if (ImGui::Selectable(fg_flow_scale_label(v), selected) && v != state.fg_flow_scale) {
+          state.fg_flow_scale = v;
+          actions_.fg_flow_changed = true;
+        }
+        if (selected) ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::TextDisabled("Padrao e o nosso valor. 70, 90 e 100 ficam a sua escolha.");
     ImGui::TextDisabled(state.fg_busy ? "Aplicando..." : "Frame Gen entra ao vivo.");
     ImGui::EndDisabled();
+    ImGui::EndTabItem();
+    }
 
-    ImGui::Separator();
-    ImGui::TextUnformatted("Escala de resolucao (trabalho GPU)");
-    int slider = static_cast<int>(std::lround(scale_slider_));
-    if (ImGui::SliderInt("##scale", &slider, kMinScalePercent, kMaxScalePercent, "%d%%")) {
-      scale_slider_ = static_cast<float>(clamp_scale_percent(slider));
+    if (ImGui::BeginTabItem(cfg_tab_keys())) {
+      draw_keys();
+      ImGui::EndTabItem();
     }
-    const int want = clamp_scale_percent(static_cast<int>(std::lround(scale_slider_)));
-    const int eff = effective_scale_percent(state.renodx_stack, want, state.nr_pass_count, state.signal_w,
-                                           state.signal_h);
-    ImGui::TextColored(kAccent, "Trabalho Feed/NR: %dx%d (%d%%)", scaled_extent(state.signal_w, eff),
-                       scaled_extent(state.signal_h, eff), eff);
-    if (state.renodx_stack && feed_scale_below_floor(true, want)) {
-      ImGui::TextColored(kWarn, "Feed nao aceita abaixo de %d%% - usando %d%%", kMinFeedWorkResolution, eff);
-    }
-    const bool scale_restarts = feed_scale_change_needs_relaunch(state.renodx_stack, state.feed_loaded_scale,
-                                                                 want, state.nr_pass_count, state.signal_w,
-                                                                 state.signal_h);
-    if (scale_restarts) {
-      ImGui::TextColored(kWarn, "Feed ativo em %d%% - aplicar na sessao.",
-                         effective_scale_percent(state.renodx_stack, state.feed_loaded_scale,
-                                                state.nr_pass_count, state.signal_w, state.signal_h));
-    }
-    ImGui::BeginDisabled(want == clamp_scale_percent(state.scale_percent) && !scale_restarts);
-    if (ImGui::Button("Aplicar escala", ImVec2(240, 0))) {
-      actions_.scale_before = clamp_scale_percent(state.scale_percent);
-      state.scale_percent = want;
-      actions_.scale_apply = true;
-    }
-    ImGui::EndDisabled();
-
-    ImGui::Separator();
-    draw_presets();
+    ImGui::EndTabBar();
 
     ImGui::Separator();
     ImGui::TextDisabled("Esc fecha o menu | Esc de novo volta ao lobby");
-    if (ImGui::Button("Fechar", ImVec2(140, 0))) actions_.close_requested = true;
+    if (ImGui::Button("Fechar", ImVec2(140, 0))) request_close();
     ImGui::PopTextWrapPos();
   }
   ImGui::End();
-  if (!keep_open) actions_.close_requested = true;
+  if (!keep_open) request_close();
+
+  if (adv_close_ask_) {
+    ImGui::OpenPopup("##sess_cfg_unsaved");
+    const ImGuiViewport* uv = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(uv->WorkPos.x + uv->WorkSize.x * 0.5f, uv->WorkPos.y + uv->WorkSize.y * 0.5f),
+                            ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.10f, 0.14f, 0.20f, 0.98f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.65f, 0.95f, 0.8f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.f, 16.f));
+    if (ImGui::BeginPopupModal("##sess_cfg_unsaved", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar |
+                                   ImGuiWindowFlags_NoMove)) {
+      const int slot = clamp_nr_pass_count(adv_draft_pass_ >= 1 ? adv_draft_pass_ : state.nr_pass_count);
+      ImGui::PushTextWrapPos(360.f);
+      ImGui::TextColored(ImVec4(1.f, 0.82f, 0.45f, 1.f), "%s", lobby_cfg_unsaved_title());
+      ImGui::TextUnformatted(lobby_cfg_unsaved_question());
+      ImGui::PopTextWrapPos();
+      ImGui::Spacing();
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.95f, 1.f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.62f, 1.f, 1.f));
+      if (ImGui::Button("Sim", ImVec2(120, 36))) {
+        state.nr_advanced[slot] = clamp_nr_advanced(adv_draft_);
+        adv_draft_ = state.nr_advanced[slot];
+        adv_draft_pass_ = slot;
+        actions_.nr_advanced_apply = true;
+        actions_.close_requested = true;
+        adv_close_ask_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::PopStyleColor(2);
+      ImGui::SameLine();
+      if (ImGui::Button("Nao", ImVec2(120, 36))) {
+        adv_draft_ = state.nr_advanced[slot];
+        adv_draft_pass_ = slot;
+        actions_.close_requested = true;
+        adv_close_ask_ = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+  }
+}
+
+void hotkey_table_column_widths(float& lab_w, float& key_w, float& mod_w) {
+  lab_w = ImGui::CalcTextSize("Neural Rendering").x + 16.f;
+  key_w = ImGui::CalcTextSize("Ctrl+Page Down").x + 36.f;
+  mod_w = ImGui::GetFrameHeight() + ImGui::CalcTextSize("Ctrl").x + 28.f;
+}
+
+float hotkey_table_min_width() {
+  float lab_w = 0.f, key_w = 0.f, mod_w = 0.f;
+  hotkey_table_column_widths(lab_w, key_w, mod_w);
+  return lab_w + key_w + mod_w + ImGui::GetStyle().WindowPadding.x * 2.f + 20.f;
+}
+
+void draw_hotkey_config_table(HotkeyConfig& hk, bool in_session, int*& capture_vk, bool* changed) {
+  ImGui::TextUnformatted("Atalhos");
+  ImGui::TextDisabled("Clica a tecla para gravar outra.");
+  ImGui::PopTextWrapPos();
+  ImGui::PushTextWrapPos(FLT_MAX);
+  float lab_w = 0.f, key_w = 0.f, mod_w = 0.f;
+  hotkey_table_column_widths(lab_w, key_w, mod_w);
+  auto bind_key = [&](const char* id, int* vk, bool with_ctrl) {
+    char buf[80];
+    if (capture_vk == vk) {
+      std::snprintf(buf, sizeof(buf), "tecla...##%s", id);
+    } else if (with_ctrl) {
+      std::snprintf(buf, sizeof(buf), "Ctrl+%s##%s", vk_display_name(*vk), id);
+    } else {
+      std::snprintf(buf, sizeof(buf), "%s##%s", vk_display_name(*vk), id);
+    }
+    if (ImGui::Button(buf, ImVec2(key_w, 0))) capture_vk = vk;
+  };
+  auto hk_row = [&](const char* label, const char* id, int* vk, bool* ctrl) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::TableNextColumn();
+    bind_key(id, vk, ctrl && *ctrl);
+    ImGui::TableNextColumn();
+    if (ctrl) {
+      if (ImGui::Checkbox((std::string("##ctrl") + id).c_str(), ctrl) && changed) *changed = true;
+      ImGui::SameLine(0.f, 6.f);
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("Ctrl");
+    }
+  };
+  const ImGuiTableFlags hk_flags =
+      ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX | ImGuiTableFlags_NoSavedSettings |
+      ImGuiTableFlags_NoClip;
+  if (ImGui::BeginTable(in_session ? "##sess_hotkeys" : "##hotkeys", 3, hk_flags)) {
+    ImGui::TableSetupColumn("lab", ImGuiTableColumnFlags_WidthFixed, lab_w);
+    ImGui::TableSetupColumn("key", ImGuiTableColumnFlags_WidthFixed, key_w + 4.f);
+    ImGui::TableSetupColumn("mod", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoClip, mod_w);
+    if (in_session) {
+      hk_row("Abrir este CFG", "cfgkey", &hk.vk_cfg, &hk.cfg_ctrl);
+      hk_row("Overlay HUD", "hud", &hk.vk_hud, &hk.hud_ctrl);
+      hk_row("CFG do lobby", "gear", &hk.vk_gear, &hk.gear_ctrl);
+    } else {
+      hk_row("Abrir este CFG", "gear", &hk.vk_gear, &hk.gear_ctrl);
+      hk_row("Overlay HUD", "hud", &hk.vk_hud, &hk.hud_ctrl);
+      hk_row("CFG na captura", "cfgkey", &hk.vk_cfg, &hk.cfg_ctrl);
+    }
+    hk_row("Frame Gen", "fg", &hk.vk_fg_toggle, nullptr);
+    hk_row("Ciclo Frame Gen", "fgcycle", &hk.vk_fg_cycle, nullptr);
+    hk_row("Neural Rendering", "nr", &hk.vk_nr_toggle, nullptr);
+    hk_row("Pass Count +", "passnext", &hk.vk_pass_next, &hk.pass_next_ctrl);
+    hk_row("Pass Count -", "passprev", &hk.vk_pass_prev, &hk.pass_prev_ctrl);
+    hk_row("Tela cheia", "fs", &hk.vk_fullscreen, nullptr);
+    hk_row("Analise", "analyze", &hk.vk_analyze, nullptr);
+    hk_row("Preset visual", "renodx", &hk.vk_renodx, nullptr);
+    ImGui::EndTable();
+  }
+  ImGui::PopTextWrapPos();
+  ImGui::PushTextWrapPos(0.f);
+}
+
+void SessionCfgOverlay::draw_keys() {
+  bool changed = false;
+  draw_hotkey_config_table(state.hotkeys, true, capture_vk_, &changed);
+  if (changed) {
+    state.vk_cfg = state.hotkeys.vk_cfg;
+    state.cfg_ctrl = state.hotkeys.cfg_ctrl;
+    actions_.hotkeys_changed = true;
+  }
 }
 
 void SessionCfgOverlay::draw_restart_hold() {
@@ -566,6 +775,7 @@ void SessionCfgOverlay::commit_apply_preset() {
   actions_.toggle_fg = planned.toggle_fg;
   actions_.fg_multiplier_changed = planned.fg_multiplier_changed;
   actions_.fg_queue_changed = planned.fg_queue_changed;
+  actions_.fg_flow_changed = planned.fg_flow_changed;
   actions_.fg_adaptive_changed = planned.fg_adaptive_changed;
   actions_.fg_target_changed = planned.fg_target_changed;
   actions_.hud_changed = planned.hud_changed;
@@ -584,16 +794,20 @@ void SessionCfgOverlay::commit_apply_preset() {
   actions_.apply_fg_on = planned.apply_fg_on;
   actions_.apply_fg_multiplier = planned.apply_fg_multiplier;
   actions_.apply_fg_queue = planned.apply_fg_queue;
+  actions_.apply_fg_flow_scale = planned.apply_fg_flow_scale;
   actions_.apply_fg_adaptive = planned.apply_fg_adaptive;
   actions_.apply_fg_target_fps = planned.apply_fg_target_fps;
   actions_.apply_scale_percent = planned.apply_scale_percent;
+  actions_.apply_preset_name = p.name;
+  actions_.nr_advanced_changed = planned.nr_advanced_changed;
   stamp_session_from_user_preset(state, p, fg_can_enable);
+  adv_draft_pass_ = -1;
   scale_slider_ = static_cast<float>(state.scale_percent);
   fg_draft_sync_ = true;
   if (p.fg_enabled && !fg_can_enable) {
     state.status = session_notice_fg_missing();
   } else {
-    state.status = "Preset aplicado: " + p.name;
+    state.status = session_notice_named_preset_apply(p.name);
   }
 }
 

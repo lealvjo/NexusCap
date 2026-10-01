@@ -20,11 +20,13 @@ struct SessionCfgState {
   bool nr_busy = false;         // pulso do Bridge em andamento
   int renodx_preset = 0;        // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
   int nr_pass_count = 1;        // 1 / 4 (1,5x) / 2 / 3
+  NrAdvancedLook nr_advanced[7]{};
   int scale_percent = 100;      // escala do Feed escolhida na UI
   int feed_loaded_scale = 100;  // escala que o Feed travou neste processo
   bool fg_on = false;
   int fg_multiplier = 2;
   int fg_queue = 0;
+  int fg_flow_scale = 80;
   bool fg_adaptive = false;
   int fg_target_fps = 60;
   int monitor_hz = 60;
@@ -42,6 +44,7 @@ struct SessionCfgState {
   int signal_h = 1440;
   int vk_cfg = 0x4D;
   bool cfg_ctrl = true;
+  HotkeyConfig hotkeys{};
   std::string status;  // último aviso da sessão (FG / NR / preset)
 };
 
@@ -54,6 +57,7 @@ struct SessionCfgActions {
   bool toggle_fg = false;
   bool fg_multiplier_changed = false;
   bool fg_queue_changed = false;
+  bool fg_flow_changed = false;
   bool fg_adaptive_changed = false;
   bool fg_target_changed = false;
   bool hud_changed = false;
@@ -62,6 +66,7 @@ struct SessionCfgActions {
   bool console_changed = false;
   bool scale_apply = false;
   int scale_before = 100;
+  bool hotkeys_changed = false;
   bool close_requested = false;
   bool apply_user_preset = false;  // persist + apply snapshot (fill-safe)
   bool apply_hud = true;
@@ -71,12 +76,16 @@ struct SessionCfgActions {
   bool apply_nr_on = true;
   int apply_renodx_preset = 0;
   int apply_nr_pass_count = 1;
+  bool nr_advanced_apply = false;  // gravar a receita do X atual e reiniciar
+  bool nr_advanced_changed = false;  // preset trocou a receita; reinicia se o motor já nasceu
   bool apply_fg_on = false;
   int apply_fg_multiplier = 2;
   int apply_fg_queue = 0;
+  int apply_fg_flow_scale = 80;
   bool apply_fg_adaptive = false;
   int apply_fg_target_fps = 60;
   int apply_scale_percent = 100;
+  std::string apply_preset_name;
   std::string notice;  // toast HUD (preset ja ativo, etc.)
 };
 
@@ -95,7 +104,12 @@ public:
 
   void set_open(bool open);
   void toggle_open() { set_open(!open_); }
+  // Fechar, X, Esc ou o atalho do CFG. O desenho decide se pergunta antes.
+  void request_user_close();
+  // Depois do Aplicar, a seção volta aberta no processo novo.
+  void reopen_advanced_section() { adv_section_force_ = true; }
   bool open() const { return open_; }
+  bool hotkeys_edit_locked() const { return capture_vk_ != nullptr || actions_.hotkeys_changed; }
 
   // Recycle do motor: só o aviso, sem controles e sem timer.
   void set_restart_hold(const std::string& title, const std::string& line);
@@ -116,6 +130,7 @@ private:
   void draw();
   void draw_panel();
   void draw_restart_hold();
+  void draw_keys();
   void draw_presets();
   void reload_presets();
   void commit_save_preset();
@@ -150,9 +165,17 @@ private:
   bool confirm_import_ow_ = false;
   std::string pending_import_text_;
   bool fg_draft_sync_ = false;
+  NrAdvancedLook adv_draft_{};
+  int adv_draft_pass_ = -1;
+  bool adv_close_ask_ = false;
+  bool adv_section_force_ = false;
+  bool user_close_pending_ = false;
+  int* capture_vk_ = nullptr;
 };
 
 void draw_user_preset_name_field_hint(const char* buf);
 bool draw_user_preset_list_row(int id, const char* name, const char* summary, bool selected);
+float hotkey_table_min_width();
+void draw_hotkey_config_table(HotkeyConfig& hk, bool in_session, int*& capture_vk, bool* changed);
 
 }  // namespace nexuscap

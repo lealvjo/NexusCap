@@ -18,6 +18,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 namespace nexuscap {
 namespace {
@@ -30,9 +31,55 @@ std::string trim(std::string s) {
 
 }  // namespace
 
+namespace {
+
+bool patch_reshade_home_splash(uint8_t* base, size_t bytes) {
+  if (reshade68_home_splash_gate_offset(base, bytes, 0xEB) != static_cast<size_t>(-1)) return true;
+  const size_t gate = reshade68_home_splash_gate_offset(base, bytes, 0x74);
+  if (gate == static_cast<size_t>(-1) || gate >= bytes) return false;
+  auto* op = base + gate;
+  DWORD old = 0;
+  if (!VirtualProtect(op, 1, PAGE_EXECUTE_READWRITE, &old)) return false;
+  op[0] = 0xEB;
+  DWORD ignored = 0;
+  VirtualProtect(op, 1, old, &ignored);
+  FlushInstructionCache(GetCurrentProcess(), op, 1);
+  return true;
+}
+
+}  // namespace
+
+bool silence_reshade_home_splash() {
+  static bool done = false;
+  if (done) return true;
+  const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+  if (snap == INVALID_HANDLE_VALUE) return false;
+  MODULEENTRY32W me{};
+  me.dwSize = sizeof(me);
+  bool patched = false;
+  if (Module32FirstW(snap, &me)) {
+    do {
+      if (_wcsicmp(me.szModule, L"dxgi.dll") != 0) continue;
+      if (patch_reshade_home_splash(static_cast<uint8_t*>(me.modBaseAddr), me.modBaseSize)) {
+        patched = true;
+        break;
+      }
+    } while (Module32NextW(snap, &me));
+  }
+  CloseHandle(snap);
+  if (!patched) return false;
+  done = true;
+  std::printf("renodx: aviso Home desligado\n");
+  return true;
+}
+
 HotkeyConfig default_hotkeys() { return HotkeyConfig{}; }
 
-PersistedSettings default_settings() { return PersistedSettings{}; }
+PersistedSettings default_settings() {
+  PersistedSettings s;
+  fill_nr_advanced_defaults(s.nr_advanced);
+  return s;
+}
 
 namespace {
 
@@ -58,6 +105,32 @@ bool file_exists_utf8(const std::string& path) {
   const std::wstring w = utf8_to_wide(path);
   const DWORD a = GetFileAttributesW(w.c_str());
   return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+bool write_text_if_changed(const std::string& path, const std::string& before, const std::string& after) {
+  if (after == before) return true;
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  out << after;
+  return out.good();
+}
+
+bool files_have_same_contents(const std::string& a, const std::string& b) {
+  std::ifstream left(a, std::ios::binary | std::ios::ate);
+  std::ifstream right(b, std::ios::binary | std::ios::ate);
+  if (!left || !right || left.tellg() != right.tellg()) return false;
+  left.seekg(0);
+  right.seekg(0);
+  constexpr std::size_t kChunk = 4096;
+  char lb[kChunk]{};
+  char rb[kChunk]{};
+  while (left && right) {
+    left.read(lb, static_cast<std::streamsize>(kChunk));
+    right.read(rb, static_cast<std::streamsize>(kChunk));
+    const std::streamsize n = left.gcount();
+    if (n != right.gcount() || std::memcmp(lb, rb, static_cast<std::size_t>(n)) != 0) return false;
+  }
+  return true;
 }
 
 std::string local_appdata_env() {
@@ -253,6 +326,7 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "fg_enabled=" << (s.fg_enabled ? 1 : 0) << "\n";
   o << "fg_multiplier=" << s.fg_multiplier << "\n";
   o << "fg_queue=" << clamp_fg_queue(s.fg_queue) << "\n";
+  o << "fg_flow_scale=" << clamp_fg_flow_scale(s.fg_flow_scale) << "\n";
   o << "fg_adaptive=" << (s.fg_adaptive ? 1 : 0) << "\n";
   o << "fg_target_fps=" << clamp_fg_adaptive_target_stored(s.fg_target_fps) << "\n";
   o << "fg_path=" << s.fg_path << "\n";
@@ -260,6 +334,7 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "neural_rendering=" << (s.neural_rendering ? 1 : 0) << "\n";
   o << "renodx_preset=" << clamp_renodx_visual_preset(s.renodx_preset) << "\n";
   o << "nr_pass_count=" << clamp_nr_pass_count(s.nr_pass_count) << "\n";
+  write_nr_advanced_lines(o, s.nr_advanced);
   o << "video_fourcc=" << clamp_video_fourcc(s.video_fourcc) << "\n";
   o << "color_space=" << clamp_color_space(s.color_space) << "\n";
   o << "color_range=" << clamp_color_range(s.color_range) << "\n";
@@ -296,8 +371,13 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "nr_toggle=" << s.hotkeys.vk_nr_toggle << "\n";
   o << "fullscreen=" << s.hotkeys.vk_fullscreen << "\n";
   o << "gear=" << s.hotkeys.vk_gear << "\n";
+  o << "gear_ctrl=" << (s.hotkeys.gear_ctrl ? 1 : 0) << "\n";
   o << "cfg_key=" << s.hotkeys.vk_cfg << "\n";
   o << "cfg_ctrl=" << (s.hotkeys.cfg_ctrl ? 1 : 0) << "\n";
+  o << "pass_next=" << s.hotkeys.vk_pass_next << "\n";
+  o << "pass_next_ctrl=" << (s.hotkeys.pass_next_ctrl ? 1 : 0) << "\n";
+  o << "pass_prev=" << s.hotkeys.vk_pass_prev << "\n";
+  o << "pass_prev_ctrl=" << (s.hotkeys.pass_prev_ctrl ? 1 : 0) << "\n";
   return o.str();
 }
 
@@ -334,6 +414,8 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
         s.fg_multiplier = m;
       } else if (key == "fg_queue") {
         s.fg_queue = clamp_fg_queue(std::atoi(val.c_str()));
+      } else if (key == "fg_flow_scale") {
+        s.fg_flow_scale = clamp_fg_flow_scale(std::atoi(val.c_str()));
       } else if (key == "fg_adaptive") {
         s.fg_adaptive = parse_fg_adaptive_ini(val) || val == "1" || val == "true";
       } else if (key == "fg_target_fps") {
@@ -344,6 +426,8 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "neural_rendering") s.neural_rendering = (val != "0" && val != "false");
       else if (key == "renodx_preset") s.renodx_preset = clamp_renodx_visual_preset(std::atoi(val.c_str()));
       else if (key == "nr_pass_count") s.nr_pass_count = clamp_nr_pass_count(std::atoi(val.c_str()));
+      else if (parse_nr_advanced_setting_key(key, val, s.nr_advanced)) {
+      }
       else if (key == "video_fourcc") s.video_fourcc = clamp_video_fourcc(std::atoi(val.c_str()));
       else if (key == "color_space") s.color_space = clamp_color_space(std::atoi(val.c_str()));
       else if (key == "color_range") s.color_range = clamp_color_range(std::atoi(val.c_str()));
@@ -382,8 +466,13 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "nr_toggle") s.hotkeys.vk_nr_toggle = v;
       else if (key == "fullscreen") s.hotkeys.vk_fullscreen = v;
       else if (key == "gear") s.hotkeys.vk_gear = v;
+      else if (key == "gear_ctrl") s.hotkeys.gear_ctrl = (val == "1" || val == "true");
       else if (key == "cfg_key") s.hotkeys.vk_cfg = v;
       else if (key == "cfg_ctrl") s.hotkeys.cfg_ctrl = (val == "1" || val == "true");
+      else if (key == "pass_next") s.hotkeys.vk_pass_next = v;
+      else if (key == "pass_next_ctrl") s.hotkeys.pass_next_ctrl = (val == "1" || val == "true");
+      else if (key == "pass_prev") s.hotkeys.vk_pass_prev = v;
+      else if (key == "pass_prev_ctrl") s.hotkeys.pass_prev_ctrl = (val == "1" || val == "true");
     }
   }
   s.ui.hide_panel_on_capture = true;
@@ -446,6 +535,14 @@ const char* vk_display_name(int vk) {
       return "Insert";
     case 0x2E:
       return "Delete";
+    case 0xBB:
+      return "+";
+    case 0xBD:
+      return "-";
+    case 0x6B:
+      return "Num +";
+    case 0x6D:
+      return "Num -";
     default:
       break;
   }
@@ -467,13 +564,10 @@ const char* vk_display_name(int vk) {
 bool sync_feed_work_resolution_file(const std::string& path, int scale_percent, int pass_count) {
   std::ifstream in(path);
   if (!in) return false;
-  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const std::string before((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   in.close();
-  text = apply_feed_work_resolution(std::move(text), scale_percent, pass_count);
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return false;
-  out << text;
-  return true;
+  const std::string after = apply_feed_work_resolution(before, scale_percent, pass_count);
+  return write_text_if_changed(path, before, after);
 }
 
 namespace {
@@ -506,41 +600,32 @@ bool sync_mgf_techniques_for_phase(const std::string& exe_dir, bool session_or_l
   const std::string path = exe_dir + "\\DLSS5MGF.ini";
   std::ifstream in(path);
   if (!in) return false;
-  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const std::string before((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   in.close();
-  text = apply_mgf_techniques_for_phase(std::move(text), session_or_live_preview);
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return false;
-  out << text;
-  return true;
+  const std::string after = apply_mgf_techniques_for_phase(before, session_or_live_preview);
+  return write_text_if_changed(path, before, after);
 }
 
-bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset, int pass_count) {
+bool sync_renodx_visual_preset_files(const std::string& exe_dir, int visual_preset, int pass_count,
+                                      const NrAdvancedLook* look) {
   const int v = clamp_renodx_visual_preset(visual_preset);
   const int p = clamp_nr_pass_count(pass_count);
   bool any = for_each_feed_cfg(exe_dir, [&](const std::string& feed_path) {
     std::ifstream in(feed_path);
     if (!in) return false;
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string before((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
-    text = apply_renodx_visual_preset_to_feed(std::move(text), v, p);
-    std::ofstream out(feed_path, std::ios::trunc);
-    if (!out) return false;
-    out << text;
-    return true;
+    const std::string after = apply_renodx_visual_preset_to_feed(before, v, p);
+    return write_text_if_changed(feed_path, before, after);
   });
   const std::string reshade_path = exe_dir + "\\ReShade.ini";
   {
     std::ifstream in(reshade_path);
     if (in) {
-      std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      const std::string before((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
       in.close();
-      text = apply_reshade_look_for_current_stack(std::move(text), v, p);
-      std::ofstream out(reshade_path, std::ios::trunc);
-      if (out) {
-        out << text;
-        any = true;
-      }
+      const std::string after = apply_reshade_look_for_current_stack(before, v, p, look);
+      if (write_text_if_changed(reshade_path, before, after)) any = true;
     }
   }
   return any;
@@ -561,10 +646,8 @@ RenodxAddonSyncResult sync_renodx_addon_variant(const std::string& exe_dir, int 
 
   const std::string want_path = renodx_addon_stack_rel(p);
   const bool same = parse_reshade_addon_path(text) == want_path;
-  text = apply_reshade_addon_path(std::move(text), p);
-  std::ofstream out(reshade_path, std::ios::trunc);
-  if (!out) return RenodxAddonSyncResult::WriteFailed;
-  out << text;
+  const std::string after = apply_reshade_addon_path(text, p);
+  if (!write_text_if_changed(reshade_path, text, after)) return RenodxAddonSyncResult::WriteFailed;
   return same ? RenodxAddonSyncResult::OkSame : RenodxAddonSyncResult::OkSwapped;
 }
 
@@ -592,42 +675,37 @@ bool relaunch_current_process(const char* extra_args) {
   return true;
 }
 
-bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int visual_preset) {
+bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int visual_preset,
+                              const NrAdvancedLook* look) {
   const int p = clamp_nr_pass_count(pass_count);
   const int v = clamp_renodx_visual_preset(visual_preset);
   (void)sync_renodx_addon_variant(exe_dir, p);
   const std::string reshade_path = exe_dir + "\\ReShade.ini";
   std::ifstream in(reshade_path);
   if (!in) return false;
-  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const std::string before((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   in.close();
-  text = apply_reshade_addon_path(std::move(text), p);
-  text = apply_reshade_multipass_look_defaults(std::move(text), p, v);
-  std::ofstream out(reshade_path, std::ios::trunc);
-  if (!out) return false;
-  out << text;
+  std::string after = apply_reshade_addon_path(before, p);
+  after = apply_reshade_multipass_look_defaults(std::move(after), p, v, look);
+  if (!write_text_if_changed(reshade_path, before, after)) return false;
   {
     const std::string mgf_path = exe_dir + "\\DLSS5MGF.ini";
     std::ifstream min(mgf_path);
     if (min) {
-      std::string mgf((std::istreambuf_iterator<char>(min)), std::istreambuf_iterator<char>());
+      const std::string mgf_before((std::istreambuf_iterator<char>(min)), std::istreambuf_iterator<char>());
       min.close();
-      mgf = apply_mgf_sharpen_for_pass(std::move(mgf), p);
-      std::ofstream mout(mgf_path, std::ios::trunc);
-      if (mout) mout << mgf;
+      const std::string mgf_after = apply_mgf_sharpen_for_pass(mgf_before, p);
+      (void)write_text_if_changed(mgf_path, mgf_before, mgf_after);
     }
   }
   // ini antigo do Krish gravava o feed 1x (Cinematic=0); o multipass usa o slot 0/1/2.
   (void)for_each_feed_cfg(exe_dir, [&](const std::string& feed_path) {
     std::ifstream fin(feed_path);
     if (!fin) return false;
-    std::string feed((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
+    const std::string feed_before((std::istreambuf_iterator<char>(fin)), std::istreambuf_iterator<char>());
     fin.close();
-    feed = apply_renodx_visual_preset_to_feed(std::move(feed), v, p);
-    std::ofstream fout(feed_path, std::ios::trunc);
-    if (!fout) return false;
-    fout << feed;
-    return true;
+    const std::string feed_after = apply_renodx_visual_preset_to_feed(feed_before, v, p);
+    return write_text_if_changed(feed_path, feed_before, feed_after);
   });
   if (!pipeline_dir_is_worker(exe_dir)) {
     const std::string worker = pipeline_worker_dir(exe_dir);
@@ -639,9 +717,11 @@ bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int vi
     }
     const std::string src_mgf = exe_dir + "\\DLSS5MGF.ini";
     const std::string dst_mgf = worker + "\\DLSS5MGF.ini";
-    if (file_exists_utf8(src_mgf)) CopyFileA(src_mgf.c_str(), dst_mgf.c_str(), FALSE);
+    if (file_exists_utf8(src_mgf) && !files_have_same_contents(src_mgf, dst_mgf)) {
+      CopyFileA(src_mgf.c_str(), dst_mgf.c_str(), FALSE);
+    }
     if (file_exists_utf8(dst_ini)) {
-      (void)sync_nr_pass_count_files(worker, p, v);
+      (void)sync_nr_pass_count_files(worker, p, v, look);
     }
   }
   return true;
@@ -651,26 +731,19 @@ bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on,
   bool any = for_each_feed_cfg(exe_dir, [&](const std::string& feed_path) {
     std::ifstream in(feed_path);
     if (!in) return false;
-    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string before((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     in.close();
-    text = apply_feed_enabled(std::move(text), feed_on);
-    std::ofstream out(feed_path, std::ios::trunc);
-    if (!out) return false;
-    out << text;
-    return true;
+    const std::string after = apply_feed_enabled(before, feed_on);
+    return write_text_if_changed(feed_path, before, after);
   });
   const std::string reshade_path = exe_dir + "\\ReShade.ini";
   {
     std::ifstream in(reshade_path);
     if (in) {
-      std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      const std::string before((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
       in.close();
-      text = apply_reshade_neural_uplift(std::move(text), nr_on);
-      std::ofstream out(reshade_path, std::ios::trunc);
-      if (out) {
-        out << text;
-        any = true;
-      }
+      const std::string after = apply_reshade_neural_uplift(before, nr_on);
+      if (write_text_if_changed(reshade_path, before, after)) any = true;
     }
   }
   if (any && !pipeline_dir_is_worker(exe_dir)) {

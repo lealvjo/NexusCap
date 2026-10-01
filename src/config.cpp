@@ -42,6 +42,10 @@ AppConfig parse_args(int argc, char** argv) {
       }
     } else if (a == "--lobby-cfg") {
       c.open_lobby_cfg = true;  // CFG was open; reopen after lobby motor/Pass Count restart
+    } else if (a == "--session-cfg") {
+      c.open_session_cfg = true;  // CFG was open; reopen after session motor apply
+    } else if (a == "--nr-adv-open") {
+      c.open_nr_advanced = true;
     } else if (a == "--simulate-hdmi-busy") {
       c.simulate_hdmi_busy = true;
     } else if (a == "--selftest-cap" || a == "--selftest-vedo") {
@@ -196,6 +200,7 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.scale_percent = clamp_scale_percent(s.scale_percent);
   cfg.renodx_preset = clamp_renodx_visual_preset(s.renodx_preset);
   cfg.nr_pass_count = clamp_nr_pass_count(s.nr_pass_count);
+  copy_nr_advanced(cfg.nr_advanced, s.nr_advanced);
   cfg.video_fourcc = clamp_video_fourcc(s.video_fourcc);
   cfg.color_space = clamp_color_space(s.color_space);
   cfg.color_range = clamp_color_range(s.color_range);
@@ -221,6 +226,7 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   // Keep preferred x2/x3/x4 armed even when checkbox is off (PageDn can enable).
   cfg.fg_multiplier = armed_fg_multiplier(s.fg_enabled, s.fg_multiplier);
   cfg.fg_queue = clamp_fg_queue(s.fg_queue);
+  cfg.fg_flow_scale = clamp_fg_flow_scale(s.fg_flow_scale);
   cfg.fg_adaptive = s.fg_adaptive;
   cfg.fg_target_fps = clamp_fg_adaptive_target_stored(s.fg_target_fps);
   cfg.fg_auto_start = s.fg_enabled;

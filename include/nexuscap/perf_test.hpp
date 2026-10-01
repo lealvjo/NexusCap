@@ -57,6 +57,22 @@ inline bool perf_test_should_start_clock(bool nr_runtime_on, uint64_t presented,
   return perf_test_params_ready(nr_runtime_on, presented, want_fg, fg_on, fg_unavailable, fg_wait_ms, nr_live);
 }
 
+// O Lossless do menu serve o Benchmark quando o perfil é o mesmo. x2/x3/fila/Adaptive
+// diferente exige processo novo — o LS só lê isso no arranque.
+inline bool perf_test_reuses_warm_lossless(bool settings_fg_on, int settings_mult, int settings_queue,
+                                           bool settings_adaptive, int settings_target, int plan_mult,
+                                           int plan_queue, bool plan_adaptive, int plan_target) {
+  if (!settings_fg_on || clamp_fg_multiplier(plan_mult) < 2) return false;
+  if (clamp_fg_multiplier(settings_mult) != clamp_fg_multiplier(plan_mult)) return false;
+  if (clamp_fg_queue(settings_queue) != clamp_fg_queue(plan_queue)) return false;
+  if (settings_adaptive != plan_adaptive) return false;
+  if (plan_adaptive && clamp_fg_adaptive_target_stored(settings_target) !=
+                           clamp_fg_adaptive_target_stored(plan_target)) {
+    return false;
+  }
+  return true;
+}
+
 // "A carregar" so enquanto falta NR ou o FG ainda esta dentro da janela de espera.
 inline bool perf_test_carregar_can_block(bool nr_ready, bool want_fg, bool fg_on, bool fg_unavailable,
                                         double fg_wait_ms) {

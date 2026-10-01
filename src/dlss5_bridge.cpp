@@ -208,9 +208,9 @@ bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool
 }
 
 bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
-                                    bool* runtime_on, int pass_count) {
+                                    bool* runtime_on, int pass_count, const NrAdvancedLook* look) {
   if (!runtime_on) return false;
-  const bool files_ok = sync_renodx_visual_preset_files(exe_dir, visual_preset, pass_count);
+  const bool files_ok = sync_renodx_visual_preset_files(exe_dir, visual_preset, pass_count, look);
   if (want_nr && *runtime_on) {
     if (!apply_neural_rendering_state(exe_dir, false, runtime_on)) return false;
     if (!apply_neural_rendering_state(exe_dir, true, runtime_on)) return false;
@@ -222,9 +222,9 @@ bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_prese
 }
 
 bool apply_lobby_nr_pass_count_live(const std::string& exe_dir, int pass_count, bool want_nr,
-                                    bool* runtime_on, int visual_preset) {
+                                    bool* runtime_on, int visual_preset, const NrAdvancedLook* look) {
   if (!runtime_on) return false;
-  const bool files_ok = sync_nr_pass_count_files(exe_dir, pass_count, visual_preset);
+  const bool files_ok = sync_nr_pass_count_files(exe_dir, pass_count, visual_preset, look);
   if (want_nr && *runtime_on) {
     if (!apply_neural_rendering_state(exe_dir, false, runtime_on)) return false;
     if (!apply_neural_rendering_state(exe_dir, true, runtime_on)) return false;

@@ -99,6 +99,9 @@ target_include_directories(nexuscap_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/th
 target_link_libraries(nexuscap_tests PRIVATE nexuscap_core)
 target_compile_definitions(nexuscap_tests PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX
   "NEXUSCAP_SOURCE_DIR=R\"(${CMAKE_SOURCE_DIR})\"")
+if(MSVC)
+  target_compile_options(nexuscap_tests PRIVATE /bigobj)
+endif()
 
 add_executable(nexuscap_probe tools/probe_capture.cpp)
 target_link_libraries(nexuscap_probe PRIVATE nexuscap_core)

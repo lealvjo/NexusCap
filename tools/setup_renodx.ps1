@@ -254,21 +254,7 @@ function Write-MotorsStock([string]$Root) {
 }
 Write-MotorsStock $DestDir
 
-# NR no Present do NexusCap (um GPU, como a 5.x). worker/ e so espelho de ficheiros.
-$WorkerDir = Join-Path $DestDir "worker"
-New-Item -ItemType Directory -Force -Path $WorkerDir | Out-Null
-foreach ($f in @("dxgi.dll", "dlss5-feed.addon64", "dlss5-bridge.addon64", "ReShade.ini", "DLSS5MGF.ini")) {
-  $src = Join-Path $DestDir $f
-  if (Test-Path -LiteralPath $src) {
-    Copy-Item -LiteralPath $src -Destination (Join-Path $WorkerDir $f) -Force
-  }
-}
-foreach ($stack in @("addons-multipass", "reshade-shaders", "reshade-cache")) {
-  $srcDir = Join-Path $DestDir $stack
-  if (Test-Path -LiteralPath $srcDir) {
-    robocopy $srcDir (Join-Path $WorkerDir $stack) /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
-  }
-}
+# O Present e o Neural Rendering rodam no NexusCap.exe. Nao espelhar o motor em worker/.
 Write-Host "dxgi no NexusCap.exe — um Present. Sem segunda janela GPU."
 
 Write-Host "OK -> $DestDir"

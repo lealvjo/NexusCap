@@ -38,6 +38,8 @@ struct AppConfig {
   bool autostart = false;       // --autostart: seed from settings, skip lobby once (feed scale relaunch)
   bool portable = false;        // --portable: settings/presets/logs beside the exe (zip / USB)
   bool open_lobby_cfg = false;  // --lobby-cfg: reopen lobby CFG after a motor/Pass Count restart
+  bool open_session_cfg = false;  // --session-cfg: CFG estava aberto; volta aberto na sessão
+  bool open_nr_advanced = false;  // --nr-adv-open: seção avançada estava aberta no aplicar
   bool simulate_hdmi_busy = false;  // preview + Iniciar: placa em uso (sem abrir DShow)
   std::string lobby_boot_toast;     // one-shot toast ao voltar ao lobby (captura falhou)
   int overlay_hud_restore = -1; // --hud=: session overlay after OUR restart (not lobby checks)
@@ -55,6 +57,7 @@ struct AppConfig {
   int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
   int nr_pass_count = 1;    // 1=1x, 4=1.5x, 5=2x+, 6=3x+
+  NrAdvancedLook nr_advanced[7]{};
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
   // Live RenoDX NR (Bridge). Carried lobby↔session — NOT the same as neural_rendering on disk.
   // Resetting this to false while RenoDX is still ON causes a boot pulse that inverts HUD vs image.
@@ -78,6 +81,7 @@ struct AppConfig {
   // Lossless Scaling FG (Steam install, never bundled): 1=off, 2/3/4=multiplier ready
   int fg_multiplier = 1;
   int fg_queue = 0;  // Lossless QueueTarget: 0 menor latência (validado)
+  int fg_flow_scale = 80;  // Padrao = 80; 70/90/100 a escolha da pessoa
   bool fg_adaptive = false;  // default FIXED (mira-lock validado)
   int fg_target_fps = 60;    // Adaptive LSFG3Target; teto = Hz do monitor
   // When true, session auto-toggles FG on open. False = armed for PageDn only (default).
@@ -138,6 +142,20 @@ inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
 inline int hud_mini_overlay_height() { return 168; }  // 3 text rows + grafico FT com linhas FG
 inline int hud_mini_overlay_font_px() { return 27; }  // +50% vs 18
 inline int hud_mini_overlay_rows() { return 3; }
+
+// O mini ocupa a largura da tela. O grafico de FT fica no canto e usa a sobra
+// ao lado do texto, em vez de um bloco fixo de 220 px.
+inline int hud_mini_frametime_graph_w(int bar_w) {
+  if (bar_w < 64) return 220;
+  int w = bar_w * 2 / 5;
+  if (w < 280) w = 280;
+  if (w > 720) w = 720;
+  const int room = bar_w - 520;
+  if (room >= 220 && w > room) w = room;
+  if (w > bar_w - 32) w = bar_w - 32;
+  if (w < 160) w = 160;
+  return w;
+}
 
 // When mini overlay is on, multi-line compact/advanced HUD is suppressed.
 inline bool hud_uses_mini_overlay(bool show_fps, bool mini_overlay) { return show_fps && mini_overlay; }
@@ -265,12 +283,27 @@ inline bool apply_autostart_overlay_hud(AppConfig& cfg) {
   return true;
 }
 
-inline std::string session_cfg_relaunch_args_for_hud(OverlayHudStep step) {
-  return std::string("--autostart --hud=") + overlay_hud_step_cli(step);
+inline const char* session_cfg_reopen_arg() { return "--session-cfg"; }
+inline const char* nr_advanced_reopen_arg() { return "--nr-adv-open"; }
+
+inline std::string session_cfg_relaunch_args_for_hud(OverlayHudStep step, bool reopen_cfg = false,
+                                                     bool reopen_advanced = false) {
+  std::string a = std::string("--autostart --hud=") + overlay_hud_step_cli(step);
+  if (reopen_cfg) {
+    a += " ";
+    a += session_cfg_reopen_arg();
+  }
+  if (reopen_advanced) {
+    a += " ";
+    a += nr_advanced_reopen_arg();
+  }
+  return a;
 }
 
-inline std::string session_cfg_relaunch_args_for_hud(bool visible, bool mini, bool advanced, bool live) {
-  return session_cfg_relaunch_args_for_hud(overlay_hud_step_of(visible, mini, advanced, live));
+inline std::string session_cfg_relaunch_args_for_hud(bool visible, bool mini, bool advanced, bool live,
+                                                     bool reopen_cfg = false, bool reopen_advanced = false) {
+  return session_cfg_relaunch_args_for_hud(overlay_hud_step_of(visible, mini, advanced, live), reopen_cfg,
+                                           reopen_advanced);
 }
 
 // Separate floating strip for CPU/GPU/RAM/VRAM/PWR when "Infos GPU / CPU" is on.
@@ -375,14 +408,16 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
       std::snprintf(out.line[n++], 128, "signal  %dx%d @ %.0f  work 100%%", s.width, s.height, s.fps);
     }
     if (s.fg_enabled) {
-      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx, s.fg_adaptive, s.fg_target_fps);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx, s.fg_adaptive, s.fg_target_fps,
+                                s.fg_flow_scale);
     } else {
-      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx, s.fg_adaptive, s.fg_target_fps);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx, s.fg_adaptive, s.fg_target_fps,
+                                s.fg_flow_scale);
     }
     format_overlay_frametime_line(out.line[n++], 128, ft, ft, ft, true, false, fgx, fps, s.fps, 0);
     {
-      char tag[24]{};
-      format_fg_mode_tag(tag, sizeof(tag), s.fg_adaptive, fgx, s.fg_target_fps);
+      char tag[40]{};
+      format_fg_mode_tag(tag, sizeof(tag), s.fg_adaptive, fgx, s.fg_target_fps, s.fg_flow_scale);
       std::snprintf(out.line[n++], 128, "FG  %s  %s  fila%d   scale %d%%", s.fg_enabled ? "ON" : "off", tag,
                     clamp_fg_queue(s.fg_queue), scale);
     }
@@ -420,14 +455,16 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     }
     std::snprintf(out.line[n++], 128, "%dx%d @ %.0f", s.width, s.height, s.fps);
     if (s.fg_enabled) {
-      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx, s.fg_adaptive, s.fg_target_fps);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx, s.fg_adaptive, s.fg_target_fps,
+                                s.fg_flow_scale);
     } else {
-      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx, s.fg_adaptive, s.fg_target_fps);
+      format_lobby_hud_fps_line(out.line[n++], 128, fps, false, fgx, s.fg_adaptive, s.fg_target_fps,
+                                s.fg_flow_scale);
     }
     format_overlay_frametime_line(out.line[n++], 128, ft, ft, ft, true, false, fgx, fps, s.fps, 0);
     {
-      char tag[24]{};
-      format_fg_mode_tag(tag, sizeof(tag), s.fg_adaptive, fgx, s.fg_target_fps);
+      char tag[40]{};
+      format_fg_mode_tag(tag, sizeof(tag), s.fg_adaptive, fgx, s.fg_target_fps, s.fg_flow_scale);
       std::snprintf(out.line[n++], 128, "FG %s %s  fila%d  scale %d%%", s.fg_enabled ? "ON" : "off", tag,
                     clamp_fg_queue(s.fg_queue), scale);
     }
@@ -525,6 +562,14 @@ inline SessionEscAction session_esc_action(bool cfg_open) {
 // Com o menu aberto o ImGui tem o teclado — A / PgDn / Delete / F11 não podem disparar.
 inline bool session_hotkeys_blocked_while_cfg_open(bool cfg_open) { return cfg_open; }
 
+// CFG 6.0: mesmas abas no lobby (F12) e na sessão (Ctrl+M). Imagem primeiro.
+inline const char* cfg_tab_image() { return "Imagem"; }
+inline const char* cfg_tab_hud() { return "HUD"; }
+inline const char* cfg_tab_sound() { return "Som"; }
+inline const char* cfg_tab_fg() { return "Frame Gen"; }
+inline const char* cfg_tab_presets() { return "Presets"; }
+inline const char* cfg_tab_keys() { return "Atalhos"; }
+
 // O que a mudança feita no CFG da sessão custa.
 // 6.0: o 8.5 só lê o X no init — o Present da janela visível é o motor.
 // Troca de X relança o NexusCap (um GPU). O aviso GDI segura a tela; sem segunda janela.
@@ -568,6 +613,11 @@ inline const char* session_cfg_relaunch_args() { return "--autostart"; }
 // Pass Count / motor no CFG do lobby: reabre o lobby com o CFG ainda aberto.
 inline const char* lobby_cfg_relaunch_args() { return "--lobby-cfg"; }
 
+// Aplicar avançado no lobby: volta com o CFG e a seção ainda abertos.
+inline std::string lobby_cfg_relaunch_args_with_advanced() {
+  return std::string(lobby_cfg_relaunch_args()) + " " + nr_advanced_reopen_arg();
+}
+
 // Hold do lobby: so Iniciar / Benchmark matam o processo. Troca de X no lobby so grava.
 inline bool lobby_hold_relaunch_starts_session(const char* args) {
   if (!args || !args[0]) return false;
@@ -595,6 +645,7 @@ inline SessionCfgApply plan_session_cfg_nr_apply(bool renodx_stack, bool multipa
 // Aviso na troca de X: a imagem fica; o motor novo le o INI.
 inline std::string session_restart_notice_title() { return "A aplicar o motor"; }
 inline std::string lobby_pipeline_hold_title() { return session_restart_notice_title(); }
+inline std::string lobby_iniciar_hold_title() { return "Otimizando pipeline"; }
 inline std::string session_restart_notice_detail(SessionCfgApply a) {
   switch (a) {
     case SessionCfgApply::RecycleWorker:
@@ -613,7 +664,9 @@ inline std::string session_restart_notice_detail(SessionCfgApply a) {
       return "A tela fica.";
   }
 }
-inline bool restart_notice_visible_at_boot(bool autostart) { return autostart; }
+inline bool restart_notice_visible_at_boot(bool autostart, bool have_hold_image = false) {
+  return autostart && have_hold_image;
+}
 
 // Esc in lobby chrome: never quits. Gear/hotkey capture may consume Esc locally.
 enum class LobbyEscAction { None, CloseGear, CancelHotkeyCapture };
@@ -624,9 +677,11 @@ inline LobbyEscAction lobby_esc_action(bool gear_open, bool capturing_hotkey) {
 }
 
 // F12 (ou o rebind vk_gear) abre/fecha o CFG do lobby. Esc e captura de tecla ganham.
-inline bool lobby_gear_hotkey_toggles_cfg(int vk, int gear_vk, bool capturing_hotkey) {
+inline bool lobby_gear_hotkey_toggles_cfg(int vk, int gear_vk, bool capturing_hotkey, bool ctrl_down = false,
+                                         bool gear_ctrl = false) {
   if (capturing_hotkey || gear_vk <= 0) return false;
-  return vk == gear_vk;
+  if (vk != gear_vk) return false;
+  return !gear_ctrl || ctrl_down;
 }
 
 inline const char* lobby_cfg_unsaved_title() { return "Alteracoes foram feitas e nao foram salvas."; }
@@ -634,8 +689,8 @@ inline const char* lobby_cfg_unsaved_question() { return "Deseja aplica-las?"; }
 
 // Soft on-screen tips while playing (FG / Neural Rendering hotkeys).
 inline constexpr double kSessionNoticeTtlMs = 3200.0;
-// Delay before Krish↔multipass relaunch so the swap does not look like a crash.
-inline constexpr double kDlss5MotorSwapHoldSec = 0.55;
+// Um Present do aviso e aplica. O 0,55s do timer antigo só atrasava o X.
+inline constexpr double kDlss5MotorSwapHoldSec = 0.0;
 
 inline std::string session_hdmi_notice_title() { return "O console parou de mandar o sinal HDMI"; }
 inline std::string session_hdmi_notice_detail() {
@@ -655,6 +710,11 @@ inline std::string session_notice_fg_queue_apply(int queue, bool restarting) {
   const int q = clamp_fg_queue(queue);
   if (restarting) return "Perfil FG fila" + std::to_string(q) + " — reabrindo o Lossless";
   return "Perfil FG fila" + std::to_string(q) + " — na proxima abertura";
+}
+inline std::string session_notice_fg_flow_apply(int flow, bool restarting) {
+  const char* label = fg_flow_scale_label(flow);
+  if (restarting) return std::string("Escala de fluxo ") + label + " — reabrindo o Lossless";
+  return std::string("Escala de fluxo ") + label + " — na proxima abertura";
 }
 inline std::string session_notice_fg_adaptive_apply(bool adaptive, int target, int monitor_hz, bool restarting,
                                                     double capture_fps = 0) {
@@ -696,9 +756,11 @@ inline std::string session_notice_nr_pass_count_apply(int from_pass, int to_pass
   return std::string("A aplicar Pass Count: ") + nr_pass_count_label(from_pass) + " → " +
          nr_pass_count_label(to_pass);
 }
-inline std::string session_notice_preset_apply(int from_preset, int to_preset, int pass_count = 1) {
-  return std::string("Aplicando preset: ") + renodx_visual_preset_name(from_preset, pass_count) + " → " +
-         renodx_visual_preset_name(to_preset, pass_count);
+inline std::string session_notice_named_preset_apply(const std::string& name) {
+  return std::string("Aplicando preset \xE2\x86\x92 ") + name;
+}
+inline std::string session_notice_preset_apply(int /*from_preset*/, int to_preset, int pass_count = 1) {
+  return session_notice_named_preset_apply(renodx_visual_preset_name(to_preset, pass_count));
 }
 inline std::string session_notice_nr_apply(bool want_on) {
   return std::string("Aplicando DLSS 5: ") + (want_on ? "ON" : "OFF");
@@ -719,9 +781,7 @@ inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
   return std::string("Aplicando escala do Feed: ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +
          std::to_string(clamp_scale_percent(to_pct)) + "%";
 }
-inline std::string session_notice_lobby_iniciar_apply() {
-  return "Aplicando configuracao: DLSS 5, preset e escala do CFG entram na sessao";
-}
+inline std::string session_notice_lobby_iniciar_apply() { return lobby_iniciar_hold_title(); }
 
 // Toast de Pass/preset/escala/Iniciar: o processo morre no restart. Grava e mostra na volta.
 inline std::string restart_toast_path() {
@@ -862,12 +922,26 @@ inline bool session_writes_renodx_off_files(const AppConfig& cfg) {
   return true;
 }
 
+// --autostart e --no-lobby pulam o lobby. O cfg nasce com NrAdvancedLook vazio
+// (UI Ligada, aparência desligada). Sem esta cópia a sessão grava esse vazio
+// por cima da fábrica do 1,5x.
+inline void seed_cfg_nr_advanced_from_settings(AppConfig& cfg, const PersistedSettings& s) {
+  copy_nr_advanced(cfg.nr_advanced, s.nr_advanced);
+}
+
+// Perf-test fica na fábrica. Ponteiro para o struct vazio não é a fábrica.
+inline const NrAdvancedLook* session_nr_look_for_sync(const AppConfig& cfg) {
+  if (cfg.perf_test) return nullptr;
+  return &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)];
+}
+
 // CFG da sessão → disco. O processo novo (--autostart) lê isto para voltar igual.
 // Teste de performance nunca toca nos presets HDMI (Pass / tom / escala / FG / NR).
 inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettings& s) {
   if (cfg.perf_test) return;
   s.renodx_preset = clamp_renodx_visual_preset(cfg.renodx_preset);
   s.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
+  copy_nr_advanced(s.nr_advanced, cfg.nr_advanced);
   s.scale_percent = clamp_scale_percent(cfg.scale_percent);
   s.capture_volume = clamp_capture_volume_percent(cfg.capture_volume);
   s.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
@@ -875,6 +949,7 @@ inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettin
   s.ui.overlay_no_bg = cfg.overlay_no_bg;
   apply_session_fg_to_persisted(cfg.fg_auto_start, cfg.fg_multiplier, s);
   s.fg_queue = clamp_fg_queue(cfg.fg_queue);
+  s.fg_flow_scale = clamp_fg_flow_scale(cfg.fg_flow_scale);
   s.fg_adaptive = cfg.fg_adaptive;
   s.fg_target_fps = clamp_fg_adaptive_target_stored(cfg.fg_target_fps);
   apply_session_nr_to_persisted(cfg.neural_rendering, cfg.enhance == EnhanceBackend::Renodx, s);

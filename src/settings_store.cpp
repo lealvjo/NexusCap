@@ -1,4 +1,5 @@
 #include "nexuscap/settings_store.hpp"
+#include "nexuscap/pipeline.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/audio.hpp"
 #include "nexuscap/capture_format.hpp"
@@ -150,16 +151,66 @@ bool directory_is_writable(const std::string& dir) {
   return true;
 }
 
+namespace {
+bool move_file_utf8(const std::string& from, const std::string& to) {
+  if (from.empty() || to.empty()) return false;
+  if (!file_exists_utf8(from)) return file_exists_utf8(to);
+  const std::wstring wfrom = utf8_to_wide(from);
+  const std::wstring wto = utf8_to_wide(to);
+  if (file_exists_utf8(to)) DeleteFileW(wto.c_str());
+  return MoveFileExW(wfrom.c_str(), wto.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+}
+}  // namespace
+
+bool park_reshade_dxgi(const std::string& exe_dir) {
+  const std::string live = reshade_dxgi_path_in(exe_dir);
+  const std::string parked = reshade_dxgi_parked_path_in(exe_dir);
+  if (live.empty()) return false;
+  if (!file_exists_utf8(live)) return true;
+  return move_file_utf8(live, parked);
+}
+
+bool restore_reshade_dxgi(const std::string& exe_dir) {
+  const std::string live = reshade_dxgi_path_in(exe_dir);
+  const std::string parked = reshade_dxgi_parked_path_in(exe_dir);
+  if (live.empty()) return false;
+  if (file_exists_utf8(live)) return true;
+  if (!file_exists_utf8(parked)) return false;
+  return move_file_utf8(parked, live);
+}
+
+bool park_reshade_dxgi_wait(const std::string& exe_dir, int timeout_ms) {
+  const std::string live = reshade_dxgi_path_in(exe_dir);
+  if (live.empty()) return false;
+  const DWORD t0 = GetTickCount();
+  const DWORD lim = timeout_ms < 0 ? 0 : static_cast<DWORD>(timeout_ms);
+  for (;;) {
+    if (park_reshade_dxgi(exe_dir) && !file_exists_utf8(live)) return true;
+    if (GetTickCount() - t0 >= lim) break;
+    Sleep(40);
+  }
+  return !file_exists_utf8(live);
+}
+
+bool reshade_dxgi_present(const std::string& exe_dir) {
+  return file_exists_utf8(reshade_dxgi_path_in(exe_dir)) ||
+         file_exists_utf8(reshade_dxgi_parked_path_in(exe_dir));
+}
+
 RuntimeHealth check_runtime_health(const std::string& exe_dir) {
   RuntimeHealth h;
   h.writable = directory_is_writable(exe_dir);
   if (!exe_dir.empty()) {
     const std::string base = exe_dir.back() == '\\' || exe_dir.back() == '/' ? exe_dir : exe_dir + "\\";
-    h.has_dxgi = file_exists_utf8(base + "dxgi.dll");
+    const std::string worker = pipeline_worker_dir(exe_dir) + "\\";
+    h.has_dxgi = reshade_dxgi_present(exe_dir) || file_exists_utf8(worker + "dxgi.dll");
     h.has_renodx = file_exists_utf8(base + "addons-multipass\\renodx-dlss5.addon64") ||
-                    file_exists_utf8(base + "renodx-dlss5.addon64");
+                    file_exists_utf8(base + "renodx-dlss5.addon64") ||
+                    file_exists_utf8(worker + "addons-multipass\\renodx-dlss5.addon64");
     h.has_feed = file_exists_utf8(base + "dlss5-feed.addon64") ||
-                 file_exists_utf8(base + "addons-multipass\\dlss5-feed.addon64");
+                 file_exists_utf8(base + "addons-multipass\\dlss5-feed.addon64") ||
+                 file_exists_utf8(worker + "addons-multipass\\dlss5-feed.addon64") ||
+                 file_exists_utf8(worker + "dlss5-feed.addon64");
   }
   return h;
 }
@@ -578,6 +629,21 @@ bool sync_nr_pass_count_files(const std::string& exe_dir, int pass_count, int vi
     fout << feed;
     return true;
   });
+  if (!pipeline_dir_is_worker(exe_dir)) {
+    const std::string worker = pipeline_worker_dir(exe_dir);
+    CreateDirectoryA(worker.c_str(), nullptr);
+    const std::string src_ini = exe_dir + "\\ReShade.ini";
+    const std::string dst_ini = worker + "\\ReShade.ini";
+    if (file_exists_utf8(src_ini) && !file_exists_utf8(dst_ini)) {
+      CopyFileA(src_ini.c_str(), dst_ini.c_str(), FALSE);
+    }
+    const std::string src_mgf = exe_dir + "\\DLSS5MGF.ini";
+    const std::string dst_mgf = worker + "\\DLSS5MGF.ini";
+    if (file_exists_utf8(src_mgf)) CopyFileA(src_mgf.c_str(), dst_mgf.c_str(), FALSE);
+    if (file_exists_utf8(dst_ini)) {
+      (void)sync_nr_pass_count_files(worker, p, v);
+    }
+  }
   return true;
 }
 
@@ -605,6 +671,13 @@ bool sync_neural_rendering_enabled_files(const std::string& exe_dir, bool nr_on,
         out << text;
         any = true;
       }
+    }
+  }
+  if (any && !pipeline_dir_is_worker(exe_dir)) {
+    const std::string worker = pipeline_worker_dir(exe_dir);
+    if (file_exists_utf8(worker + "\\ReShade.ini") || file_exists_utf8(worker + "\\dlss5-feed.cfg") ||
+        file_exists_utf8(worker + "\\addons-multipass\\dlss5-feed.cfg")) {
+      (void)sync_neural_rendering_enabled_files(worker, nr_on, feed_on);
     }
   }
   return any;

@@ -2334,8 +2334,6 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (ImGui::RadioButton("1x##nrpass", pass_i == 1)) pass_i = 1;
         ImGui::SameLine();
         if (ImGui::RadioButton("1,5x##nrpass", pass_i == 4)) pass_i = 4;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("1,7x##nrpass", pass_i == 7)) pass_i = 7;
         if (ImGui::RadioButton("2x default##nrpass", pass_i == 2)) pass_i = 2;
         ImGui::SameLine();
         if (ImGui::RadioButton("2x otimizado##nrpass", pass_i == 5)) pass_i = 5;
@@ -2818,8 +2816,6 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (ImGui::RadioButton("1x##perfpass", pass_i == 1)) pass_i = 1;
         ImGui::SameLine();
         if (ImGui::RadioButton("1,5x##perfpass", pass_i == 4)) pass_i = 4;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("1,7x##perfpass", pass_i == 7)) pass_i = 7;
         if (ImGui::RadioButton("2x default##perfpass", pass_i == 2)) pass_i = 2;
         if (ImGui::RadioButton("2x otimizado##perfpass", pass_i == 5)) pass_i = 5;
         ImGui::SameLine();

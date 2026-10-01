@@ -15,9 +15,9 @@ Pasta de instalacao (importante):
   falham e o app pode fechar ao iniciar a sessao.
 
 Incluidos (quando presentes no build):
-  - ReShade / RenoDX Krish (renodx-dlss5) / dlss5-feed / dlss5-bridge
+  - ReShade / RenoDX Krish 8.5 (renodx-dlss5) / dlss5-feed / dlss5-bridge
   - NVIDIA Streamline / nvngx (caminho Streamline opcional)
-  - NAO inclui ShortFuse / renodx-dlss "Neural Resolution" alternativo
+  - NAO inclui ShortFuse / renodx-dlss.addon64 no mesmo AddonPath
 
 Settings do usuario ficam em %LOCALAPPDATA%\NexusCap\ — nao sao removidos
 na desinstalacao (preserve suas preferencias).

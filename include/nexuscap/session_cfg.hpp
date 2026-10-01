@@ -97,8 +97,11 @@ public:
   void toggle_open() { set_open(!open_); }
   bool open() const { return open_; }
 
-  // Espera do reinício: só o aviso, sem controles.
-  void set_restart_hold(const std::string& title, const std::string& line, double seconds_left);
+  // Recycle do motor: só o aviso, sem controles e sem timer.
+  void set_restart_hold(const std::string& title, const std::string& line);
+  void set_restart_hold(const std::string& title, const std::string& line, double /*seconds_left*/) {
+    set_restart_hold(title, line);
+  }
   void clear_restart_hold();
 
   SessionCfgState state;
@@ -138,7 +141,6 @@ private:
   bool hold_active_ = false;
   std::string hold_title_;
   std::string hold_line_;
-  double hold_seconds_ = 0;
   std::vector<std::string> preset_names_;
   std::vector<std::string> preset_summaries_;
   int selected_preset_ = -1;

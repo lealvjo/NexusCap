@@ -54,7 +54,7 @@ struct AppConfig {
   int live_console = 0;       // LiveConsole: which console is being captured
   int scale_percent = 100;  // 25–100; 100 = native
   int renodx_preset = 0;    // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
-  int nr_pass_count = 1;    // 1=1x, 4=1.5x, 5=2x+, 6=3x+, 7=1.7x
+  int nr_pass_count = 1;    // 1=1x, 4=1.5x, 5=2x+, 6=3x+
   bool neural_rendering = true;  // NeuralUplift/feed; Delete toggles; persists
   // Live RenoDX NR (Bridge). Carried lobby↔session — NOT the same as neural_rendering on disk.
   // Resetting this to false while RenoDX is still ON causes a boot pulse that inverts HUD vs image.
@@ -526,8 +526,11 @@ inline SessionEscAction session_esc_action(bool cfg_open) {
 inline bool session_hotkeys_blocked_while_cfg_open(bool cfg_open) { return cfg_open; }
 
 // O que a mudança feita no CFG da sessão custa.
+// 6.0: o 8.5 só lê o X no init — o Present da janela visível é o motor.
+// Troca de X relança o NexusCap (um GPU). O aviso GDI segura a tela; sem segunda janela.
 enum class SessionCfgApply {
   Live,
+  RecycleWorker,
   RelaunchMotor,
   RelaunchPassCount,
   RelaunchFeedScale,
@@ -535,33 +538,42 @@ enum class SessionCfgApply {
   RelaunchNr,
 };
 
-// Preset e NR no 1x tambem reiniciam: o pulso OFF→ON invertia a imagem vs a UI.
+// Preset e NR no 1x tambem precisam do filho novo: o pulso OFF→ON invertia a imagem vs a UI.
 inline bool session_cfg_preset_applies_live(bool /*multipass_stack*/) { return false; }
 
 inline SessionCfgApply plan_session_cfg_preset_apply(bool /*multipass_stack*/) {
-  return SessionCfgApply::RelaunchPreset;
+  return SessionCfgApply::RecycleWorker;
 }
 
 inline SessionCfgApply plan_session_cfg_apply(bool renodx_stack, int pass_before, int pass_after,
                                               int scale_loaded, int scale_after) {
-  if (nr_pass_count_change_needs_relaunch(pass_before, pass_after)) return SessionCfgApply::RelaunchMotor;
-  // Mesmo motor, mas o multipass não relê o PassCount sem processo novo.
+  if (nr_pass_count_change_needs_relaunch(pass_before, pass_after)) return SessionCfgApply::RecycleWorker;
+  // Mesmo motor, mas o multipass não relê o PassCount sem processo novo do filho.
   if (!nr_pass_count_change_applies_live(pass_before, pass_after)) {
-    return SessionCfgApply::RelaunchPassCount;
+    return SessionCfgApply::RecycleWorker;
   }
   if (feed_scale_change_needs_relaunch(renodx_stack, scale_loaded, scale_after, pass_after)) {
-    return SessionCfgApply::RelaunchFeedScale;
+    return SessionCfgApply::RecycleWorker;
   }
   return SessionCfgApply::Live;
 }
 
-inline bool session_cfg_apply_needs_relaunch(SessionCfgApply a) { return a != SessionCfgApply::Live; }
+inline bool session_cfg_apply_needs_relaunch(SessionCfgApply a) {
+  return a != SessionCfgApply::Live;
+}
 
 // Reinício da sessão sempre volta para a captura, nunca para o lobby.
 inline const char* session_cfg_relaunch_args() { return "--autostart"; }
 
 // Pass Count / motor no CFG do lobby: reabre o lobby com o CFG ainda aberto.
 inline const char* lobby_cfg_relaunch_args() { return "--lobby-cfg"; }
+
+// Hold do lobby: so Iniciar / Benchmark matam o processo. Troca de X no lobby so grava.
+inline bool lobby_hold_relaunch_starts_session(const char* args) {
+  if (!args || !args[0]) return false;
+  const std::string a(args);
+  return a.find("--autostart") != std::string::npos || a.find("--perf-test") != std::string::npos;
+}
 
 // One-shot: consume the boot flag so Esc→lobby later does not keep reopening CFG.
 inline bool lobby_consume_open_cfg(bool& open_lobby_cfg) {
@@ -577,7 +589,7 @@ inline bool session_cfg_nr_toggle_allowed(bool renodx_stack, bool /*multipass_st
 
 inline SessionCfgApply plan_session_cfg_nr_apply(bool renodx_stack, bool multipass_stack) {
   if (!session_cfg_nr_toggle_allowed(renodx_stack, multipass_stack)) return SessionCfgApply::Live;
-  return SessionCfgApply::RelaunchNr;
+  return SessionCfgApply::RecycleWorker;
 }
 
 // Aviso de reinício: sessão, teardown e boot do processo novo mostram o mesmo texto.
@@ -585,6 +597,8 @@ inline std::string session_restart_notice_title() { return "Otimizando o pipelin
 inline std::string lobby_pipeline_hold_title() { return session_restart_notice_title(); }
 inline std::string session_restart_notice_detail(SessionCfgApply a) {
   switch (a) {
+    case SessionCfgApply::RecycleWorker:
+      return "A aplicar o motor — a imagem volta";
     case SessionCfgApply::RelaunchMotor:
       return "Motor do pipeline: volto para a sessao";
     case SessionCfgApply::RelaunchPassCount:

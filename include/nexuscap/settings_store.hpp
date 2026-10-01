@@ -74,6 +74,32 @@ inline bool lobby_preview_nr_files_on(bool preview_enabled, bool preview_cfg_liv
 inline bool lobby_preview_feed_files_on(bool preview_enabled, bool preview_cfg_live, bool enhance_renodx) {
   return lobby_preview_cfg_wanted(preview_enabled, preview_cfg_live) && enhance_renodx;
 }
+
+// Lobby só carrega o dxgi/ReShade quando o preview ao vivo está ligado.
+inline bool lobby_loads_reshade_dxgi(bool preview_enabled, bool preview_cfg_live, bool enhance_renodx) {
+  return lobby_preview_cfg_wanted(preview_enabled, preview_cfg_live) && enhance_renodx;
+}
+
+inline constexpr const char kReshadeDxgiFile[] = "dxgi.dll";
+inline constexpr const char kReshadeDxgiParkedFile[] = "dxgi.session.dll";
+
+inline std::string reshade_dxgi_path_in(const std::string& exe_dir) {
+  if (exe_dir.empty()) return {};
+  const char c = exe_dir.back();
+  if (c == '\\' || c == '/') return exe_dir + kReshadeDxgiFile;
+  return exe_dir + "\\" + kReshadeDxgiFile;
+}
+inline std::string reshade_dxgi_parked_path_in(const std::string& exe_dir) {
+  if (exe_dir.empty()) return {};
+  const char c = exe_dir.back();
+  if (c == '\\' || c == '/') return exe_dir + kReshadeDxgiParkedFile;
+  return exe_dir + "\\" + kReshadeDxgiParkedFile;
+}
+
+bool park_reshade_dxgi(const std::string& exe_dir);
+bool restore_reshade_dxgi(const std::string& exe_dir);
+bool park_reshade_dxgi_wait(const std::string& exe_dir, int timeout_ms);
+bool reshade_dxgi_present(const std::string& exe_dir);
 inline const char* lobby_preview_cfg_pipeline_hold_line(bool cfg_wanted) {
   return cfg_wanted ? "Configuracoes no preview em tempo real" : "Preview HDMI sem NR";
 }
@@ -217,7 +243,7 @@ struct PersistedSettings {
   bool neural_rendering = true;
   // Gear: Default / Natural / Cinematic (RenoDX Home overlay names).
   int renodx_preset = 0;  // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
-  // Pass Count: 1=1x, 2=2x default, 3=3x, 4=1.5x, 5=2x otimizado (look exclusivo).
+  // Pass Count: 1=1x, 2=2x default, 3=3x, 4=1.5x, 5=2x otimizado, 6=3x otimizado.
   int nr_pass_count = 1;
   // Origem (OBS-style). Defaults = validated HDMI path.
   int video_fourcc = 0;       // VideoFourcc::Nv12
@@ -244,23 +270,14 @@ inline int clamp_renodx_visual_preset(int v) {
   return v;
 }
 
-// Pass Count UI: 1=1x, 2=2x default, 3=3x default, 4=1.5x, 5=2x otimizado, 6=3x otimizado, 7=1.7x.
-inline constexpr int kMaxNrPassCount = 7;
-inline constexpr int kNr15xPlusUi = 7;
-// 1,7x: Feed interno fixo (cara de 2x, custo de 1x). Alias 4k/2k/sd = o mesmo valor.
-inline constexpr int kNr17xFeedPercent = 80;
-inline constexpr int kNr17xFeed4kPercent = kNr17xFeedPercent;
-inline constexpr int kNr17xFeed2kPercent = kNr17xFeedPercent;
-inline constexpr int kNr17xFeedSdPercent = kNr17xFeedPercent;
-inline constexpr int kNr15xPlusWorkPercent = kNr17xFeedPercent;
-inline constexpr int kNr15xPlusFeedPreset = 5;
-inline constexpr const char* kNr15xPlusWorkSharpness = "0.30";
-inline constexpr const char* kNr15xPlusMgfSharpness = "0.450000";
-inline constexpr const char* kNr15xPlusHaloProtect = "0.80";
-inline constexpr const char* kNr15xPlusDenoise = "0.025";
+// Pass Count UI: 1=1x, 2=2x default, 3=3x default, 4=1.5x, 5=2x otimizado, 6=3x otimizado.
+// 7 (1.7x) aposentado: clamp para 4 (1.5x herda a receita).
+inline constexpr int kMaxNrPassCount = 6;
+inline constexpr int kNr15xPlusUi = 4;
 inline constexpr const char* kDefaultMgfSharpness = "0.450000";
 
 inline int clamp_nr_pass_count(int v) {
+  if (v == 7) return 4;
   if (v < 1) return 1;
   if (v > kMaxNrPassCount) return kMaxNrPassCount;
   return v;
@@ -270,28 +287,22 @@ inline bool nr_pass_is_2x_optimized(int ui) { return clamp_nr_pass_count(ui) == 
 inline bool nr_pass_is_3x_optimized(int ui) { return clamp_nr_pass_count(ui) == 6; }
 inline bool nr_pass_is_15x_plus(int ui) { return clamp_nr_pass_count(ui) == kNr15xPlusUi; }
 
-// 1,5x / 1,7x / 2x otimizado / 3x otimizado: mesmo gancho de cor/UI (menos flicker/ghost).
+// 1x / 1,5x / 2x otimizado / 3x otimizado: gancho barato no HDMI 8.5.
+// 2x/3x default ficam no gancho antigo (mais pesado).
 inline bool nr_pass_uses_optimized_look(int ui) {
   const int v = clamp_nr_pass_count(ui);
-  return v == 4 || v == 5 || v == 6 || v == kNr15xPlusUi;
+  return v == 1 || v == 4 || v == 5 || v == 6;
 }
 
-// 1,7x: dois evaluates + Feed interno (sem work_upscale). Captura WxH ignorada.
-inline int nr_17x_feed_work_percent(int /*capture_w*/, int /*capture_h*/) { return kNr17xFeedPercent; }
-
-// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1; UI 5/7 → INI 2; UI 6 → INI 3).
-// 1,7x: dois evaluates do 2x; Feed interno fixo.
+// What DirectNeuralRenderingPassCount we write (UI 4 → INI 1; UI 5 → INI 2; UI 6 → INI 3).
 inline int nr_reshade_pass_count(int ui) {
   switch (clamp_nr_pass_count(ui)) {
     case 2:
     case 5:
-    case 7:
       return 2;
     case 3:
     case 6:
       return 3;
-    case 4:
-      return 1;
     default:
       return 1;
   }
@@ -309,20 +320,19 @@ inline const char* nr_pass_count_label(int v) {
       return "2x otimizado";
     case 6:
       return "3x otimizado";
-    case 7:
-      return "1,7x";
     default:
       return "1x";
   }
 }
 
 // Hint under the Pass Count radios (lobby F12 e Ctrl+M).
+inline const char* nr_pass_count_1x_hint() {
+  return "1x exclusivo NexusCap: gancho do 2x otimizado — menos flicker, melhor imagem, sem perder desempenho.";
+}
 inline const char* nr_pass_count_15x_hint() {
-  return "1,5x exclusivo NexusCap: gancho do 2x otimizado — menos flicker, melhor imagem, sem perder desempenho.";
+  return "1,5x exclusivo NexusCap: evolucao do 1x — ainda mais proximo do 2x.";
 }
-inline const char* nr_pass_count_15x_plus_hint() {
-  return "1,7x exclusivo NexusCap: evolucao do 1,5x — ainda mais proximo do 2x.";
-}
+inline const char* nr_pass_count_15x_plus_hint() { return nr_pass_count_15x_hint(); }
 inline const char* nr_pass_count_2x_opt_hint() {
   return "2x otimizado exclusivo NexusCap: 2x de verdade, menos flicker e ghost, melhor qualidade de imagem.";
 }
@@ -330,7 +340,7 @@ inline const char* nr_pass_count_23x_hint() {
   return "2x default / 3x default: look antigo. 2x/3x otimizado: menos flicker.";
 }
 
-// Short HUD tag: "1x" / "1.5x" / "1.7x" / "2x" / "2x+" / "3x" / "3x+".
+// Short HUD tag: "1x" / "1.5x" / "2x" / "2x+" / "3x" / "3x+".
 inline const char* nr_pass_count_short(int v) {
   switch (clamp_nr_pass_count(v)) {
     case 2:
@@ -343,8 +353,6 @@ inline const char* nr_pass_count_short(int v) {
       return "2x+";
     case 6:
       return "3x+";
-    case 7:
-      return "1.7x";
     default:
       return "1x";
   }
@@ -407,14 +415,12 @@ inline int renodx_nr_preset_index(int visual) {
 }
 
 // Multipass DirectNeuralRenderingStyle is the model slot (A=0, B=1, C=2).
-inline int renodx_direct_style_index(int visual, int pass_count = 1) {
-  if (nr_pass_is_15x_plus(pass_count)) return 1;
+inline int renodx_direct_style_index(int visual, int /*pass_count*/ = 1) {
   return clamp_renodx_visual_preset(visual);
 }
 
-// feed.cfg preset=: Model A/B/C = 0/1/2. 1,7x forca o modelo 5.
-inline int renodx_feed_model_preset(int visual, int pass_count = 1) {
-  if (nr_pass_is_15x_plus(pass_count)) return kNr15xPlusFeedPreset;
+// feed.cfg preset=: Model A/B/C = 0/1/2. 1x e 1,5x seguem a cena.
+inline int renodx_feed_model_preset(int visual, int /*pass_count*/ = 1) {
   return clamp_renodx_visual_preset(visual);
 }
 
@@ -513,15 +519,9 @@ inline int clamp_scale_percent(int p) {
   return p;
 }
 
-// 1,7x nao mexe na escala da UI. Sair com 75/80/90/58 residual volta a 100%.
-inline int nr_pass_count_on_select_scale(int pass_before, int pass_after, int scale_percent) {
-  const int after = clamp_nr_pass_count(pass_after);
-  const int scale = clamp_scale_percent(scale_percent);
-  if (nr_pass_is_15x_plus(pass_before) && !nr_pass_is_15x_plus(after) &&
-      (scale == kNr17xFeedPercent || scale == 80 || scale == 90 || scale == 58)) {
-    return 100;
-  }
-  return scale;
+// Trocar o modo X não reescreve a escala da UI.
+inline int nr_pass_count_on_select_scale(int /*pass_before*/, int /*pass_after*/, int scale_percent) {
+  return clamp_scale_percent(scale_percent);
 }
 
 // Generic key=value int rewriter (feed.cfg / ReShade.ini style).
@@ -665,6 +665,74 @@ inline std::string apply_keyed_value(std::string text, const std::string& key, c
   return text;
 }
 
+inline std::string apply_keyed_value_all(std::string text, const std::string& key, const std::string& value) {
+  const std::string line = key + value;
+  std::size_t pos = 0;
+  bool hit = false;
+  while (pos <= text.size()) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos) break;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (!at_line_start) {
+      pos = found + key.size();
+      continue;
+    }
+    const auto end = text.find_first_of("\r\n", found);
+    text.replace(found, (end == std::string::npos ? text.size() : end) - found, line);
+    hit = true;
+    pos = found + line.size();
+  }
+  return hit ? text : apply_keyed_value(std::move(text), key, value);
+}
+
+inline std::string upsert_keyed_value_in_section(std::string text, const char* section, const std::string& key,
+                                                 const std::string& value) {
+  const auto start = find_ini_section_pos(text, section);
+  if (start == std::string::npos) return apply_keyed_value(std::move(text), key, value);
+  const auto hdr_nl = text.find('\n', start);
+  const auto body_start = (hdr_nl == std::string::npos) ? text.size() : hdr_nl + 1;
+  const auto body_end = ini_section_body_end(text, start);
+  const std::string line = key + value;
+  std::size_t pos = body_start;
+  while (pos < body_end) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos || found >= body_end) break;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (!at_line_start) {
+      pos = found + key.size();
+      continue;
+    }
+    const auto end = text.find_first_of("\r\n", found);
+    text.replace(found, (end == std::string::npos ? text.size() : end) - found, line);
+    return text;
+  }
+  text.insert(body_end, line + "\n");
+  return text;
+}
+
+// Rewrite every existing key=; if none exist, create it in the live addon section.
+inline std::string apply_keyed_value_all_live(std::string text, const std::string& key, const std::string& value,
+                                             const char* section = "RenoDX.DLSS5") {
+  const std::string line = key + value;
+  std::size_t pos = 0;
+  bool hit = false;
+  while (pos <= text.size()) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos) break;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (!at_line_start) {
+      pos = found + key.size();
+      continue;
+    }
+    const auto end = text.find_first_of("\r\n", found);
+    text.replace(found, (end == std::string::npos ? text.size() : end) - found, line);
+    hit = true;
+    pos = found + line.size();
+  }
+  if (hit) return text;
+  return upsert_keyed_value_in_section(std::move(text), section, key, value);
+}
+
 inline std::string apply_reshade_addon_path(std::string text, int pass_count) {
   return apply_keyed_value(std::move(text), "AddonPath=", renodx_addon_stack_rel(pass_count));
 }
@@ -699,6 +767,57 @@ inline int parse_keyed_int(const std::string& text, const std::string& key, int 
   return fallback;
 }
 
+inline double parse_keyed_number(const std::string& text, const std::string& key, double fallback) {
+  std::size_t pos = 0;
+  while (pos <= text.size()) {
+    const auto found = text.find(key, pos);
+    if (found == std::string::npos) return fallback;
+    const bool at_line_start = (found == 0) || text[found - 1] == '\n' || text[found - 1] == '\r';
+    if (at_line_start) {
+      const auto start = found + key.size();
+      const auto end = text.find_first_of("\r\n", start);
+      const std::string num = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+      char* stop = nullptr;
+      const double value = std::strtod(num.c_str(), &stop);
+      if (stop == num.c_str()) return fallback;
+      return value;
+    }
+    pos = found + key.size();
+  }
+  return fallback;
+}
+
+// Receita do 1,5x no Krish 8.5 (NRLook*). Fora dele o look fica neutro e a
+// intensidade do passe fica 1 — esse e o 1x.
+inline std::string apply_nr_edit_recipe(std::string text, bool plus) {
+  const char* strength = plus ? "1.75" : "1";
+  const char* brighten = plus ? "0.50" : "1";
+  const char* hue = plus ? "0.62" : "1";
+  const char* highlights = plus ? "0.50" : "1";
+  text = apply_keyed_value_all_live(std::move(text), "NRLookMode=", plus ? "1" : "0");
+  text = apply_keyed_value_all_live(std::move(text), "NRLookStrength=", strength);
+  text = apply_keyed_value_all_live(std::move(text), "NRLookBrighten=", brighten);
+  text = apply_keyed_value_all_live(std::move(text), "NRLookDarken=", plus ? "0.86" : "1");
+  text = apply_keyed_value_all_live(std::move(text), "NRLookColour=", plus ? "1.12" : "1");
+  text = apply_keyed_value_all_live(std::move(text), "NRLookHue=", hue);
+  text = apply_keyed_value_all_live(std::move(text), "NRLookShadows=", plus ? "0.90" : "1");
+  text = apply_keyed_value_all_live(std::move(text), "NRLookMidtones=", plus ? "1.00" : "1");
+  text = apply_keyed_value_all_live(std::move(text), "NRLookHighlights=", highlights);
+  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingIntensity=", "1");
+  text = apply_keyed_value_all(std::move(text), "NRIntensity=", "1");
+  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingGlobalToneStrength=", "1");
+  text = apply_keyed_value_all(std::move(text), "NRGlobalTone=", "1");
+  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingLocalToneStrength=", "1");
+  text = apply_keyed_value_all(std::move(text), "NRLocalTone=", "1");
+  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingLocalStructureStrength=", "1");
+  text = apply_keyed_value_all(std::move(text), "NRLocalStructure=", "1");
+  text = apply_keyed_value_all(std::move(text), "DirectNeuralRenderingSkinStructureStrength=", "1");
+  text = apply_keyed_value_all(std::move(text), "NRSkinStructure=", "-1");
+  text = apply_keyed_value_all(std::move(text), "NRColorStrength=", "1.00");
+  text = apply_keyed_value_all(std::move(text), "NRTransferStrength=", "1.00");
+  return text;
+}
+
 // Capture signal → work resolution after lobby scale slider (25–100%).
 // Even dimensions keep chroma-friendly sizes when downsampling.
 inline int scaled_extent(int dim, int scale_percent) {
@@ -728,15 +847,14 @@ inline double scale_pixel_ratio(int scale_percent) {
 // builds at 100% (overlay then "lies" about the scale). Never write below this floor.
 inline constexpr int kMinFeedWorkResolution = 50;
 
-inline int feed_work_upscale_flag(int work_percent, int pass_count = 1) {
-  if (nr_pass_is_15x_plus(pass_count)) return 0;
+inline int feed_work_upscale_flag(int work_percent, int /*pass_count*/ = 1) {
   return clamp_scale_percent(work_percent) < 100 ? 1 : 0;
 }
 
 // Keep RenoDX dlss5-feed.cfg work_resolution in sync with lobby scale (including 100%).
 // Bug: only writing when scale<100 left work_resolution=50 stuck → blur at "100%".
 // work_upscale=1 when below 100% so Feed actually downsamples then expands back.
-// 1,7x: upscale=0 (trabalha no tamanho interno). rebuild=1 força o Feed a reler.
+// rebuild=1 força o Feed a reler.
 inline std::string apply_feed_work_resolution(std::string text, int scale_percent, int pass_count = 1) {
   int p = clamp_scale_percent(scale_percent);
   if (p < kMinFeedWorkResolution) p = kMinFeedWorkResolution;
@@ -791,11 +909,15 @@ inline int parse_reshade_nr_preset(const std::string& text, int fallback = 0) {
 // Multipass stack — DirectNeuralRenderingPassCount (addons-multipass).
 // Lives in both [RENODX-DLSS-preset*] and the live [RenoDX.DLSS5] — all must match.
 inline std::string apply_reshade_nr_pass_count(std::string text, int passes) {
-  return apply_keyed_int_all(std::move(text), "DirectNeuralRenderingPassCount=", nr_reshade_pass_count(passes));
+  const int n = nr_reshade_pass_count(passes);
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingPassCount=", n);
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRPasses=", n);
+  return apply_keyed_int_all(std::move(text), "NRPasses=", n);
 }
 
 inline int parse_reshade_nr_pass_count(const std::string& text, int fallback = 1) {
-  const int raw = parse_keyed_int(text, "DirectNeuralRenderingPassCount=", fallback);
+  int raw = parse_keyed_int(text, "DirectNeuralRenderingPassCount=", -1);
+  if (raw < 0) raw = parse_keyed_int(text, "NRPasses=", fallback);
   if (raw < 1) return 1;
   if (raw > 3) return 3;  // INI never stores 4; 4 is UI-only (1.5x → INI 1)
   return raw;
@@ -941,20 +1063,33 @@ inline constexpr const char* kReshadeDockingSelectAddons =
     "[Docking][Data],DockNode  ID=0x00000001 Pos=931,,128 Size=895,,1296 Selected=0x84F87037,"
     "DockSpace ID=0xB0DF600F Window=0xCC18005E Pos=8,,8 Size=2544,,1424 CentralNode=1";
 
-// Complete addon overlay of the active motor (cena / Pass Count / knobs). The other motor stays off-screen.
-// 1x: same tab bar as 2x, Complementos selected, Krish settings expanded.
-inline std::string sanitize_home_windows(std::string text, bool multipass) {
-  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeKrishTitle, !multipass);
-  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeKrishTitleSpaced, !multipass);
-  text = upsert_reshade_imgui_window(std::move(text), "DLSS 5 Neural Rendering", !multipass);
-  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeMultipassTitle, multipass);
-  text = upsert_reshade_imgui_window(std::move(text), "RenoDX-DLSSNR", multipass);
-  text = upsert_reshade_imgui_window(std::move(text), "RenoDX Neural Resolution", multipass);
-  text = upsert_reshade_overlay_chrome(std::move(text), /*addons_first=*/!multipass);
-  if (!multipass) {
-    text = apply_keyed_value(std::move(text), "OverlayCollapsed=", kReshadeKrishSettingsOverlay);
-    text = apply_keyed_value(std::move(text), "Docking=", kReshadeDockingSelectAddons);
-  }
+// Sem o toast do ReShade ("Press Home to open the overlay" / "aperte Home").
+inline std::string apply_reshade_quiet_overlay(std::string text) {
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowStartupMessage=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowOSD=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowPresetTransitionMessage=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowScreenshotMessage=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowFPS=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowClock=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowFrameTime=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "OVERLAY", "ShowPresetName=", "0");
+  text = upsert_keyed_value_in_section(std::move(text), "GENERAL", "TutorialProgress=", "4");
+  return text;
+}
+
+// Complete addon overlay of the active motor (cena / Pass Count / knobs).
+// Krish 8.5 regista "DLSS 5 Neural Rendering". Títulos V6.6/ShortFuse ficam fora do ecrã.
+inline std::string sanitize_home_windows(std::string text, bool /*multipass*/) {
+  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeKrishTitle, false);
+  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeKrishTitleSpaced, false);
+  text = upsert_reshade_imgui_window(std::move(text), "DLSS 5 Neural Rendering", true);
+  text = upsert_reshade_imgui_window(std::move(text), kReshadeHomeMultipassTitle, false);
+  text = upsert_reshade_imgui_window(std::move(text), "RenoDX-DLSSNR", false);
+  text = upsert_reshade_imgui_window(std::move(text), "RenoDX Neural Resolution", false);
+  text = upsert_reshade_overlay_chrome(std::move(text), /*addons_first=*/true);
+  text = apply_keyed_value(std::move(text), "OverlayCollapsed=", "");
+  text = apply_keyed_value(std::move(text), "Docking=", kReshadeDockingSelectAddons);
+  text = apply_reshade_quiet_overlay(std::move(text));
   return text;
 }
 
@@ -974,34 +1109,30 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   const int encoding = opt ? 2 : 0;
   const int hook = opt ? 2 : 1;
   const int ui_corr = opt ? 2 : 1;
-  // [RENODX-DLSS] global
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingDiffuseWhiteNits=", nits);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingDiffuseWhiteOverride=", 0);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingEncoding=", encoding);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingHookPoint=", hook);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingHookStage=",
-                        nr_pass_is_15x_plus(pass_count) ? 2 : 0);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingRequireDlss=", 1);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingUiCorrectionMode=", ui_corr);
-  // [RENODX-DLSS-preset1] look knobs
+  // [RENODX-DLSS] global + live [RenoDX.DLSS5]. O 8.5 lê NR*; Direct* fica alinhado em todas as secções.
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingDiffuseWhiteNits=", nits);
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingDiffuseWhiteOverride=", 0);
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingEncoding=", encoding);
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingHookPoint=", hook);
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingHookStage=", 0);
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingRequireDlss=", 1);
+  text = apply_keyed_int_all(std::move(text), "DirectNeuralRenderingUiCorrectionMode=", ui_corr);
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRSourceEncoding=", encoding);
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRHookPoint=", hook);
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRDiffuseWhiteNits=", nits);
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRUICorrection=", ui_corr);
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "ConfigVersion=", 8);
+  text = apply_keyed_int_all(std::move(text), "NRSourceEncoding=", encoding);
+  text = apply_keyed_int_all(std::move(text), "NRHookPoint=", hook);
+  text = apply_keyed_int_all(std::move(text), "NRDiffuseWhiteNits=", nits);
+  text = apply_keyed_int_all(std::move(text), "NRUICorrection=", ui_corr);
+  // [RENODX-DLSS-preset1] look knobs. 1,5x e o 1x com a receita da edição.
   text = apply_keyed_int(std::move(text), "DirectNeuralRenderingAutoMask=", 1);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingGlobalToneStrength=", 1);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingIntensity=", 1);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalStructureStrength=", 1);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingLocalToneStrength=", 1);
-  text = apply_keyed_int(std::move(text), "DirectNeuralRenderingSkinStructureStrength=", 1);
-  if (nr_pass_is_15x_plus(pass_count)) {
-    text = apply_keyed_int_all(std::move(text), "NREnableUpscaling=", 1);
-  }
+  text = apply_nr_edit_recipe(std::move(text), nr_pass_is_15x_plus(pass_count));
   text = apply_reshade_nr_pass_count(std::move(text), pass_count);
   // Keep legacy NR* block in sync for tools / dual-read / Krish.
   text = apply_keyed_int(std::move(text), "NRDiffuseWhiteNits=", nits);
-  text = apply_keyed_int(std::move(text), "NRIntensity=", 1);
-  text = apply_keyed_int(std::move(text), "NRGlobalTone=", 1);
-  text = apply_keyed_int(std::move(text), "NRLocalTone=", 1);
-  text = apply_keyed_int(std::move(text), "NRLocalStructure=", 1);
   text = apply_keyed_int(std::move(text), "NRAutoMask=", 1);
-  text = apply_keyed_int(std::move(text), "NRSkinStructure=", -1);
   text = apply_keyed_int(std::move(text), "NRUICorrection=", ui_corr);
   text = apply_reshade_visual_look_keys(std::move(text), visual_preset);
   {
@@ -1021,18 +1152,23 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
 // UI 5 writes the same PassCount=2 as UI 2. Infer from exclusive look keys so a
 // visual-preset-only write does not wipe 2x otimizado back to 2x default.
 inline bool reshade_look_is_2x_optimized(const std::string& text) {
-  return parse_keyed_int(text, "DirectNeuralRenderingEncoding=", 0) == 2 &&
-         parse_keyed_int(text, "DirectNeuralRenderingHookPoint=", 1) == 2 &&
-         parse_keyed_int(text, "DirectNeuralRenderingUiCorrectionMode=", 1) == 2;
+  const int encoding = parse_keyed_int(text, "DirectNeuralRenderingEncoding=",
+                                      parse_keyed_int(text, "NRSourceEncoding=", 0));
+  const int hook = parse_keyed_int(text, "DirectNeuralRenderingHookPoint=",
+                                  parse_keyed_int(text, "NRHookPoint=", 1));
+  const int ui = parse_keyed_int(text, "DirectNeuralRenderingUiCorrectionMode=",
+                                parse_keyed_int(text, "NRUICorrection=", 1));
+  return encoding == 2 && hook == 2 && ui == 2;
 }
 
 inline int infer_multipass_ui_pass_count(const std::string& text) {
   const int raw = parse_reshade_nr_pass_count(text, 1);
   if (reshade_look_is_2x_optimized(text)) {
-    const bool plus = parse_keyed_int(text, "DirectNeuralRenderingHookStage=", 0) == 2;
-    if (raw == 2) return plus ? 7 : 5;
+    const bool plus = parse_keyed_number(text, "NRLookStrength=", 1.0) > 1.01 ||
+                      parse_keyed_number(text, "DirectNeuralRenderingIntensity=", 1.0) > 1.01;
+    if (raw == 2) return 5;
     if (raw == 3) return 6;
-    if (raw == 1) return plus ? 7 : 4;
+    if (raw == 1) return plus ? 4 : 1;
   }
   return raw;
 }
@@ -1090,15 +1226,8 @@ inline std::string apply_mgf_techniques_for_phase(std::string text, bool session
                                                       : kRenodxLobbyIdleTechniqueChain);
 }
 
-// 1,7x: Sharpen 0.45 + HaloProtect/Denoise do pack nitido. Os outros modos so Sharpness.
-inline std::string apply_mgf_sharpen_for_pass(std::string text, int pass_count) {
-  const char* s = nr_pass_is_15x_plus(pass_count) ? kNr15xPlusMgfSharpness : kDefaultMgfSharpness;
-  text = apply_keyed_value(std::move(text), "Sharpness=", s);
-  if (nr_pass_is_15x_plus(pass_count)) {
-    text = apply_keyed_value(std::move(text), "HaloProtect=", kNr15xPlusHaloProtect);
-    text = apply_keyed_value(std::move(text), "Denoise=", kNr15xPlusDenoise);
-  }
-  return text;
+inline std::string apply_mgf_sharpen_for_pass(std::string text, int /*pass_count*/) {
+  return apply_keyed_value(std::move(text), "Sharpness=", kDefaultMgfSharpness);
 }
 
 inline bool renodx_mgf_chain_order_ok(const std::string& mgf_ini_or_script) {
@@ -1126,8 +1255,7 @@ inline bool renodx_mgf_chain_order_ok(const std::string& mgf_ini_or_script) {
 inline std::string apply_renodx_visual_preset_to_feed(std::string feed, int visual_preset,
                                                     int pass_count = 1) {
   feed = apply_feed_model_preset(std::move(feed), visual_preset, pass_count);
-  const char* sharp = nr_pass_is_15x_plus(pass_count) ? kNr15xPlusWorkSharpness : "0.30";
-  return apply_keyed_value(std::move(feed), "work_sharpness=", sharp);
+  return apply_keyed_value(std::move(feed), "work_sharpness=", "0.30");
 }
 
 inline std::string apply_renodx_visual_preset_to_reshade(std::string reshade, int visual_preset) {
@@ -1197,9 +1325,8 @@ inline int lobby_preview_out_width(int frame_w, int max_w = kLobbyPreviewMaxWidt
 // in a relaunched process (--autostart), whose first swapchain is the capture window.
 inline constexpr int kLobbyFeedWorkResolution = 100;
 
-inline int feed_work_resolution_for_session(int scale_percent, int pass_count = 1, int capture_w = 0,
-                                           int capture_h = 0) {
-  if (nr_pass_is_15x_plus(pass_count)) return nr_17x_feed_work_percent(capture_w, capture_h);
+inline int feed_work_resolution_for_session(int scale_percent, int /*pass_count*/ = 1, int /*capture_w*/ = 0,
+                                           int /*capture_h*/ = 0) {
   const int p = clamp_scale_percent(scale_percent);
   return p < kMinFeedWorkResolution ? kMinFeedWorkResolution : p;
 }
@@ -1307,6 +1434,18 @@ std::string settings_default_path();  // app_data_dir()\settings.ini
 std::string app_logs_dir();          // app_data_dir()\logs
 std::string app_reshade_cache_dir(); // app_data_dir()\reshade-cache
 std::string app_presets_dir();       // app_data_dir()\presets
+
+// Último frame da sessão, para o aviso GDI não ir a preto no restart do motor.
+inline std::string motor_hold_bmp_path_in(const std::string& data_dir) {
+  if (data_dir.empty()) return {};
+  return data_dir + "\\motor_hold.bmp";
+}
+inline std::string motor_hold_ready_path_in(const std::string& data_dir) {
+  if (data_dir.empty()) return {};
+  return data_dir + "\\motor_hold.ready";
+}
+inline std::string motor_hold_bmp_path() { return motor_hold_bmp_path_in(app_data_dir()); }
+inline std::string motor_hold_ready_path() { return motor_hold_ready_path_in(app_data_dir()); }
 
 // True when we can create/overwrite a probe file in dir (Program Files fails without admin).
 bool directory_is_writable(const std::string& dir);

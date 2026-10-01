@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_installer.ps1 -SkipBuild -Version 1.1.0
 param(
-  [string]$Version = "5.1.2",
+  [string]$Version = "5.2.1",
   [string]$X2Dir = "C:\Program Files\DLSS5 MGF X2",
   [switch]$SkipBuild,
   [switch]$SkipTests,
@@ -90,6 +90,12 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 New-Item -ItemType Directory -Force -Path $Dist | Out-Null
 
 Copy-Item -LiteralPath $Exe -Destination (Join-Path $Stage "NexusCap.exe") -Force
+
+$workerSrc = Join-Path $Release "worker"
+if (Test-Path -LiteralPath $workerSrc) {
+  Copy-Item -LiteralPath $workerSrc -Destination (Join-Path $Stage "worker") -Recurse -Force
+  Write-Host "stage worker/"
+}
 
 $logoSrc = Join-Path $Root "assets\logo.png"
 $watermarkSrc = Join-Path $Root "assets\watermark.png"
@@ -186,7 +192,8 @@ foreach ($leak in @(
   "renodx-dlss5.stable.addon64",
   "renodx-dlss5.multipass.addon64",
   "renodx-dlss5.stable.sidecar",
-  "renodx-dlss5.multipass.sidecar"
+  "renodx-dlss5.multipass.sidecar",
+  "renodx-dlss.addon64"
 )) {
   $p = Join-Path $Stage $leak
   if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }

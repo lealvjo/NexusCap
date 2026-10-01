@@ -75,6 +75,7 @@ foreach ($leak in @(
   "renodx-dlss5.multipass.addon64",
   "renodx-dlss5.stable.sidecar",
   "renodx-dlss5.multipass.sidecar",
+  "renodx-dlss.addon64",
   "nvngx_dlss.dll",
   "nvngx_dlssnr.dll"
 )) {
@@ -137,7 +138,7 @@ $ini = @"
 [ADDON]
 AddonPath=.\addons-multipass
 DisabledAddons=
-OverlayCollapsed=DLSS 5 Neural Rendering@renodx-dlss5.addon64
+OverlayCollapsed=
 
 [DEPTH]
 UseAspectRatioHeuristics=1
@@ -168,8 +169,10 @@ FPSPosition=1
 ShowFPS=0
 ShowFrameTime=0
 ShowForceLoadEffectsButton=1
+ShowOSD=0
 ShowPresetTransitionMessage=0
 ShowScreenshotMessage=0
+ShowStartupMessage=0
 TutorialProgress=4
 
 [PROXY]
@@ -195,6 +198,7 @@ DirectNeuralRenderingSkinStructureStrength=1
 DirectNeuralRenderingStyle=0
 
 [RenoDX.DLSS5]
+ConfigVersion=8
 EnableHooks=2
 NeuralUplift=1
 NRAutoMask=1
@@ -203,12 +207,24 @@ NRDepthMode=0
 NRDiffuseWhiteNits=500
 NREnableUpscaling=1
 NRGlobalTone=1
+NRHookPoint=1
 NRIntensity=1
 NRLocalStructure=1
 NRLocalTone=1
+NRLookMode=0
+NRLookStrength=1
+NRLookBrighten=1
+NRLookDarken=1
+NRLookColour=1
+NRLookHue=1
+NRLookShadows=1
+NRLookMidtones=1
+NRLookHighlights=1
 NRPaperWhiteScale=16
+NRPasses=1
 NRPreset=0
 NRSkinStructure=-1
+NRSourceEncoding=0
 NRStyle=0
 NRToggleKey=46
 NRTransferStrength=1
@@ -238,6 +254,23 @@ function Write-MotorsStock([string]$Root) {
 }
 Write-MotorsStock $DestDir
 
+# NR no Present do NexusCap (um GPU, como a 5.x). worker/ e so espelho de ficheiros.
+$WorkerDir = Join-Path $DestDir "worker"
+New-Item -ItemType Directory -Force -Path $WorkerDir | Out-Null
+foreach ($f in @("dxgi.dll", "dlss5-feed.addon64", "dlss5-bridge.addon64", "ReShade.ini", "DLSS5MGF.ini")) {
+  $src = Join-Path $DestDir $f
+  if (Test-Path -LiteralPath $src) {
+    Copy-Item -LiteralPath $src -Destination (Join-Path $WorkerDir $f) -Force
+  }
+}
+foreach ($stack in @("addons-multipass", "reshade-shaders", "reshade-cache")) {
+  $srcDir = Join-Path $DestDir $stack
+  if (Test-Path -LiteralPath $srcDir) {
+    robocopy $srcDir (Join-Path $WorkerDir $stack) /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
+  }
+}
+Write-Host "dxgi no NexusCap.exe — um Present. Sem segunda janela GPU."
+
 Write-Host "OK -> $DestDir"
 Write-Host "Rode: NexusCap.exe --renodx"
-Write-Host "Pass Count 1x/1,5x/2x/3x = addons-multipass (reinicia sozinho)"
+Write-Host "Pass Count 1x/1,5x/2x/3x = o aviso GDI segura a tela e o motor nasce de novo"

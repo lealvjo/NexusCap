@@ -3005,7 +3005,7 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
         "[Window][RenoDX-DLSSNR],Pos=8,,8,Size=100,,100,Collapsed=0,"
         "[Window][RenoDX Neural Resolution],Pos=1,,1,Size=10,,10,Collapsed=0\n";
     win = sanitize_multipass_home_windows(std::move(win));
-    CHECK(win.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=520,,900,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=895,,1296,Collapsed=0") != std::string::npos);
     CHECK(win.find("[Window][RenoDX DLSS],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
     CHECK(win.find("[Window][RenoDX-DLSSNR],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
     CHECK(win.find("[Window][RenoDX Neural Resolution],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
@@ -3042,7 +3042,7 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
     CHECK(win.find("Selected=0x84F87037") != std::string::npos);
     CHECK(win.find("[Window][RenoDX DLSS5 Generic],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
     CHECK(win.find("[Window][RenoDX DLSS5 Generic ],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
-    CHECK(win.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=520,,900,Collapsed=0") != std::string::npos);
+    CHECK(win.find("[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=895,,1296,Collapsed=0") != std::string::npos);
     CHECK(win.find("[Window][RenoDX-DLSSNR],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
     CHECK(win.find("[Window][RenoDX DLSS],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") != std::string::npos);
     CHECK(win.find("[Window][RenoDX Neural Resolution],Pos=-8000,,-8000") != std::string::npos);
@@ -3073,7 +3073,7 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
     const std::string one = sanitize_home_windows(win, false);
     CHECK(nfind(one, "[Window][RenoDX DLSS5 Generic],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
     CHECK(nfind(one, "[Window][RenoDX DLSS5 Generic ],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
-    CHECK(nfind(one, "[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
+    CHECK(nfind(one, "[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=895,,1296,Collapsed=0") == 2);
     CHECK(nfind(one, "[Window][RenoDX DLSS],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
     CHECK(nfind(one, "[Window][RenoDX-DLSSNR],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
     CHECK(one.find("[Window][RenoDX DLSS],Pos=8,,8") == std::string::npos);
@@ -3089,7 +3089,7 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
     CHECK(one.find("Selected=0x84F87037") != std::string::npos);
 
     const std::string mp = sanitize_home_windows_for_pass(win, 4);
-    CHECK(nfind(mp, "[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=520,,900,Collapsed=0") == 2);
+    CHECK(nfind(mp, "[Window][DLSS 5 Neural Rendering],Pos=8,,8,Size=895,,1296,Collapsed=0") == 2);
     CHECK(nfind(mp, "[Window][RenoDX DLSS],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
     CHECK(nfind(mp, "[Window][RenoDX-DLSSNR],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
     CHECK(nfind(mp, "[Window][RenoDX Neural Resolution],Pos=-8000,,-8000,Size=1,,1,Collapsed=1") == 2);
@@ -4267,19 +4267,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 5, 0));
+  CHECK(app_version_is(6, 5, 1));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.5.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.5.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.0");
+  CHECK(std::string(kAppVersion) == "6.5.1");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.5.1") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.1");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.5.0") != std::string::npos);
+  CHECK(lobby_t.find("6.5.1") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.5.0") != std::string::npos);
+  CHECK(sess_t.find("6.5.1") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.5.0 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.5.1 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {

@@ -1161,7 +1161,7 @@ inline int parse_reshade_nr_pass_count(const std::string& text, int fallback = 1
 }
 
 // Home overlay layout. Extra RenoDX panels stay off-screen — Collapsed=1 still shows a title bar.
-inline constexpr const char* kReshadeVisibleImguiGeom = "Pos=8,,8,Size=520,,900,Collapsed=0";
+inline constexpr const char* kReshadeVisibleImguiGeom = "Pos=8,,8,Size=895,,1296,Collapsed=0";
 inline constexpr const char* kReshadeHiddenImguiGeom = "Pos=-8000,,-8000,Size=1,,1,Collapsed=1";
 inline constexpr const char* kReshadeHomeKrishTitle = "RenoDX DLSS5 Generic";
 // Krish v4.7 register_overlay title is the C-string with a trailing space (21 chars).

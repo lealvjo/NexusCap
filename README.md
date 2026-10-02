@@ -75,6 +75,7 @@ O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você q
 ### Novidades 6.5.5
 
 - No Ctrl+M, Cinematic, Pass Count, escala, Neural Rendering e preset seguram o frame da placa. O atalho Delete e o Ctrl+ / Ctrl- fazem o mesmo, sem apresentar um frame no meio.
+- Menu e atalho trocam o X com a capa no vblank. O frame fica inteiro enquanto o scanout sai.
 - O ponteiro não troca de tamanho nem fica na bolinha de carregamento enquanto o motor reinicia.
 
 ### Novidades 6.5.4

@@ -669,6 +669,17 @@ inline constexpr int kMotorHoldSettleFrames = 8;
 inline bool motor_hold_ready_to_show(bool hold_boot, int live_frames) {
   return !hold_boot || live_frames >= kMotorHoldSettleFrames;
 }
+
+// Clique do menu no meio do Present. Com frame já na tela, a foto é esse frame
+// e este Present não sai: o backbuffer do clique ainda não passou pelo ReShade.
+// Sem frame anterior, um Present do backbuffer atual. Frame normal apresenta
+// e só depois copia o buffer que entrou no Present.
+enum class HoldFrameChoice { SnapshotLastSkip, SnapshotCurrentPresent, PresentThenCopy };
+inline HoldFrameChoice hold_frame_choice(bool want_hold, bool has_last_presented) {
+  if (!want_hold) return HoldFrameChoice::PresentThenCopy;
+  if (has_last_presented) return HoldFrameChoice::SnapshotLastSkip;
+  return HoldFrameChoice::SnapshotCurrentPresent;
+}
 inline std::string session_restart_notice_detail(SessionCfgApply a) {
   switch (a) {
     case SessionCfgApply::RecycleWorker:

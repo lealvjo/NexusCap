@@ -133,12 +133,16 @@ public:
   void pump() const;  // repinta enquanto a sessão está sendo desmontada
   bool visible() const { return hwnd_ != nullptr; }
   bool has_hold_image() const { return hold_bmp_ != nullptr; }
+  // Present do frame salvo, sincronizado no vblank. O resize do jogo leva ~2 ms
+  // e o log mostrou que isso cai fora do intervalo em branco.
+  bool present_hold_flip();
 
 private:
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
   void paint(HDC hdc) const;
   void load_hold_bmp();
   void release_hold_bmp();
+  void release_hold_flip();
 
   HWND hwnd_ = nullptr;
   std::wstring title_;
@@ -146,6 +150,9 @@ private:
   HBITMAP hold_bmp_ = nullptr;
   int hold_w_ = 0;
   int hold_h_ = 0;
+  ID3D11Device* flip_device_ = nullptr;
+  ID3D11DeviceContext* flip_ctx_ = nullptr;
+  IDXGISwapChain* flip_swap_ = nullptr;
 };
 
 bool save_motor_hold_from_hwnd(HWND hwnd);
@@ -208,8 +215,8 @@ public:
     ui_draw_ = fn;
     ui_draw_user_ = user;
   }
-  // O menu (Cinematic, X, escala) pede restart no meio do desenho. A foto tem de ser
-  // o backbuffer, porque o BitBlt do FLIP pega o que está atrás e a imagem pisca.
+  // O menu (Cinematic, X, escala) pede restart no meio do desenho. A foto é o frame
+  // já apresentado. O backbuffer deste clique ainda não passou pelo ReShade.
   using HoldProbeFn = bool (*)(void* user);
   void set_hold_probe(HoldProbeFn fn, void* user) {
     hold_probe_ = fn;
@@ -230,10 +237,10 @@ public:
   ID3D11DeviceContext* context() const;
   bool present_frame(const FramePayload& frame, OverlayState& overlay, double& present_ms, std::string& err);
   void present_black();
-  // A capa GDI já está por cima, mas o FLIP ainda manda na tela. Sem esperar a GPU:
-  // WaitForVBlank no fio do menu deixava o mouse em loading no 2x.
-  void release_flip_for_cover();
-  // Tira o WS_EX_LAYERED para o FLIP voltar a mandar na tela quando a capa sai.
+  // A capa GDI já está por cima, mas o FLIP ainda manda na tela. Sem esperar a GPU
+  // e sem WS_EX_LAYERED: esse estilo abria o desktop por um frame em todo restart.
+  void release_flip_for_cover(bool cover_latched = false);
+  // Tira o cloak para o FLIP voltar a mandar na tela quando a capa sai.
   void restore_flip_after_cover();
   // Same HWND: destroi e cria a swapchain para o ReShade reler o INI sem fechar a janela.
   bool recycle_swapchain();
@@ -246,7 +253,8 @@ private:
   bool create_pipeline(std::string& err);
   bool create_blit_pipeline(std::string& err);
   bool snapshot_hold_backbuffer();
-  bool retain_presented_frame();
+  bool retain_presented_frame(ID3D11Texture2D* src);
+  void restore_backbuffer_from_last();
   bool write_hold_bmp(ID3D11Texture2D* src);
   void burn_mini_overlay(const OverlayState& overlay);
   void burn_live_overlay(const OverlayState& overlay);

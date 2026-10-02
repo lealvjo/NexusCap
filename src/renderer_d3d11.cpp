@@ -26,6 +26,11 @@
 
 #include <avrt.h>
 #include <dwmapi.h>
+#include <mmsystem.h>
+
+#ifndef DWMWA_CLOAK
+#define DWMWA_CLOAK 13
+#endif
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -811,6 +816,20 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   }
   const bool want_hold = hold_arm_ || (hold_probe_ && hold_probe_(hold_probe_user_));
   hold_arm_ = false;
+  const HoldFrameChoice choice = hold_frame_choice(want_hold, impl_->lastPresented != nullptr);
+  if (choice == HoldFrameChoice::SnapshotLastSkip) {
+    // Este backbuffer tem o menu novo e ainda não passou pelo ReShade.
+    // A tela continua no frame anterior. Não apresentar, senão o scanout pisca.
+    hold_snapshot_ = write_hold_bmp(impl_->lastPresented.Get());
+    if (hold_snapshot_) {
+      // O atalho não desenha este frame. O menu desenha o clique aqui.
+      // Se o resize mostrar esse buffer, só o menu pisca. Volta o frame da tela.
+      restore_backbuffer_from_last();
+      present_ms = clk.now_ms() - t0;
+      (void)err;
+      return true;
+    }
+  }
   if (want_hold) {
     hold_snapshot_ = snapshot_hold_backbuffer();
   } else {
@@ -818,38 +837,52 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
     hold_snapshot_ = false;
   }
 
-  (void)retain_presented_frame();
+  // Ponteiro de antes do Present. Depois, GetBuffer(0) já é o outro buffer do flip.
+  ComPtr<ID3D11Texture2D> presented;
+  if (impl_->swap) (void)impl_->swap->GetBuffer(0, IID_PPV_ARGS(&presented));
 
   const UINT interval = (overlay.fg_on || vsync_) ? present_interval_ : 0u;
   silence_reshade_home_splash();
   impl_->swap->Present(interval, 0);
+  if (presented) (void)retain_presented_frame(presented.Get());
   present_ms = clk.now_ms() - t0;
   (void)err;
   return true;
 }
 
-bool RendererD3D11::retain_presented_frame() {
-  if (!impl_ || !impl_->swap || !impl_->ctx || !impl_->device) return false;
+void RendererD3D11::restore_backbuffer_from_last() {
+  if (!impl_ || !impl_->swap || !impl_->ctx || !impl_->lastPresented) return;
   ComPtr<ID3D11Texture2D> back;
-  if (FAILED(impl_->swap->GetBuffer(0, IID_PPV_ARGS(&back))) || !back) return false;
+  if (FAILED(impl_->swap->GetBuffer(0, IID_PPV_ARGS(&back))) || !back) return;
+  impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+  impl_->ctx->CopyResource(back.Get(), impl_->lastPresented.Get());
+}
+
+bool RendererD3D11::retain_presented_frame(ID3D11Texture2D* src) {
+  if (!impl_ || !impl_->ctx || !impl_->device || !src) return false;
   D3D11_TEXTURE2D_DESC desc{};
-  back->GetDesc(&desc);
+  src->GetDesc(&desc);
   if (desc.Width < 2 || desc.Height < 2) return false;
-  D3D11_TEXTURE2D_DESC keep = desc;
-  keep.MipLevels = 1;
-  keep.ArraySize = 1;
-  keep.SampleDesc.Count = 1;
-  keep.SampleDesc.Quality = 0;
-  keep.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-  keep.MiscFlags = 0;
-  keep.CPUAccessFlags = 0;
-  keep.Usage = D3D11_USAGE_DEFAULT;
-  if (!impl_->lastPresented) {
+  D3D11_TEXTURE2D_DESC have{};
+  if (impl_->lastPresented) impl_->lastPresented->GetDesc(&have);
+  if (!impl_->lastPresented || have.Width != desc.Width || have.Height != desc.Height ||
+      have.Format != desc.Format) {
+    impl_->lastPresented.Reset();
+    D3D11_TEXTURE2D_DESC keep = desc;
+    keep.MipLevels = 1;
+    keep.ArraySize = 1;
+    keep.SampleDesc.Count = 1;
+    keep.SampleDesc.Quality = 0;
+    keep.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    keep.MiscFlags = 0;
+    keep.CPUAccessFlags = 0;
+    keep.Usage = D3D11_USAGE_DEFAULT;
     if (FAILED(impl_->device->CreateTexture2D(&keep, nullptr, &impl_->lastPresented)) || !impl_->lastPresented) {
       return false;
     }
   }
-  impl_->ctx->CopyResource(impl_->lastPresented.Get(), back.Get());
+  impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+  impl_->ctx->CopyResource(impl_->lastPresented.Get(), src);
   return true;
 }
 
@@ -936,35 +969,99 @@ void RendererD3D11::present_black() {
   impl_->swap->Present(0, 0);
 }
 
-void RendererD3D11::release_flip_for_cover() {
+struct NcVblankCloak {
+  IDXGIOutput* output;
+  HANDLE done;
+};
+
+// O resize mede ~2 ms e, começando no vblank, acaba com o scan já no meio.
+constexpr long long kFlickerResizeLeadUs = 2400;
+
+long long flicker_us(const LARGE_INTEGER& a, const LARGE_INTEGER& b, const LARGE_INTEGER& freq) {
+  if (freq.QuadPart <= 0) return 0;
+  return (b.QuadPart - a.QuadPart) * 1000000ll / freq.QuadPart;
+}
+
+DWORD WINAPI nc_cloak_at_vblank(void* param) {
+  auto* w = static_cast<NcVblankCloak*>(param);
+  LARGE_INTEGER freq{}, t0{}, t1{}, now{};
+  QueryPerformanceFrequency(&freq);
+  if (w->output) w->output->WaitForVBlank();
+  QueryPerformanceCounter(&t0);
+  if (w->output) w->output->WaitForVBlank();
+  QueryPerformanceCounter(&t1);
+  long long period = flicker_us(t0, t1, freq);
+  if (period < 4000 || period > 20000) period = 16667;
+  const long long fire_at = period - kFlickerResizeLeadUs;
+  timeBeginPeriod(1);
+  for (;;) {
+    QueryPerformanceCounter(&now);
+    const long long elapsed = flicker_us(t1, now, freq);
+    if (elapsed >= fire_at) break;
+    if (fire_at - elapsed > 2000) Sleep(1);
+  }
+  timeEndPeriod(1);
+  if (w->done) SetEvent(w->done);
+  return 0;
+}
+
+void RendererD3D11::release_flip_for_cover(bool cover_latched) {
   if (!hwnd_) return;
-  const LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
-  SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex | WS_EX_LAYERED);
-  SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
-  DwmFlush();
-  // Um refresh com a fila de mensagens viva. WaitForVBlank travava o Ctrl+M e o cursor.
+  ComPtr<IDXGIOutput> output;
+  if (impl_ && impl_->swap) (void)impl_->swap->GetContainingOutput(&output);
+  // A capa já fez Present(1). Estamos no vblank. Não espera de novo.
+  if (cover_latched) {
+    if (impl_ && impl_->swap && impl_->ctx) {
+      impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+      impl_->rtv.Reset();
+      impl_->swap->ResizeBuffers(0, 2, 2, DXGI_FORMAT_B8G8R8A8_UNORM, swap_flags_);
+    }
+    return;
+  }
+  HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  NcVblankCloak wait{output.Get(), done};
+  HANDLE thread = nullptr;
+  if (output && done) thread = CreateThread(nullptr, 0, nc_cloak_at_vblank, &wait, 0, nullptr);
   const DWORD t0 = GetTickCount();
-  while (GetTickCount() - t0 < 20) {
+  while (thread && done && WaitForSingleObject(done, 0) != WAIT_OBJECT_0 &&
+         GetTickCount() - t0 < 80) {
+    const DWORD wr = MsgWaitForMultipleObjects(1, &done, FALSE, 8, QS_ALLINPUT);
+    if (wr == WAIT_OBJECT_0) break;
     MSG msg{};
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
       if (msg.message == WM_QUIT) {
         PostQuitMessage(static_cast<int>(msg.wParam));
-        return;
+        break;
       }
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
-    Sleep(1);
   }
+  HRESULT hr = S_OK;
+  const bool visible = IsWindowVisible(hwnd_) != FALSE;
+  if (visible && impl_ && impl_->swap && impl_->ctx) {
+    impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    impl_->rtv.Reset();
+    hr = impl_->swap->ResizeBuffers(0, 2, 2, DXGI_FORMAT_B8G8R8A8_UNORM, swap_flags_);
+    if (FAILED(hr)) {
+      const BOOL cloak = TRUE;
+      DwmSetWindowAttribute(hwnd_, DWMWA_CLOAK, &cloak, sizeof(cloak));
+    }
+  } else {
+    const BOOL cloak = TRUE;
+    DwmSetWindowAttribute(hwnd_, DWMWA_CLOAK, &cloak, sizeof(cloak));
+  }
+  if (thread) {
+    WaitForSingleObject(thread, 80);
+    CloseHandle(thread);
+  }
+  if (done) CloseHandle(done);
 }
 
 void RendererD3D11::restore_flip_after_cover() {
   if (!hwnd_) return;
-  const LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
-  if ((ex & WS_EX_LAYERED) == 0) return;
-  SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex & ~static_cast<LONG_PTR>(WS_EX_LAYERED));
-  SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
-               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  const BOOL cloak = FALSE;
+  DwmSetWindowAttribute(hwnd_, DWMWA_CLOAK, &cloak, sizeof(cloak));
 }
 
 namespace {
@@ -2367,7 +2464,69 @@ bool RestartNotice::show(HINSTANCE hi, const std::string& title, const std::stri
   return true;
 }
 
+void RestartNotice::release_hold_flip() {
+  if (flip_swap_) {
+    flip_swap_->Release();
+    flip_swap_ = nullptr;
+  }
+  if (flip_ctx_) {
+    flip_ctx_->Release();
+    flip_ctx_ = nullptr;
+  }
+  if (flip_device_) {
+    flip_device_->Release();
+    flip_device_ = nullptr;
+  }
+}
+
+bool RestartNotice::present_hold_flip() {
+  if (!hwnd_ || !hold_bmp_ || hold_w_ < 2 || hold_h_ < 2) return false;
+  BITMAP bm{};
+  if (!GetObject(hold_bmp_, sizeof(bm), &bm) || !bm.bmBits || bm.bmWidthBytes < hold_w_ * 4) return false;
+  if (!flip_device_) {
+    D3D_FEATURE_LEVEL fl{};
+    const D3D_FEATURE_LEVEL fls[] = {D3D_FEATURE_LEVEL_11_0};
+    if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, fls, 1, D3D11_SDK_VERSION,
+                                 &flip_device_, &fl, &flip_ctx_)) ||
+        !flip_device_ || !flip_ctx_) {
+      release_hold_flip();
+      return false;
+    }
+    ComPtr<IDXGIDevice> dxgi;
+    flip_device_->QueryInterface(IID_PPV_ARGS(&dxgi));
+    ComPtr<IDXGIAdapter> adapter;
+    if (dxgi) dxgi->GetAdapter(&adapter);
+    ComPtr<IDXGIFactory2> factory;
+    if (!adapter || FAILED(adapter->GetParent(IID_PPV_ARGS(&factory))) || !factory) {
+      release_hold_flip();
+      return false;
+    }
+    DXGI_SWAP_CHAIN_DESC1 sc{};
+    sc.Width = static_cast<UINT>(hold_w_);
+    sc.Height = static_cast<UINT>(hold_h_);
+    sc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    sc.SampleDesc.Count = 1;
+    sc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    sc.BufferCount = 2;
+    sc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    sc.Scaling = DXGI_SCALING_STRETCH;
+    sc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    IDXGISwapChain1* created = nullptr;
+    if (FAILED(factory->CreateSwapChainForHwnd(flip_device_, hwnd_, &sc, nullptr, nullptr, &created)) ||
+        !created) {
+      release_hold_flip();
+      return false;
+    }
+    flip_swap_ = created;
+  }
+  ComPtr<ID3D11Texture2D> back;
+  if (FAILED(flip_swap_->GetBuffer(0, IID_PPV_ARGS(&back))) || !back) return false;
+  flip_ctx_->UpdateSubresource(back.Get(), 0, nullptr, bm.bmBits, static_cast<UINT>(bm.bmWidthBytes), 0);
+  return SUCCEEDED(flip_swap_->Present(1, 0));
+}
+
 void RestartNotice::destroy() {
+  release_hold_flip();
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;

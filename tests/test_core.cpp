@@ -918,6 +918,10 @@ TEST_CASE("window Iniciar skips the pipeline card and releases the device; X hol
   CHECK_FALSE(motor_hold_ready_to_show(true, kMotorHoldSettleFrames - 1));
   CHECK(motor_hold_ready_to_show(true, kMotorHoldSettleFrames));
   CHECK(motor_hold_ready_to_show(false, 0));
+  CHECK(hold_frame_choice(true, true) == HoldFrameChoice::SnapshotLastSkip);
+  CHECK(hold_frame_choice(true, false) == HoldFrameChoice::SnapshotCurrentPresent);
+  CHECK(hold_frame_choice(false, true) == HoldFrameChoice::PresentThenCopy);
+  CHECK(hold_frame_choice(false, false) == HoldFrameChoice::PresentThenCopy);
   CHECK(session_restart_notice_title() != lobby_iniciar_hold_title());
   CHECK(session_restart_notice_detail(SessionCfgApply::RelaunchPassCount).find("tela fica") != std::string::npos);
 

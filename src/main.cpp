@@ -1953,7 +1953,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       renderer.clear_hold_snapshot();
       g_restart_notice.show(hi, session_restart_notice_title(),
                             session_restart_notice_detail(cfg_restart_kind));
-      if (g_restart_notice.visible()) renderer.release_flip_for_cover();
+      const bool cover_latched =
+          g_restart_notice.has_hold_image() && g_restart_notice.present_hold_flip();
+      if (g_restart_notice.visible()) renderer.release_flip_for_cover(cover_latched);
       std::printf("cfg restart: saindo para reiniciar na sessao\n");
       g_running = false;
       break;

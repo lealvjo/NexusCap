@@ -1167,6 +1167,65 @@ void paint_session_notice_band(HDC hdc, const RECT& rc, const OverlayState& o, b
   SelectObject(hdc, oldn);
 }
 
+int fill_mini_overlay_segs(const OverlayState& o, MiniOverlaySeg* segs) {
+  char line0[768]{};
+  char line1[768]{};
+  char hw_compact[200]{};
+  format_sys_metrics_compact(hw_compact, sizeof(hw_compact), metrics_from_overlay(o));
+  const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
+  const bool dlss5_on = o.renodx_on;
+  unsigned char cr = 0, cg = 55, cb = 145;
+  live_console_rgb(clamp_live_console(o.live_console), cr, cg, cb);
+  return format_mini_overlay_segments(
+      segs, kMiniOverlayMaxSegs, line0, sizeof(line0), line1, sizeof(line1), show_fps, o.fps_fg_est, o.fg_on,
+      o.fg_multiplier, dlss5_on, o.sync_image, o.frame_ms, o.ft_avg_ms, o.ft_p95_ms, o.ft_max_ms, o.ft_stable,
+      o.e2e_ms, o.present_ms, o.stalls_window, o.clusters, o.dropped, o.capture_w, o.capture_h, o.work_w,
+      o.work_h, o.output_w, o.output_h, o.scale_percent, o.has_stats600, o.s600_fps, o.s600_p95_e2e,
+      o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
+      o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count,
+      overlay_console_label_or_null(o.overlay_console, clamp_live_console(o.live_console)), false, cr, cg, cb,
+      o.fg_queue, o.fg_adaptive, o.fg_target_fps, o.fg_flow_scale,
+      o.capture_fmt.empty() ? nullptr : o.capture_fmt.c_str());
+}
+
+int mini_overlay_text_avail(int bar_w) {
+  const int pad = 8;
+  const int graph_w = hud_mini_frametime_graph_w(bar_w);
+  const int gx = (std::max)(pad, bar_w - pad - graph_w);
+  const int text_max_x = gx - 8;
+  return (std::max)(8, text_max_x - pad);
+}
+
+int mini_overlay_line_count(HDC hdc, const MiniOverlaySeg* segs, int nseg, int avail_px) {
+  int widths[kMiniOverlayMaxSegs]{};
+  const int n = nseg < kMiniOverlayMaxSegs ? nseg : kMiniOverlayMaxSegs;
+  for (int i = 0; i < n; ++i) {
+    const std::wstring w = utf8_to_wide_hud(segs[i].text);
+    SIZE sz{};
+    if (!w.empty()) GetTextExtentPoint32W(hdc, w.c_str(), static_cast<int>(w.size()), &sz);
+    widths[i] = sz.cx > 0 ? static_cast<int>(sz.cx) : 1;
+  }
+  MiniOverlaySpan spans[8]{};
+  int lines = mini_overlay_wrap_all(widths, segs, n, avail_px, spans, hud_mini_overlay_max_rows());
+  if (lines < hud_mini_overlay_rows()) lines = hud_mini_overlay_rows();
+  return lines;
+}
+
+int mini_overlay_bar_height(const OverlayState& o, int bar_w) {
+  HDC screen = GetDC(nullptr);
+  HDC mem = CreateCompatibleDC(screen);
+  const int font_px = hud_mini_overlay_font_px();
+  HFONT font = g_hud_fonts.mini.get(font_px, FW_BOLD, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+  HFONT old = static_cast<HFONT>(SelectObject(mem, font));
+  MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+  const int nseg = fill_mini_overlay_segs(o, segs);
+  const int lines = mini_overlay_line_count(mem, segs, nseg, mini_overlay_text_avail(bar_w));
+  SelectObject(mem, old);
+  DeleteDC(mem);
+  ReleaseDC(nullptr, screen);
+  return hud_mini_overlay_height_for_rows(lines);
+}
+
 void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   if (overlay_draws_plate(o.overlay_no_bg)) {
     HBRUSH bg = CreateSolidBrush(RGB(12, 14, 18));
@@ -1179,27 +1238,8 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   HFONT mini_font = g_hud_fonts.mini.get(font_px, FW_BOLD, NONANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN,
                                          L"Consolas");
   HFONT old = static_cast<HFONT>(SelectObject(hdc, mini_font));
-  char line0[768]{};
-  char line1[768]{};
-  char hw_compact[200]{};
-  format_sys_metrics_compact(hw_compact, sizeof(hw_compact), metrics_from_overlay(o));
-  const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
-  const bool dlss5_on = o.renodx_on;
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
-  unsigned char cr = 0, cg = 55, cb = 145;
-  live_console_rgb(clamp_live_console(o.live_console), cr, cg, cb);
-  const int nseg = format_mini_overlay_segments(
-      segs, kMiniOverlayMaxSegs, line0, sizeof(line0), line1, sizeof(line1), show_fps, o.fps_fg_est, o.fg_on,
-      o.fg_multiplier, dlss5_on, o.sync_image, o.frame_ms, o.ft_avg_ms, o.ft_p95_ms, o.ft_max_ms, o.ft_stable,
-      o.e2e_ms, o.present_ms, o.stalls_window, o.clusters, o.dropped, o.capture_w, o.capture_h, o.work_w,
-      o.work_h, o.output_w, o.output_h, o.scale_percent, o.has_stats600, o.s600_fps, o.s600_p95_e2e,
-      o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
-      o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count,
-      overlay_console_label_or_null(o.overlay_console, clamp_live_console(o.live_console)), false, cr, cg, cb,
-      o.fg_queue, o.fg_adaptive, o.fg_target_fps, o.fg_flow_scale,
-      o.capture_fmt.empty() ? nullptr : o.capture_fmt.c_str());
-  (void)line0;
-  (void)line1;
+  const int nseg = fill_mini_overlay_segs(o, segs);
 
   const int pad = 8;
   const int graph_w = hud_mini_frametime_graph_w(static_cast<int>(rc.right - rc.left));
@@ -1212,46 +1252,50 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   const int gh = (std::max)(51, work_h - 16);
   const int gw = (std::min)(graph_w, bar_w - pad * 2);
   const int text_max_x = gx - gap;
+  const int avail = (std::max)(8, text_max_x - pad);
   const int line_gap = 2;
-  const int rows = hud_mini_overlay_rows();
-  const int block_h = font_px * rows + line_gap * (rows - 1);
-  const int y0 = (std::max)(2, (work_h - block_h) / 2);
 
-  int wrap_st = nseg;
-  int wrap_l600 = nseg;
-  mini_overlay_row_breaks(segs, nseg, &wrap_st, &wrap_l600);
-  // Do not start a painted row on the " · " separator.
-  auto skip_sep = [&](int i) -> int {
-    while (i < nseg && std::strcmp(segs[i].text, " · ") == 0) ++i;
+  int widths[kMiniOverlayMaxSegs]{};
+  for (int i = 0; i < nseg; ++i) {
+    const std::wstring w = utf8_to_wide_hud(segs[i].text);
+    SIZE sz{};
+    if (!w.empty()) GetTextExtentPoint32W(hdc, w.c_str(), static_cast<int>(w.size()), &sz);
+    widths[i] = sz.cx > 0 ? static_cast<int>(sz.cx) : 1;
+  }
+  MiniOverlaySpan spans[8]{};
+  int lines = mini_overlay_wrap_all(widths, segs, nseg, avail, spans, hud_mini_overlay_max_rows());
+  if (lines < hud_mini_overlay_rows()) lines = hud_mini_overlay_rows();
+  const int block_h = font_px * lines + line_gap * (lines - 1);
+  int y = (std::max)(2, (work_h - block_h) / 2);
+
+  auto skip_sep = [&](int i, int end) -> int {
+    while (i < end && std::strcmp(segs[i].text, " · ") == 0) ++i;
     return i;
   };
-  wrap_st = skip_sep(wrap_st);
-  wrap_l600 = skip_sep(wrap_l600);
-
-  auto paint_row = [&](int begin, int end, int text_y) {
+  auto paint_span = [&](int begin, int end, int text_y) {
     int x = pad;
-    begin = skip_sep(begin);
+    begin = skip_sep(begin, end);
     for (int i = begin; i < end; ++i) {
       const std::wstring w = utf8_to_wide_hud(segs[i].text);
       if (w.empty()) continue;
-      SIZE sz{};
-      GetTextExtentPoint32W(hdc, w.c_str(), static_cast<int>(w.size()), &sz);
-      if (x >= text_max_x) break;
-      if (x + sz.cx > text_max_x) {
+      const int tw = widths[i];
+      if (x > pad && x + tw > text_max_x) break;
+      SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
+      if (x + tw > text_max_x) {
         RECT clip{x, text_y - 1, text_max_x, text_y + font_px + 1};
-        SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
         DrawTextW(hdc, w.c_str(), static_cast<int>(w.size()), &clip,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         break;
       }
-      SetTextColor(hdc, RGB(segs[i].r, segs[i].g, segs[i].b));
       TextOutW(hdc, x, text_y, w.c_str(), static_cast<int>(w.size()));
-      x += sz.cx;
+      x += tw;
     }
   };
-  paint_row(0, wrap_st, y0);
-  paint_row(wrap_st, wrap_l600, y0 + font_px + line_gap);
-  paint_row(wrap_l600, nseg, y0 + (font_px + line_gap) * 2);
+  for (int s = 0; s < lines; ++s) {
+    if (s < 8 && spans[s].end > spans[s].begin) paint_span(spans[s].begin, spans[s].end, y);
+    y += font_px + line_gap;
+  }
+  const int y0 = (std::max)(2, (work_h - block_h) / 2);
 
   if (o.perf_remain_sec >= -1) {
     wchar_t tb[24]{};
@@ -1434,7 +1478,7 @@ void RendererD3D11::burn_mini_overlay(const OverlayState& overlay) {
 
   const int gap = 8;
   int bar_w = (std::max)(200, back_w_ - gap * 2);
-  int bar_h = hud_mini_overlay_height();
+  int bar_h = mini_overlay_bar_height(overlay, bar_w);
   if (bar_w > back_w_) bar_w = back_w_;
   if (bar_h > back_h_) bar_h = back_h_;
 
@@ -1992,7 +2036,7 @@ void MetricsHud::reposition() {
     const int gap = 8;
     const int owner_w = static_cast<int>(r.right - r.left);
     const int ww = (std::max)(200, owner_w - gap * 2);
-    int hh = hud_mini_overlay_height();
+    int hh = mini_overlay_bar_height(state_, ww);
     SetWindowPos(hwnd_, HWND_TOPMOST, r.left + gap, r.top + gap, ww, hh,
                  SWP_NOACTIVATE | (visible_ ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     return;

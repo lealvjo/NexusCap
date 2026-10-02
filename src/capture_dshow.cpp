@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <dshow.h>
 #include <dvdmedia.h>
+#include <wincodec.h>
 
 #pragma comment(lib, "strmiids.lib")
 #pragma comment(lib, "ole32.lib")
@@ -193,6 +194,67 @@ void set_media_avg_frame(AM_MEDIA_TYPE* mt, double fps) {
 
 }  // namespace
 
+bool mjpeg_jpeg_to_nv12(const uint8_t* jpeg, size_t jpeg_len, int width, int height,
+                        std::vector<uint8_t>& bgra_scratch, uint8_t* nv12, size_t nv12_cap) {
+  if (!jpeg || !nv12 || width < 2 || height < 2 || jpeg_len < 4) return false;
+  const size_t need = nv12_packed_bytes(width, height);
+  if (need == 0 || nv12_cap < need) return false;
+  size_t off = jpeg_len;
+  const size_t scan = jpeg_len < 128 ? jpeg_len : 128;
+  for (size_t i = 0; i + 1 < scan; ++i) {
+    if (jpeg[i] == 0xFF && jpeg[i + 1] == 0xD8) {
+      off = i;
+      break;
+    }
+  }
+  if (off >= jpeg_len || jpeg_len - off > 0x7fffffffu) return false;
+
+  struct WicFactory {
+    IWICImagingFactory* factory = nullptr;
+  };
+  static thread_local WicFactory wic;
+  if (!wic.factory) {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(com) && com != RPC_E_CHANGED_MODE) return false;
+    IWICImagingFactory* created = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&created))) ||
+        !created) {
+      return false;
+    }
+    wic.factory = created;
+  }
+
+  IWICStream* stream = nullptr;
+  IWICBitmapDecoder* decoder = nullptr;
+  IWICBitmapFrameDecode* frame = nullptr;
+  IWICFormatConverter* conv = nullptr;
+  bool ok = false;
+  if (SUCCEEDED(wic.factory->CreateStream(&stream)) && stream &&
+      SUCCEEDED(stream->InitializeFromMemory(const_cast<BYTE*>(jpeg + off),
+                                             static_cast<DWORD>(jpeg_len - off))) &&
+      SUCCEEDED(wic.factory->CreateDecoderFromStream(stream, nullptr, WICDecodeMetadataCacheOnDemand, &decoder)) &&
+      decoder && SUCCEEDED(decoder->GetFrame(0, &frame)) && frame) {
+    UINT jw = 0, jh = 0;
+    if (SUCCEEDED(frame->GetSize(&jw, &jh)) && static_cast<int>(jw) == width && static_cast<int>(jh) == height &&
+        SUCCEEDED(wic.factory->CreateFormatConverter(&conv)) && conv &&
+        SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0,
+                                   WICBitmapPaletteTypeCustom))) {
+      const UINT stride = jw * 4u;
+      const UINT bytes = stride * jh;
+      bgra_scratch.resize(bytes);
+      if (SUCCEEDED(conv->CopyPixels(nullptr, stride, bytes, bgra_scratch.data()))) {
+        bgra_to_nv12(bgra_scratch.data(), static_cast<int>(stride), width, height, nv12);
+        ok = true;
+      }
+    }
+  }
+  if (conv) conv->Release();
+  if (frame) frame->Release();
+  if (decoder) decoder->Release();
+  if (stream) stream->Release();
+  return ok;
+}
+
 struct DShowCapture::Impl {
   IGraphBuilder* graph = nullptr;
   ICaptureGraphBuilder2* builder = nullptr;
@@ -209,6 +271,10 @@ struct DShowCapture::Impl {
 void DShowCapture::push_buffer(const uint8_t* data, size_t len) {
   if (!running_ || !slot_ || !clock_ || !impl_) return;
   last_sample_bytes_.store(len, std::memory_order_relaxed);
+  if (opened_fourcc_ == static_cast<int>(VideoFourcc::Mjpeg)) {
+    push_mjpeg_buffer(data, len);
+    return;
+  }
   const int w = impl_->width;
   const int h = impl_->height;
   if (!nv12_buffer_matches_mode(len, w, h)) {
@@ -235,6 +301,35 @@ void DShowCapture::push_buffer(const uint8_t* data, size_t len) {
   slot_->publish(std::move(p));
 }
 
+void DShowCapture::push_mjpeg_buffer(const uint8_t* data, size_t len) {
+  const int w = impl_->width;
+  const int h = impl_->height;
+  const size_t need = nv12_packed_bytes(w, h);
+  if (need == 0 || !data || len < 4) {
+    rejected_samples_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  if (nv12_scratch_.size() != need) {
+    slot_->take_recycle_nv12(nv12_scratch_);
+    if (nv12_scratch_.size() != need) nv12_scratch_.resize(need);
+  }
+  if (!mjpeg_jpeg_to_nv12(data, len, w, h, mjpeg_bgra_, nv12_scratch_.data(), nv12_scratch_.size())) {
+    rejected_samples_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  if (nv12_looks_like_hdmi_junk(nv12_scratch_.data(), w, h)) {
+    rejected_samples_.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  FramePayload p;
+  p.width = w;
+  p.height = h;
+  p.cap_qpc_ms = clock_->now_ms();
+  p.frame_index = frames_.fetch_add(1);
+  p.nv12.swap(nv12_scratch_);
+  slot_->publish(std::move(p));
+}
+
 DShowCapture::DShowCapture() : impl_(new Impl) {}
 DShowCapture::~DShowCapture() {
   stop();
@@ -253,17 +348,22 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   const int height = opt.height;
   const double fps = opt.fps;
   const int want_saved = clamp_video_fourcc(opt.video_fourcc);
-  // Always try NV12 first — this card's MJPEG/YUY2/I420 often SetFormat OK then RenderStream→NV12 grabber fails.
+  const bool want_mjpeg = want_saved == static_cast<int>(VideoFourcc::Mjpeg);
+  // NV12 segue o caminho de sempre. MJPEG so quando o menu pediu MJPEG.
   std::vector<int> try_fourccs;
-  try_fourccs.push_back(static_cast<int>(VideoFourcc::Nv12));
-  if (want_saved != static_cast<int>(VideoFourcc::Nv12) &&
-      want_saved != static_cast<int>(VideoFourcc::Any)) {
-    try_fourccs.push_back(want_saved);
-  }
-  if (want_saved == static_cast<int>(VideoFourcc::Any)) {
-    for (int fc : {static_cast<int>(VideoFourcc::I420), static_cast<int>(VideoFourcc::Yuy2),
-                   static_cast<int>(VideoFourcc::Mjpeg)}) {
-      try_fourccs.push_back(fc);
+  if (want_mjpeg) {
+    try_fourccs.push_back(static_cast<int>(VideoFourcc::Mjpeg));
+  } else {
+    try_fourccs.push_back(static_cast<int>(VideoFourcc::Nv12));
+    if (want_saved != static_cast<int>(VideoFourcc::Nv12) &&
+        want_saved != static_cast<int>(VideoFourcc::Any)) {
+      try_fourccs.push_back(want_saved);
+    }
+    if (want_saved == static_cast<int>(VideoFourcc::Any)) {
+      for (int fc : {static_cast<int>(VideoFourcc::I420), static_cast<int>(VideoFourcc::Yuy2),
+                     static_cast<int>(VideoFourcc::Mjpeg)}) {
+        try_fourccs.push_back(fc);
+      }
     }
   }
   opened_fourcc_ = try_fourccs.front();
@@ -342,8 +442,8 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
 
   AM_MEDIA_TYPE mt{};
   mt.majortype = MEDIATYPE_Video;
-  // Decoder path is NV12; DShow inserts a converter when the pin is YUY2.
-  mt.subtype = MEDIASUBTYPE_NV12;
+  // NV12 entra direto. MJPEG chega em JPEG e vira NV12 no callback.
+  mt.subtype = want_mjpeg ? MEDIASUBTYPE_MJPG : MEDIASUBTYPE_NV12;
   mt.formattype = FORMAT_VideoInfo;
   impl_->grabber->SetMediaType(&mt);
   impl_->grabber->SetBufferSamples(FALSE);
@@ -434,6 +534,11 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
       nego->Release();
     }
     cfg->Release();
+    if (want_mjpeg && !set_ok) {
+      fail_open(static_cast<unsigned long>(E_FAIL));
+      stop();
+      return false;
+    }
     if (!set_ok) {
       // Still RenderStream — default pin caps may match request (e.g. 1080p60).
       // Wrong size is rejected after GetConnectedMediaType below.
@@ -446,6 +551,10 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   if (FAILED(hr)) {
     const int was_fc = opened_fourcc_;
     stop();
+    if (want_mjpeg) {
+      fail_open(static_cast<unsigned long>(hr));
+      return false;
+    }
     Sleep(static_cast<DWORD>(capture_device_settle_ms()));
     if (was_fc != static_cast<int>(VideoFourcc::Nv12)) {
       CaptureStartOptions nv = opt;
@@ -546,6 +655,10 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
     if (frames_.load(std::memory_order_relaxed) == 0) {
       const std::string detail = hdmi_mode_refused_text(width, height, fps);
       stop();
+      if (want_mjpeg) {
+        err = detail;
+        return false;
+      }
       // MJPEG@4K often negotiates then never produces NV12 — retry NV12 once.
       if (want_saved != static_cast<int>(VideoFourcc::Nv12)) {
         CaptureStartOptions nv = opt;

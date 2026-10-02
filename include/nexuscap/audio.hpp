@@ -63,8 +63,8 @@ inline void apply_capture_volume_mix_pcm(void* out, size_t frames, int channels,
   }
 }
 
-// Modo de som do HDMI. Padrao nao filtra. Gamer e Graves sao um shelving por canal,
-// no mesmo passo do volume. O ganho do shelf e compensado para nao estourar o pico.
+// Modo de som do HDMI. Padrao nao filtra. Gamer sobe o agudo. Graves sobe o grave.
+// O pico passa por um limite para o realce nao estourar o fone.
 inline constexpr int kCaptureTonePadrao = 0;
 inline constexpr int kCaptureToneGamer = 1;
 inline constexpr int kCaptureToneGraves = 2;
@@ -95,8 +95,8 @@ struct CaptureToneFilter {
 inline void capture_tone_design(CaptureToneBiquad& q, int mode, int rate) {
   const float fs = rate < 8000 ? 48000.f : static_cast<float>(rate);
   const bool graves = clamp_capture_tone(mode) == kCaptureToneGraves;
-  const float db = graves ? 4.f : 3.f;
-  const float freq = graves ? 100.f : 2500.f;
+  const float db = graves ? 10.f : 8.f;
+  const float freq = graves ? 110.f : 2200.f;
   const float A = std::pow(10.f, db / 40.f);
   const float w0 = 6.28318530718f * freq / fs;
   const float cosw = std::cos(w0);
@@ -120,7 +120,8 @@ inline void capture_tone_design(CaptureToneBiquad& q, int mode, int rate) {
     a2 = (A + 1.f) - (A - 1.f) * cosw - shelf;
   }
   if (a0 < 1.e-8f && a0 > -1.e-8f) a0 = 1.f;
-  const float inv = (1.f / (A * A)) / a0;
+  const float trim = std::pow(10.f, -1.f / 20.f);
+  const float inv = trim / a0;
   q.b0 = b0 * inv;
   q.b1 = b1 * inv;
   q.b2 = b2 * inv;
@@ -134,6 +135,8 @@ inline float capture_tone_tick(CaptureToneBiquad& q, float x) {
   const float y = q.b0 * x + q.z1;
   q.z1 = q.b1 * x - q.a1 * y + q.z2;
   q.z2 = q.b2 * x - q.a2 * y;
+  if (y > 1.f) return 1.f;
+  if (y < -1.f) return -1.f;
   return y;
 }
 

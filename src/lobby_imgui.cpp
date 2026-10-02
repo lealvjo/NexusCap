@@ -278,8 +278,8 @@ struct LobbyPreview {
     capture = std::make_unique<DShowCapture>();
     const std::string dev = device.empty() ? "auto" : device;
     if (!capture->start(dev, opt, slot, clock, err)) {
-      // Formato pedido (MJPEG/YUY2/…) falhou — nao deixar preview morto: cai pra NV12.
-      if (clamp_video_fourcc(opt.video_fourcc) != static_cast<int>(VideoFourcc::Nv12)) {
+      if (clamp_video_fourcc(opt.video_fourcc) != static_cast<int>(VideoFourcc::Nv12) &&
+          clamp_video_fourcc(opt.video_fourcc) != static_cast<int>(VideoFourcc::Mjpeg)) {
         CaptureStartOptions fb = opt;
         fb.video_fourcc = static_cast<int>(VideoFourcc::Nv12);
         std::string err2;
@@ -802,18 +802,6 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
 
   // Mini overlay preview: 3-line bar matching session HUD (stalls on row 2).
   if (settings.ui.mini_overlay) {
-    const float bar_h = static_cast<float>(hud_mini_overlay_height());
-    ImVec2 p0(img_min.x, img_min.y);
-    ImVec2 p1(img_max.x, img_min.y + bar_h);
-    if (overlay_draws_plate(settings.ui.overlay_no_bg)) {
-      dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
-    }
-    const float graph_w = static_cast<float>(hud_mini_frametime_graph_w(static_cast<int>(p1.x - p0.x)));
-    const float gx = (std::max)(p0.x + 8.f, p1.x - 8.f - graph_w);
-    const float gy = p0.y + 9.f;
-    const float gh = bar_h - 16.f;
-    const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 16.f));
-
     const float fps = preview.fps_ema > 1.0 ? static_cast<float>(preview.fps_ema) : 0.f;
     const float ft = fps > 1.f ? (1000.f / fps) : 0.f;
     const int fgx = settings.fg_enabled ? (settings.fg_multiplier >= 2 ? settings.fg_multiplier : 2) : 1;
@@ -839,41 +827,57 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
 
     const float font_sz = static_cast<float>(hud_mini_overlay_font_px());
     const float line_gap = 2.f;
-    const int rows = hud_mini_overlay_rows();
-    const float block_h = font_sz * static_cast<float>(rows) + line_gap * static_cast<float>(rows - 1);
-    const float y0 = p0.y + (bar_h - block_h) * 0.5f;
+    const float graph_w = static_cast<float>(hud_mini_frametime_graph_w(static_cast<int>(img_max.x - img_min.x)));
+    const float text_avail = (std::max)(8.f, (img_max.x - img_min.x) - 16.f - graph_w - 16.f);
+    const float font_scale = font_sz / ImGui::GetFontSize();
+    int widths[kMiniOverlayMaxSegs]{};
+    for (int i = 0; i < nseg; ++i) {
+      const ImVec2 sz = ImGui::CalcTextSize(segs[i].text);
+      widths[i] = (std::max)(1, static_cast<int>(sz.x * font_scale + 0.5f));
+    }
+    MiniOverlaySpan spans[8]{};
+    int lines = mini_overlay_wrap_all(widths, segs, nseg, static_cast<int>(text_avail), spans,
+                                      hud_mini_overlay_max_rows());
+    if (lines < hud_mini_overlay_rows()) lines = hud_mini_overlay_rows();
+    const float bar_h = static_cast<float>(hud_mini_overlay_height_for_rows(lines));
+    ImVec2 p0(img_min.x, img_min.y);
+    ImVec2 p1(img_max.x, img_min.y + bar_h);
+    if (overlay_draws_plate(settings.ui.overlay_no_bg)) {
+      dl->AddRectFilled(p0, p1, IM_COL32(8, 10, 14, 210), 0.f);
+    }
+    const float gx = (std::max)(p0.x + 8.f, p1.x - 8.f - graph_w);
+    const float gy = p0.y + 9.f;
+    const float gh = bar_h - 16.f;
+    const float gw = (std::min)(graph_w, (std::max)(0.f, p1.x - p0.x - 16.f));
     const float text_max_x = gx - 8.f;
-    int wrap_st = nseg;
-    int wrap_l600 = nseg;
-    mini_overlay_row_breaks(segs, nseg, &wrap_st, &wrap_l600);
-    auto skip_sep = [&](int i) -> int {
-      while (i < nseg && std::strcmp(segs[i].text, " · ") == 0) ++i;
+    const float block_h = font_sz * static_cast<float>(lines) + line_gap * static_cast<float>(lines - 1);
+    float y = p0.y + (bar_h - block_h) * 0.5f;
+    auto skip_sep = [&](int i, int end) -> int {
+      while (i < end && std::strcmp(segs[i].text, " · ") == 0) ++i;
       return i;
     };
-    wrap_st = skip_sep(wrap_st);
-    wrap_l600 = skip_sep(wrap_l600);
-    auto paint_row = [&](int begin, int end, float y) {
+    auto paint_span = [&](int begin, int end, float text_y) {
       float x = p0.x + 8.f;
-      begin = skip_sep(begin);
+      begin = skip_sep(begin, end);
       for (int i = begin; i < end; ++i) {
         if (!segs[i].text[0]) continue;
+        const float w = static_cast<float>(widths[i]);
+        if (x > p0.x + 8.f && x + w > text_max_x) break;
         const ImU32 col = IM_COL32(segs[i].r, segs[i].g, segs[i].b, 255);
-        const ImVec2 sz = ImGui::CalcTextSize(segs[i].text);
-        const float w = sz.x * (font_sz / ImGui::GetFontSize());
-        if (x >= text_max_x) break;
         if (x + w > text_max_x) {
           dl->PushClipRect(ImVec2(x, p0.y), ImVec2(text_max_x, p1.y), true);
-          dl->AddText(nullptr, font_sz, ImVec2(x, y), col, segs[i].text);
+          dl->AddText(nullptr, font_sz, ImVec2(x, text_y), col, segs[i].text);
           dl->PopClipRect();
           break;
         }
-        dl->AddText(nullptr, font_sz, ImVec2(x, y), col, segs[i].text);
+        dl->AddText(nullptr, font_sz, ImVec2(x, text_y), col, segs[i].text);
         x += w;
       }
     };
-    paint_row(0, wrap_st, y0);
-    paint_row(wrap_st, wrap_l600, y0 + font_sz + line_gap);
-    paint_row(wrap_l600, nseg, y0 + (font_sz + line_gap) * 2.f);
+    for (int s = 0; s < lines; ++s) {
+      if (spans[s].end > spans[s].begin) paint_span(spans[s].begin, spans[s].end, y);
+      y += font_sz + line_gap;
+    }
 
     if (gw >= 48.f) {
       if (overlay_draws_plate(settings.ui.overlay_no_bg)) {
@@ -1180,6 +1184,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   refresh_fourccs();
 
   std::vector<CaptureModeKey> unsupported_modes;
+  std::vector<CaptureFormatKey> unsupported_formats;
   auto restart_preview = [&]() -> bool {
     if (cfg.simulate_hdmi_busy) {
       preview.stop();
@@ -1207,10 +1212,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     settings.device_name = current_device();
     if (preview.ensure(settings.device_name, opt)) {
       capture_clear_mode_unsupported(unsupported_modes, settings.width, settings.height, settings.fps);
+      capture_clear_format_unsupported(unsupported_formats, settings.width, settings.height, settings.fps,
+                                      settings.video_fourcc);
       return true;
     }
     if (!hdmi_open_err_is_busy(preview.err)) {
-      capture_note_mode_unsupported(unsupported_modes, settings.width, settings.height, settings.fps);
+      if (clamp_video_fourcc(settings.video_fourcc) == static_cast<int>(VideoFourcc::Mjpeg)) {
+        capture_note_format_unsupported(unsupported_formats, settings.width, settings.height, settings.fps,
+                                       static_cast<int>(VideoFourcc::Mjpeg));
+      } else {
+        capture_note_mode_unsupported(unsupported_modes, settings.width, settings.height, settings.fps);
+      }
     }
     return false;
   };
@@ -1726,28 +1738,49 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     refresh_fourccs();
     const float col_w = (std::max)(110.f, (ImGui::GetContentRegionAvail().x - 8.f) * 0.5f);
     {
-      int fmt_idx = 0;
-      std::vector<std::string> fmt_store;
-      std::vector<const char*> fmt_labels;
-      fmt_store.reserve(fourccs.size());
-      for (size_t i = 0; i < fourccs.size(); ++i) {
-        fmt_store.emplace_back(video_fourcc_name(fourccs[i]));
-        if (fourccs[i] == settings.video_fourcc) fmt_idx = static_cast<int>(i);
-      }
-      for (auto& s : fmt_store) fmt_labels.push_back(s.c_str());
       ImGui::BeginGroup();
       ImGui::TextUnformatted("Formato");
       ImGui::SetNextItemWidth(col_w);
-      if (fmt_labels.empty()) {
+      if (fourccs.empty()) {
         ImGui::TextDisabled("(sem formato)");
-      } else if (ImGui::Combo("##fmt", &fmt_idx, fmt_labels.data(), static_cast<int>(fmt_labels.size()))) {
-        const int prev = settings.video_fourcc;
-        settings.video_fourcc = fourccs[static_cast<size_t>(fmt_idx)];
-        if (!restart_preview()) {
-          settings.video_fourcc = prev;
-          restart_preview();
-        } else if (!preview.err.empty() && preview.err.find("falhou") != std::string::npos) {
-          settings.video_fourcc = static_cast<int>(kDefaultVideoFourcc);
+      } else {
+        const bool current_bad = capture_format_key_unsupported(unsupported_formats, settings.width, settings.height,
+                                                               settings.fps, settings.video_fourcc);
+        char fmt_preview[48];
+        const char* name = video_fourcc_name(settings.video_fourcc);
+        if (current_bad) {
+          std::snprintf(fmt_preview, sizeof(fmt_preview), "%s  sem suporte", name);
+        } else {
+          std::snprintf(fmt_preview, sizeof(fmt_preview), "%s", name);
+        }
+        if (ImGui::BeginCombo("##fmt", fmt_preview)) {
+          for (int i = 0; i < static_cast<int>(fourccs.size()); ++i) {
+            const int fc = fourccs[static_cast<size_t>(i)];
+            const bool bad = capture_format_key_unsupported(unsupported_formats, settings.width, settings.height,
+                                                           settings.fps, fc);
+            char item[48];
+            if (bad) {
+              std::snprintf(item, sizeof(item), "%s  sem suporte", video_fourcc_name(fc));
+            } else {
+              std::snprintf(item, sizeof(item), "%s", video_fourcc_name(fc));
+            }
+            if (bad) ImGui::BeginDisabled();
+            const bool picked = ImGui::Selectable(item, fc == settings.video_fourcc);
+            if (bad) ImGui::EndDisabled();
+            if (picked && !bad) {
+              const int prev = settings.video_fourcc;
+              settings.video_fourcc = fc;
+              if (!restart_preview()) {
+                if (fc != static_cast<int>(VideoFourcc::Mjpeg)) {
+                  settings.video_fourcc = prev;
+                  restart_preview();
+                }
+              } else if (!preview.err.empty() && preview.err.find("falhou") != std::string::npos) {
+                settings.video_fourcc = static_cast<int>(kDefaultVideoFourcc);
+              }
+            }
+          }
+          ImGui::EndCombo();
         }
       }
       ImGui::EndGroup();
@@ -2107,9 +2140,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         g_lobby_running = false;
       }
       ImGui::SameLine();
-      const bool iniciar_sem_suporte = lobby_iniciar_blocked_by_unsupported(
-          capture_source_is_window(settings.capture_source), settings.width, settings.height, settings.fps,
-          unsupported_modes);
+      const bool iniciar_sem_suporte =
+          lobby_iniciar_blocked_by_unsupported(capture_source_is_window(settings.capture_source), settings.width,
+                                              settings.height, settings.fps, unsupported_modes) ||
+          lobby_iniciar_blocked_by_format(capture_source_is_window(settings.capture_source), settings.width,
+                                         settings.height, settings.fps, settings.video_fourcc, unsupported_formats);
       if (iniciar_sem_suporte) ImGui::BeginDisabled();
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.95f, 1.f));
       if (ImGui::Button("Iniciar processamento", ImVec2(280, row_h))) {

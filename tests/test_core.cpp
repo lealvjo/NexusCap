@@ -26,6 +26,9 @@
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/capture.hpp"
 
+#include <objidl.h>
+#include <wincodec.h>
+
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -232,12 +235,76 @@ TEST_CASE("capture format menu keeps a mode that has no nv12") {
   CHECK(capture_format_for_mode(1920, 1080, nv12, only_mjpeg) == mjpeg);
   CHECK(capture_format_for_mode(3840, 2160, nv12, only_mjpeg) == mjpeg);
   const std::vector<int> with_nv12{nv12, mjpeg};
-  CHECK(capture_format_for_mode(3840, 2160, mjpeg, with_nv12) == nv12);
-  CHECK(capture_format_for_mode(1920, 1080, mjpeg, with_nv12) == nv12);
+  CHECK(capture_format_for_mode(3840, 2160, mjpeg, with_nv12) == mjpeg);
+  CHECK(capture_format_for_mode(1920, 1080, mjpeg, with_nv12) == mjpeg);
+  CHECK(capture_format_for_mode(3840, 2160, nv12, with_nv12) == nv12);
   CHECK(capture_format_for_mode(1280, 720, any, with_nv12) == nv12);
   const auto empty = capture_format_menu_for_mode({});
   CHECK(empty.empty());
   CHECK(capture_format_for_mode(1920, 1080, mjpeg, {}) == mjpeg);
+}
+
+TEST_CASE("mjpeg choice does not block nv12 at the same rate") {
+  const int mjpeg = static_cast<int>(VideoFourcc::Mjpeg);
+  const int nv12 = static_cast<int>(VideoFourcc::Nv12);
+  std::vector<CaptureFormatKey> formats;
+  capture_note_format_unsupported(formats, 1920, 1080, 60.0, mjpeg);
+  CHECK(capture_format_key_unsupported(formats, 1920, 1080, 60.0, mjpeg));
+  CHECK_FALSE(capture_format_key_unsupported(formats, 1920, 1080, 60.0, nv12));
+  CHECK(lobby_iniciar_blocked_by_format(false, 1920, 1080, 60.0, mjpeg, formats));
+  CHECK_FALSE(lobby_iniciar_blocked_by_format(false, 1920, 1080, 60.0, nv12, formats));
+  CHECK_FALSE(lobby_iniciar_blocked_by_format(true, 1920, 1080, 60.0, mjpeg, formats));
+  capture_clear_format_unsupported(formats, 1920, 1080, 60.0, mjpeg);
+  CHECK_FALSE(capture_format_key_unsupported(formats, 1920, 1080, 60.0, mjpeg));
+
+  std::vector<uint8_t> bgra;
+  std::vector<uint8_t> nv12_buf(nv12_packed_bytes(2, 2), 0);
+  const uint8_t junk[] = {1, 2, 3, 4};
+  CHECK_FALSE(mjpeg_jpeg_to_nv12(junk, sizeof(junk), 2, 2, bgra, nv12_buf.data(), nv12_buf.size()));
+
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  const bool com_ok = SUCCEEDED(com) || com == RPC_E_CHANGED_MODE;
+  CHECK(com_ok);
+  IWICImagingFactory* factory = nullptr;
+  IStream* mem = nullptr;
+  IWICBitmap* bmp = nullptr;
+  IWICBitmapEncoder* encoder = nullptr;
+  IWICBitmapFrameEncode* enc_frame = nullptr;
+  IPropertyBag2* props = nullptr;
+  bool wrote = false;
+  if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+      factory && SUCCEEDED(factory->CreateBitmap(2, 2, GUID_WICPixelFormat32bppBGRA, WICBitmapCacheOnDemand, &bmp)) &&
+      bmp && SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &mem)) && mem &&
+      SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatJpeg, nullptr, &encoder)) && encoder &&
+      SUCCEEDED(encoder->Initialize(mem, WICBitmapEncoderNoCache)) &&
+      SUCCEEDED(encoder->CreateNewFrame(&enc_frame, &props)) && enc_frame &&
+      SUCCEEDED(enc_frame->Initialize(props)) && SUCCEEDED(enc_frame->WriteSource(bmp, nullptr)) &&
+      SUCCEEDED(enc_frame->Commit()) && SUCCEEDED(encoder->Commit())) {
+    wrote = true;
+  }
+  if (props) props->Release();
+  if (enc_frame) enc_frame->Release();
+  if (encoder) encoder->Release();
+  if (bmp) bmp->Release();
+  CHECK(wrote);
+  if (wrote && mem) {
+    HGLOBAL hg = nullptr;
+    CHECK(SUCCEEDED(GetHGlobalFromStream(mem, &hg)));
+    const SIZE_T n = hg ? GlobalSize(hg) : 0;
+    void* bytes = hg ? GlobalLock(hg) : nullptr;
+    CHECK(n > 4);
+    CHECK(bytes != nullptr);
+    if (bytes && n > 4) {
+      std::vector<uint8_t> out(nv12_packed_bytes(2, 2), 0);
+      CHECK(mjpeg_jpeg_to_nv12(static_cast<const uint8_t*>(bytes), static_cast<size_t>(n), 2, 2, bgra, out.data(),
+                              out.size()));
+      CHECK_FALSE(mjpeg_jpeg_to_nv12(static_cast<const uint8_t*>(bytes), static_cast<size_t>(n), 4, 4, bgra,
+                                    out.data(), out.size()));
+    }
+    if (bytes) GlobalUnlock(hg);
+  }
+  if (mem) mem->Release();
+  if (factory) factory->Release();
 }
 
 TEST_CASE("nv12 buffer match is the opened mode not a hardcoded 1440p") {
@@ -2582,7 +2649,7 @@ TEST_CASE("capture volume clamps gain persists and stays out of presets") {
     CaptureToneFilter filt;
     std::vector<float> s(48000);
     for (int i = 0; i < 48000; ++i)
-      s[static_cast<size_t>(i)] = std::sin(6.28318530718f * hz * static_cast<float>(i) / 48000.f);
+      s[static_cast<size_t>(i)] = 0.25f * std::sin(6.28318530718f * hz * static_cast<float>(i) / 48000.f);
     apply_capture_tone_f32(s.data(), s.size(), 1, filt, mode, 48000);
     double acc = 0;
     for (size_t i = 40000; i < s.size(); ++i) acc += static_cast<double>(s[i]) * s[i];
@@ -2600,10 +2667,14 @@ TEST_CASE("capture volume clamps gain persists and stays out of presets") {
   CHECK(plain[0] == doctest::Approx(0.25f));
   const double graves_low = tone_rms(kCaptureToneGraves, 50.f);
   const double graves_high = tone_rms(kCaptureToneGraves, 8000.f);
-  CHECK(graves_low > graves_high * 1.25);
+  const double flat_low = tone_rms(kCaptureTonePadrao, 50.f);
+  CHECK(graves_low > graves_high * 2.0);
+  CHECK(graves_low > flat_low * 1.8);
   const double gamer_low = tone_rms(kCaptureToneGamer, 200.f);
   const double gamer_high = tone_rms(kCaptureToneGamer, 8000.f);
-  CHECK(gamer_high > gamer_low * 1.15);
+  const double flat_high = tone_rms(kCaptureTonePadrao, 8000.f);
+  CHECK(gamer_high > gamer_low * 1.6);
+  CHECK(gamer_high > flat_high * 1.4);
 
   float f32[] = {1.f, -0.5f, 0.25f};
   apply_capture_volume_f32(f32, 3, 1.f);
@@ -3925,6 +3996,9 @@ TEST_CASE("hud_panel size compact vs advanced metrics") {
   CHECK(hud_panel_height(false, true) == 488);
   CHECK(hud_mini_overlay_rows() == 3);
   CHECK(hud_mini_overlay_height() >= hud_mini_overlay_font_px() * 3 + 16);
+  CHECK(hud_mini_overlay_height_for_rows(3) == hud_mini_overlay_height());
+  CHECK(hud_mini_overlay_height_for_rows(4) ==
+        hud_mini_overlay_height() + hud_mini_overlay_font_px() + 2);
   CHECK(hud_mini_frametime_graph_w(2560) >= 640);
   CHECK(hud_mini_frametime_graph_w(2560) > 220);
   CHECK(hud_mini_frametime_graph_w(1920) > 220);
@@ -4446,19 +4520,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 5, 7));
+  CHECK(app_version_is(6, 5, 8));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.5.7");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.5.7") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.7");
+  CHECK(std::string(kAppVersion) == "6.5.8");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.5.8") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.8");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.5.7") != std::string::npos);
+  CHECK(lobby_t.find("6.5.8") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.5.7") != std::string::npos);
+  CHECK(sess_t.find("6.5.8") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.5.7 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.5.8 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
@@ -5896,6 +5970,23 @@ TEST_CASE("mini overlay 3-row breaks keep stalls off the clipped FPS row") {
   CHECK(row0_has_res);
   CHECK_FALSE(row0_has_stalls);
   CHECK(row1_has_ft);
+}
+
+TEST_CASE("mini overlay wraps a row that does not fit beside the graph") {
+  MiniOverlaySeg segs[4]{};
+  mini_seg_set(segs[0], "AAAA", 255, 255, 255);
+  mini_seg_sep(segs[1]);
+  mini_seg_set(segs[2], "BBBB", 255, 255, 255);
+  mini_seg_set(segs[3], "CCCC", 255, 255, 255);
+  const int widths[] = {40, 10, 40, 40};
+  MiniOverlaySpan spans[8]{};
+  const int n = mini_overlay_wrap_all(widths, segs, 4, 90, spans, 8);
+  CHECK(n == 2);
+  CHECK(spans[0].begin == 0);
+  CHECK(spans[0].end == 3);
+  CHECK(spans[1].begin == 3);
+  CHECK(spans[1].end == 4);
+  CHECK(std::strcmp(segs[spans[1].begin].text, "CCCC") == 0);
 }
 
 TEST_CASE("3.0 HUD stack line names motor and pass count") {

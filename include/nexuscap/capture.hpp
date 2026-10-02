@@ -175,6 +175,10 @@ inline void bgra_to_nv12(const uint8_t* bgra, int pitch, int width, int height, 
   }
 }
 
+// Um quadro JPEG da placa vira o NV12 do tamanho pedido. O caminho NV12 nao usa isto.
+bool mjpeg_jpeg_to_nv12(const uint8_t* jpeg, size_t jpeg_len, int width, int height,
+                        std::vector<uint8_t>& bgra_scratch, uint8_t* nv12, size_t nv12_cap);
+
 std::vector<CapturableWindowInfo> list_capturable_windows(uint64_t exclude_hwnd = 0);
 uint64_t find_capturable_hwnd(const std::string& title, uint64_t exclude_hwnd = 0);
 
@@ -411,6 +415,7 @@ public:
   void push_buffer(const uint8_t* data, size_t len);
 
 private:
+  void push_mjpeg_buffer(const uint8_t* data, size_t len);
   struct Impl;
   Impl* impl_ = nullptr;
   FrameSlot* slot_ = nullptr;
@@ -423,6 +428,7 @@ private:
   std::atomic<uint64_t> rejected_samples_{0};
   // Reused NV12 scratch — avoids per-frame heap churn when resolution is stable.
   std::vector<uint8_t> nv12_scratch_;
+  std::vector<uint8_t> mjpeg_bgra_;
 };
 
 // WGC de uma HWND. Publica NV12 no mesmo FrameSlot do HDMI.
@@ -593,10 +599,12 @@ inline bool capture_mode_prefers_nv12(int width, int height) {
   return static_cast<long long>(width) * height >= 3840LL * 2160LL;
 }
 
-// NV12 entra sempre que essa resolucao e esse Hz publicam NV12, em qualquer troca.
+// NV12 entra sempre que essa resolucao e esse Hz publicam NV12, salvo escolha explicita de MJPEG.
 // Sem NV12 na lista, fica o formato que a placa aceita.
 inline int capture_format_for_mode(int /*width*/, int /*height*/, int saved, const std::vector<int>& accepted) {
   if (accepted.empty()) return clamp_video_fourcc(saved);
+  const int want = clamp_video_fourcc(saved);
+  if (want == static_cast<int>(VideoFourcc::Mjpeg) && video_fourcc_in_list(want, accepted)) return want;
   if (video_fourcc_in_list(static_cast<int>(VideoFourcc::Nv12), accepted))
     return static_cast<int>(VideoFourcc::Nv12);
   return resolve_video_fourcc_for_device(saved, accepted);
@@ -815,6 +823,45 @@ inline bool lobby_iniciar_blocked_by_unsupported(bool window_source, int width, 
                                                 const std::vector<CaptureModeKey>& blocked) {
   if (window_source) return false;
   return capture_mode_key_unsupported(blocked, width, height, fps);
+}
+
+// MJPEG que nao entregou video. O Hz em NV12 continua clicavel.
+struct CaptureFormatKey {
+  int width = 0;
+  int height = 0;
+  double fps = 0;
+  int fourcc = 0;
+};
+
+inline bool capture_format_key_unsupported(const std::vector<CaptureFormatKey>& blocked, int width, int height,
+                                          double fps, int fourcc) {
+  for (const CaptureFormatKey& b : blocked) {
+    if (b.width == width && b.height == height && b.fourcc == fourcc && std::abs(b.fps - fps) < 1.0) return true;
+  }
+  return false;
+}
+
+inline void capture_note_format_unsupported(std::vector<CaptureFormatKey>& blocked, int width, int height, double fps,
+                                           int fourcc) {
+  if (width <= 0 || height <= 0 || !(fps >= 1.0)) return;
+  if (capture_format_key_unsupported(blocked, width, height, fps, fourcc)) return;
+  blocked.push_back(CaptureFormatKey{width, height, fps, fourcc});
+}
+
+inline void capture_clear_format_unsupported(std::vector<CaptureFormatKey>& blocked, int width, int height, double fps,
+                                            int fourcc) {
+  blocked.erase(std::remove_if(blocked.begin(), blocked.end(),
+                               [&](const CaptureFormatKey& b) {
+                                 return b.width == width && b.height == height && b.fourcc == fourcc &&
+                                        std::abs(b.fps - fps) < 1.0;
+                               }),
+                blocked.end());
+}
+
+inline bool lobby_iniciar_blocked_by_format(bool window_source, int width, int height, double fps, int fourcc,
+                                           const std::vector<CaptureFormatKey>& blocked) {
+  if (window_source) return false;
+  return capture_format_key_unsupported(blocked, width, height, fps, fourcc);
 }
 
 // Hz gravado que essa resolucao publicou. Fora da lista, o mais perto. Lista vazia mantem o gravado.

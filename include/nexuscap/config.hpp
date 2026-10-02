@@ -143,6 +143,14 @@ inline int hud_panel_height(bool advanced_metrics, bool hw_info = false) {
 inline int hud_mini_overlay_height() { return 168; }  // 3 text rows + grafico FT com linhas FG
 inline int hud_mini_overlay_font_px() { return 27; }  // +50% vs 18
 inline int hud_mini_overlay_rows() { return 3; }
+inline int hud_mini_overlay_max_rows() { return 8; }
+// Linha extra quando o texto quebra. Tres linhas continuam na altura de hoje.
+inline int hud_mini_overlay_height_for_rows(int rows) {
+  if (rows < hud_mini_overlay_rows()) rows = hud_mini_overlay_rows();
+  if (rows > hud_mini_overlay_max_rows()) rows = hud_mini_overlay_max_rows();
+  const int extra = rows - hud_mini_overlay_rows();
+  return hud_mini_overlay_height() + extra * (hud_mini_overlay_font_px() + 2);
+}
 
 // O mini ocupa a largura da tela. O grafico de FT fica no canto e usa a sobra
 // ao lado do texto, em vez de um bloco fixo de 220 px.

@@ -488,6 +488,62 @@ inline void mini_overlay_row_breaks(const MiniOverlaySeg* segs, int n, int* wrap
   if (wrap_l600) *wrap_l600 = wl;
 }
 
+struct MiniOverlaySpan {
+  int begin = 0;
+  int end = 0;
+};
+
+inline bool mini_overlay_seg_is_sep(const MiniOverlaySeg& s) { return std::strcmp(s.text, " · ") == 0; }
+
+// Uma faixa do mini que nao cabe na largura desce para a linha seguinte, em vez de sumir.
+inline int mini_overlay_wrap_group(const int* widths, const MiniOverlaySeg* segs, int begin, int end, int max_px,
+                                   MiniOverlaySpan* out, int max_out) {
+  if (!out || max_out <= 0 || !segs || begin < 0 || end < begin) return 0;
+  if (max_px < 8) max_px = 8;
+  int lines = 0;
+  int i = begin;
+  while (i < end && lines < max_out) {
+    while (i < end && mini_overlay_seg_is_sep(segs[i])) ++i;
+    if (i >= end) break;
+    const int start = i;
+    int x = 0;
+    int stop = start;
+    while (i < end) {
+      if (mini_overlay_seg_is_sep(segs[i]) && x == 0) {
+        ++i;
+        continue;
+      }
+      const int w = (widths && widths[i] > 0) ? widths[i] : 1;
+      if (stop > start && x + w > max_px) break;
+      x += w;
+      stop = i + 1;
+      ++i;
+    }
+    if (stop <= start) break;
+    out[lines].begin = start;
+    out[lines].end = stop;
+    ++lines;
+  }
+  return lines;
+}
+
+inline int mini_overlay_wrap_all(const int* widths, const MiniOverlaySeg* segs, int n, int max_px,
+                                 MiniOverlaySpan* out, int max_out) {
+  if (!out || max_out <= 0 || !segs || n <= 0) return 0;
+  int stalls = n;
+  int l600 = n;
+  mini_overlay_row_breaks(segs, n, &stalls, &l600);
+  int lines = 0;
+  lines += mini_overlay_wrap_group(widths, segs, 0, stalls, max_px, out + lines, max_out - lines);
+  if (lines < max_out) {
+    lines += mini_overlay_wrap_group(widths, segs, stalls, l600, max_px, out + lines, max_out - lines);
+  }
+  if (lines < max_out) {
+    lines += mini_overlay_wrap_group(widths, segs, l600, n, max_px, out + lines, max_out - lines);
+  }
+  return lines;
+}
+
 inline unsigned mini_hw_token_rgb(const char* tok, unsigned char& r, unsigned char& g, unsigned char& b) {
   if (!tok || !tok[0]) return 0;
   // Power

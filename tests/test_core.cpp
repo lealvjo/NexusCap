@@ -914,6 +914,10 @@ TEST_CASE("window Iniciar skips the pipeline card and releases the device; X hol
 
   CHECK(window_boot_cover(false) == WindowBootCover::None);
   CHECK(window_boot_cover(true) == WindowBootCover::HoldFrame);
+  CHECK_FALSE(motor_hold_ready_to_show(true, 0));
+  CHECK_FALSE(motor_hold_ready_to_show(true, kMotorHoldSettleFrames - 1));
+  CHECK(motor_hold_ready_to_show(true, kMotorHoldSettleFrames));
+  CHECK(motor_hold_ready_to_show(false, 0));
   CHECK(session_restart_notice_title() != lobby_iniciar_hold_title());
   CHECK(session_restart_notice_detail(SessionCfgApply::RelaunchPassCount).find("tela fica") != std::string::npos);
 
@@ -4332,19 +4336,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 5, 4));
+  CHECK(app_version_is(6, 5, 5));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.5.4");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.5.4") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.4");
+  CHECK(std::string(kAppVersion) == "6.5.5");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.5.5") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.5");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.5.4") != std::string::npos);
+  CHECK(lobby_t.find("6.5.5") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.5.4") != std::string::npos);
+  CHECK(sess_t.find("6.5.5") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.5.4 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.5.5 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {

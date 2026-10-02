@@ -111,11 +111,11 @@ bool SessionCfgOverlay::init(HWND hwnd, ID3D11Device* device, ID3D11DeviceContex
   if (!c) return false;
   imgui_ctx_ = c;
   ImGuiIO& io = ImGui::GetIO();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NoMouseCursorChange;
   io.IniFilename = nullptr;
   io.FontGlobalScale = 1.35f;
-  // Borderless na captura: o cursor do Windows pode não aparecer, então o ImGui desenha o dele.
-  io.MouseDrawCursor = true;
+  // SetCursor do ImGui vale para a tela inteira: escondia o ponteiro e deixava a bolinha.
+  io.MouseDrawCursor = false;
   apply_nexuscap_imgui_theme();
   if (!ImGui_ImplWin32_Init(hwnd)) {
     ImGui::DestroyContext(c);
@@ -205,6 +205,17 @@ SessionCfgActions SessionCfgOverlay::take_actions() {
   const SessionCfgActions out = actions_;
   actions_ = SessionCfgActions{};
   return out;
+}
+
+bool SessionCfgOverlay::restart_visual_pending() const {
+  // Tudo que o menu manda reiniciar. Fora da lista, o BitBlt do FLIP pisca a imagem.
+  return actions_.preset_changed || actions_.pass_count_changed || actions_.scale_apply ||
+         actions_.nr_advanced_apply || actions_.nr_advanced_changed || actions_.toggle_nr ||
+         actions_.apply_user_preset;
+}
+
+bool SessionCfgOverlay::restart_visual_pending_trampoline(void* user) {
+  return user && static_cast<SessionCfgOverlay*>(user)->restart_visual_pending();
 }
 
 void SessionCfgOverlay::draw_trampoline(void* user) {

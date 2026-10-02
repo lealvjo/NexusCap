@@ -666,6 +666,10 @@ bool relaunch_current_process(const char* extra_args) {
   buf.push_back(L'\0');
   STARTUPINFOW si{};
   si.cb = sizeof(si);
+  // Sem isto o Windows troca o ponteiro para o cursor de "abrindo" ate o processo
+  // novo entrar no loop de mensagens. O boot do motor leva ~0,5 s: o loading aparece
+  // em toda troca que reinicia.
+  si.dwFlags = STARTF_FORCEOFFFEEDBACK;
   PROCESS_INFORMATION pi{};
   const BOOL ok =
       CreateProcessW(exe, buf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi);

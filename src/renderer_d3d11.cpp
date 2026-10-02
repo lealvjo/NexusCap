@@ -313,6 +313,7 @@ struct RendererD3D11::Impl {
   int toast_h = 0;
   DWORD toast_last_tick = 0;
   ComPtr<ID3D11Texture2D> noticeTex;
+  ComPtr<ID3D11Texture2D> lastPresented;
   ComPtr<ID3D11ShaderResourceView> noticeSrv;
   int notice_w = 0;
   int notice_h = 0;
@@ -808,12 +809,121 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
     impl_->ctx->RSSetViewports(1, &full);
     ui_draw_(ui_draw_user_);
   }
+  const bool want_hold = hold_arm_ || (hold_probe_ && hold_probe_(hold_probe_user_));
+  hold_arm_ = false;
+  if (want_hold) {
+    hold_snapshot_ = snapshot_hold_backbuffer();
+  } else {
+    // Clique que não reinicia não pode deixar a foto velha para o próximo restart.
+    hold_snapshot_ = false;
+  }
+
+  (void)retain_presented_frame();
 
   const UINT interval = (overlay.fg_on || vsync_) ? present_interval_ : 0u;
   silence_reshade_home_splash();
   impl_->swap->Present(interval, 0);
   present_ms = clk.now_ms() - t0;
   (void)err;
+  return true;
+}
+
+bool RendererD3D11::retain_presented_frame() {
+  if (!impl_ || !impl_->swap || !impl_->ctx || !impl_->device) return false;
+  ComPtr<ID3D11Texture2D> back;
+  if (FAILED(impl_->swap->GetBuffer(0, IID_PPV_ARGS(&back))) || !back) return false;
+  D3D11_TEXTURE2D_DESC desc{};
+  back->GetDesc(&desc);
+  if (desc.Width < 2 || desc.Height < 2) return false;
+  D3D11_TEXTURE2D_DESC keep = desc;
+  keep.MipLevels = 1;
+  keep.ArraySize = 1;
+  keep.SampleDesc.Count = 1;
+  keep.SampleDesc.Quality = 0;
+  keep.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  keep.MiscFlags = 0;
+  keep.CPUAccessFlags = 0;
+  keep.Usage = D3D11_USAGE_DEFAULT;
+  if (!impl_->lastPresented) {
+    if (FAILED(impl_->device->CreateTexture2D(&keep, nullptr, &impl_->lastPresented)) || !impl_->lastPresented) {
+      return false;
+    }
+  }
+  impl_->ctx->CopyResource(impl_->lastPresented.Get(), back.Get());
+  return true;
+}
+
+bool RendererD3D11::snapshot_hold_from_last_presented() {
+  if (!impl_ || !impl_->lastPresented) return false;
+  hold_snapshot_ = write_hold_bmp(impl_->lastPresented.Get());
+  return hold_snapshot_;
+}
+
+bool RendererD3D11::snapshot_hold_backbuffer() {
+  if (!impl_ || !impl_->swap || !impl_->ctx || !impl_->device) return false;
+  ComPtr<ID3D11Texture2D> back;
+  if (FAILED(impl_->swap->GetBuffer(0, IID_PPV_ARGS(&back))) || !back) return false;
+  return write_hold_bmp(back.Get());
+}
+
+bool RendererD3D11::write_hold_bmp(ID3D11Texture2D* src) {
+  if (!impl_ || !impl_->ctx || !impl_->device || !src) return false;
+  D3D11_TEXTURE2D_DESC desc{};
+  src->GetDesc(&desc);
+  if (desc.Width < 2 || desc.Height < 2) return false;
+  D3D11_TEXTURE2D_DESC st = desc;
+  st.MipLevels = 1;
+  st.ArraySize = 1;
+  st.SampleDesc.Count = 1;
+  st.SampleDesc.Quality = 0;
+  st.BindFlags = 0;
+  st.MiscFlags = 0;
+  st.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  st.Usage = D3D11_USAGE_STAGING;
+  ComPtr<ID3D11Texture2D> stage;
+  if (FAILED(impl_->device->CreateTexture2D(&st, nullptr, &stage)) || !stage) return false;
+  impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+  impl_->ctx->CopyResource(stage.Get(), src);
+  D3D11_MAPPED_SUBRESOURCE mapped{};
+  if (FAILED(impl_->ctx->Map(stage.Get(), 0, D3D11_MAP_READ, 0, &mapped)) || !mapped.pData) return false;
+  const int w = static_cast<int>(desc.Width);
+  const int h = static_cast<int>(desc.Height);
+  const int pitch = static_cast<int>(mapped.RowPitch);
+  const std::size_t stride = static_cast<std::size_t>(w) * 4u;
+  if (pitch < static_cast<int>(stride)) {
+    impl_->ctx->Unmap(stage.Get(), 0);
+    return false;
+  }
+  BITMAPINFOHEADER bi{};
+  bi.biSize = sizeof(bi);
+  bi.biWidth = w;
+  bi.biHeight = -h;
+  bi.biPlanes = 1;
+  bi.biBitCount = 32;
+  bi.biCompression = BI_RGB;
+  std::vector<std::uint8_t> bits(stride * static_cast<std::size_t>(h));
+  const auto* rows = static_cast<const std::uint8_t*>(mapped.pData);
+  for (int y = 0; y < h; ++y) {
+    std::memcpy(bits.data() + static_cast<std::size_t>(y) * stride, rows + static_cast<std::size_t>(y) * pitch,
+                stride);
+  }
+  impl_->ctx->Unmap(stage.Get(), 0);
+  BITMAPFILEHEADER fh{};
+  fh.bfType = 0x4D42;
+  fh.bfOffBits = static_cast<DWORD>(sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER));
+  fh.bfSize = fh.bfOffBits + static_cast<DWORD>(bits.size());
+  const std::string utf8 = motor_hold_bmp_path();
+  int nw = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+  if (nw <= 0) return false;
+  std::wstring path(static_cast<std::size_t>(nw), 0);
+  MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, path.data(), nw);
+  if (!path.empty() && path.back() == 0) path.pop_back();
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, path.c_str(), L"wb") != 0 || !f) return false;
+  fwrite(&fh, sizeof(fh), 1, f);
+  fwrite(&bi, sizeof(bi), 1, f);
+  fwrite(bits.data(), 1, bits.size(), f);
+  fclose(f);
   return true;
 }
 
@@ -828,7 +938,6 @@ void RendererD3D11::present_black() {
 
 void RendererD3D11::release_flip_for_cover() {
   if (!hwnd_) return;
-  SetCursor(LoadCursorW(nullptr, IDC_ARROW));
   const LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
   SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex | WS_EX_LAYERED);
   SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
@@ -845,9 +954,17 @@ void RendererD3D11::release_flip_for_cover() {
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
-    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     Sleep(1);
   }
+}
+
+void RendererD3D11::restore_flip_after_cover() {
+  if (!hwnd_) return;
+  const LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
+  if ((ex & WS_EX_LAYERED) == 0) return;
+  SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex & ~static_cast<LONG_PTR>(WS_EX_LAYERED));
+  SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 }
 
 namespace {
@@ -2331,10 +2448,6 @@ LRESULT CALLBACK RestartNotice::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
   }
   auto* self = reinterpret_cast<RestartNotice*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
   if (msg == WM_ERASEBKGND) return 1;
-  if (msg == WM_SETCURSOR) {
-    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
-    return TRUE;
-  }
   if (msg == WM_PAINT && self) {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(hwnd, &ps);

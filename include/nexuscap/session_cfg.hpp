@@ -119,6 +119,9 @@ public:
   bool fg_can_enable = true;
   bool presets_locked = false;  // Benchmark / --perf-test
   SessionCfgActions take_actions();
+  // Cinematic / X / escala: o clique já marcou restart antes do Present.
+  bool restart_visual_pending() const;
+  static bool restart_visual_pending_trampoline(void* user);
 
   // Vértices do último desenho — usado pelo --selftest-cfg.
   int last_vertex_count() const { return last_vtx_; }

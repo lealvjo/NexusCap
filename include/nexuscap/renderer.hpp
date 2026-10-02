@@ -208,6 +208,20 @@ public:
     ui_draw_ = fn;
     ui_draw_user_ = user;
   }
+  // O menu (Cinematic, X, escala) pede restart no meio do desenho. A foto tem de ser
+  // o backbuffer, porque o BitBlt do FLIP pega o que está atrás e a imagem pisca.
+  using HoldProbeFn = bool (*)(void* user);
+  void set_hold_probe(HoldProbeFn fn, void* user) {
+    hold_probe_ = fn;
+    hold_probe_user_ = user;
+  }
+  bool took_hold_snapshot() const { return hold_snapshot_; }
+  void clear_hold_snapshot() { hold_snapshot_ = false; }
+  // Atalho marca o restart antes do Present. Sem isto a capa não tem o frame e pisca.
+  void arm_hold_snapshot() { hold_arm_ = true; }
+  bool hold_snapshot_armed() const { return hold_arm_; }
+  // Frame já apresentado, antes do atalho gravar o INI. Não apresenta outro.
+  bool snapshot_hold_from_last_presented();
   // Espaco/intervalo reais no decode NV12 (mesmo contrato do preview CPU).
   void set_color_format(int space, int range);
   int color_space() const { return color_space_; }
@@ -219,6 +233,8 @@ public:
   // A capa GDI já está por cima, mas o FLIP ainda manda na tela. Sem esperar a GPU:
   // WaitForVBlank no fio do menu deixava o mouse em loading no 2x.
   void release_flip_for_cover();
+  // Tira o WS_EX_LAYERED para o FLIP voltar a mandar na tela quando a capa sai.
+  void restore_flip_after_cover();
   // Same HWND: destroi e cria a swapchain para o ReShade reler o INI sem fechar a janela.
   bool recycle_swapchain();
   uint32_t swapchain_flags() const { return swap_flags_; }
@@ -229,6 +245,9 @@ private:
   bool create_color_rt(int w, int h, std::string& err);
   bool create_pipeline(std::string& err);
   bool create_blit_pipeline(std::string& err);
+  bool snapshot_hold_backbuffer();
+  bool retain_presented_frame();
+  bool write_hold_bmp(ID3D11Texture2D* src);
   void burn_mini_overlay(const OverlayState& overlay);
   void burn_live_overlay(const OverlayState& overlay);
   void burn_panel_overlay(const OverlayState& overlay);
@@ -256,6 +275,10 @@ private:
   int color_range_ = 0;
   UiDrawFn ui_draw_ = nullptr;
   void* ui_draw_user_ = nullptr;
+  HoldProbeFn hold_probe_ = nullptr;
+  void* hold_probe_user_ = nullptr;
+  bool hold_snapshot_ = false;
+  bool hold_arm_ = false;
   IFrameEnhance* enhance_ = nullptr;
   struct Impl;
   Impl* impl_ = nullptr;

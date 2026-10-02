@@ -110,12 +110,6 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (cw > 0 && ch > 0) g_session_renderer->resize(cw, ch);
       }
       return 0;
-    case WM_SETCURSOR:
-      if (g_restart_notice.visible()) {
-        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
-        return TRUE;
-      }
-      break;
     case WM_ERASEBKGND: {
       // Com o frame congelado por cima, apagar de preto vaza um flash só na imagem.
       if (g_restart_notice.visible()) return 1;
@@ -441,8 +435,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   // O cover já segura o último frame. Um Present preto aqui vira o flash da troca de X.
   if (!(hold_boot && g_restart_notice.has_hold_image())) {
     renderer.present_black();  // Benchmark/sessao: sem clarão branco no primeiro Present
+  } else {
+    // Janela nova em FLIP furava a capa e mostrava o frame de FPS 0 com o menu pela metade.
+    renderer.release_flip_for_cover();
   }
-  if (window_source && hwnd) {
+  if (window_source && hwnd && !(hold_boot && g_restart_notice.has_hold_image())) {
     ShowWindow(hwnd, g_session_fullscreen ? SW_SHOW : SW_SHOWMAXIMIZED);
     UpdateWindow(hwnd);
     if (g_restart_notice.visible()) g_restart_notice.pump();
@@ -911,6 +908,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   if (cfg_ui_ready) {
     g_session_cfg = &cfg_ui;
     renderer.set_ui_draw_callback(&SessionCfgOverlay::draw_trampoline, &cfg_ui);
+    renderer.set_hold_probe(&SessionCfgOverlay::restart_visual_pending_trampoline, &cfg_ui);
     std::printf("session cfg: Ctrl+%s abre o menu na captura\n", vk_display_name(cfg.hotkeys.vk_cfg));
   } else {
     std::fprintf(stderr, "session cfg: ImGui nao inicializou — menu na captura indisponivel\n");
@@ -980,6 +978,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   double shown_fps = 0;
   double shown_ft = 0;
   uint64_t presented = 0;
+  int hold_live_frames = 0;
   double perf_t0 = 0;
   double perf_hold_t0 = 0;
   double perf_nr_ready_t0 = 0;
@@ -1574,9 +1573,17 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
 
     const FramePayload& present_src =
         holding ? (last_good_ok ? last_good : hold_black) : (file_repeat ? file_last : frame);
-    if (!renderer.present_frame(present_src, overlay, present_ms, err)) {
-      bug_exc("present", err);
-      if (perf_rep.active()) perf_rep.note_event(now, "present_error", err.c_str());
+    // Delete / Ctrl+/- gravam o INI antes deste Present. A foto é o frame anterior.
+    // Apresentar de novo já mostra o DLSS 5 mudando e pisca.
+    if (cfg_restart_pending && !renderer.took_hold_snapshot() &&
+        !renderer.snapshot_hold_from_last_presented()) {
+      renderer.arm_hold_snapshot();
+    }
+    if (!cfg_restart_pending || renderer.hold_snapshot_armed()) {
+      if (!renderer.present_frame(present_src, overlay, present_ms, err)) {
+        bug_exc("present", err);
+        if (perf_rep.active()) perf_rep.note_event(now, "present_error", err.c_str());
+      }
     }
     if (g_hdmi_notice.visible()) g_hdmi_notice.destroy();
     if (!overlay.hdmi_hold_notice) hdmi_hold_logged = false;
@@ -1942,7 +1949,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     // 8.5 só lê o X no init: GDI segura o último frame (sem GPU); o processo novo é o motor.
     if (cfg_restart_pending && now >= cfg_restart_until) {
       if (cfg_ui.open() || g_cfg_open.load()) cfg.open_session_cfg = true;
-      (void)save_motor_hold_from_hwnd(hwnd);
+      if (!renderer.took_hold_snapshot()) (void)save_motor_hold_from_hwnd(hwnd);
+      renderer.clear_hold_snapshot();
       g_restart_notice.show(hi, session_restart_notice_title(),
                             session_restart_notice_detail(cfg_restart_kind));
       if (g_restart_notice.visible()) renderer.release_flip_for_cover();
@@ -1974,25 +1982,33 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       window_boot_tick = 0;
     }
     if (g_restart_notice.visible() && !cfg.perf_test && have_new && !holding) {
-      if (restart_boot_tick != 0) {
-        char line[160];
-        std::snprintf(line, sizeof(line), "restart boot: imagem ao vivo em %ums",
-                      static_cast<unsigned>(GetTickCount() - restart_boot_tick));
-        note_restart_boot(line);
-        restart_boot_tick = 0;
-      }
-      if (hold_boot) {
-        ShowWindow(hwnd, g_session_fullscreen ? SW_SHOW : SW_SHOWMAXIMIZED);
-        MSG reveal{};
-        while (PeekMessageW(&reveal, hwnd, 0, 0, PM_REMOVE)) {
-          TranslateMessage(&reveal);
-          DispatchMessageW(&reveal);
+      if (hold_boot) ++hold_live_frames;
+      // Soltar no 1º frame mostra FPS 0 e o menu do Ctrl+M ainda sem as abas.
+      if (motor_hold_ready_to_show(hold_boot, hold_live_frames)) {
+        if (restart_boot_tick != 0) {
+          char line[160];
+          std::snprintf(line, sizeof(line), "restart boot: imagem ao vivo em %ums",
+                        static_cast<unsigned>(GetTickCount() - restart_boot_tick));
+          note_restart_boot(line);
+          restart_boot_tick = 0;
         }
+        if (hold_boot) {
+          renderer.restore_flip_after_cover();
+          ShowWindow(hwnd, g_session_fullscreen ? SW_SHOW : SW_SHOWMAXIMIZED);
+          MSG reveal{};
+          while (PeekMessageW(&reveal, hwnd, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&reveal);
+            DispatchMessageW(&reveal);
+          }
+        }
+        g_restart_notice.destroy();
+        clear_motor_hold_files();
+      } else {
+        g_restart_notice.pump();
       }
-      g_restart_notice.destroy();
-      clear_motor_hold_files();
     }
     if ((fg_arm_pending || profile_pending || audio_start_pending) && presented >= 1 &&
+        !(hold_boot && g_restart_notice.visible()) &&
         ((have_new && !holding) || presented >= 5)) {
       if (fg_arm_pending) {
         fg_arm_pending = false;
@@ -2272,6 +2288,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   hud.destroy();
   g_session_cfg = nullptr;
   renderer.set_ui_draw_callback(nullptr, nullptr);
+  renderer.set_hold_probe(nullptr, nullptr);
   cfg_ui.shutdown();
   g_cfg_open = false;
   g_hdmi_notice.destroy();
@@ -2424,7 +2441,7 @@ int main(int argc, char** argv) {
   fs::path base = fs::path(exe_path).parent_path();
   // Logs: AppData no setup; pasta do exe no portable.
   cfg.log_dir = nexuscap::app_logs_dir();
-  // Reinício pedido pelo CFG: o aviso reaparece aqui e só sai no primeiro frame da sessão.
+  // Reinício pedido pelo CFG: o aviso reaparece aqui e só sai depois que a imagem assenta.
   if (cfg.perf_test) {
     g_restart_notice.show(GetModuleHandleW(nullptr), nexuscap::perf_test_pipeline_notice_title(),
                           nexuscap::perf_test_pipeline_notice_detail());

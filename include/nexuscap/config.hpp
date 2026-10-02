@@ -663,6 +663,12 @@ enum class WindowBootCover { None, HoldFrame };
 inline WindowBootCover window_boot_cover(bool hold_boot) {
   return hold_boot ? WindowBootCover::HoldFrame : WindowBootCover::None;
 }
+// O primeiro frame ao vivo nasce com FPS 0 e o menu do Ctrl+M ainda sem as abas.
+// A capa fica esses frames; soltar antes disso e o corte aparece na imagem.
+inline constexpr int kMotorHoldSettleFrames = 8;
+inline bool motor_hold_ready_to_show(bool hold_boot, int live_frames) {
+  return !hold_boot || live_frames >= kMotorHoldSettleFrames;
+}
 inline std::string session_restart_notice_detail(SessionCfgApply a) {
   switch (a) {
     case SessionCfgApply::RecycleWorker:

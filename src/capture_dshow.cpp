@@ -143,6 +143,66 @@ private:
   std::atomic<ULONG> ref_{1};
 };
 
+double fps_from_avg_time(REFERENCE_TIME t) {
+  if (t <= 0) return 0;
+  return 10000000.0 / static_cast<double>(t);
+}
+
+struct CapFormat {
+  int w = 0;
+  int h = 0;
+  double fps = 0;
+  double lo = 0;
+  double hi = 0;
+};
+
+bool read_stream_format(const AM_MEDIA_TYPE* mt, const BYTE* caps, int caps_size, CapFormat& out) {
+  out = {};
+  if (!mt || !mt->pbFormat) return false;
+  if (mt->formattype == FORMAT_VideoInfo && mt->cbFormat >= sizeof(VIDEOINFOHEADER)) {
+    auto* vih = reinterpret_cast<const VIDEOINFOHEADER*>(mt->pbFormat);
+    out.w = vih->bmiHeader.biWidth;
+    out.h = std::abs(vih->bmiHeader.biHeight);
+    out.fps = fps_from_avg_time(vih->AvgTimePerFrame);
+  } else if (mt->formattype == FORMAT_VideoInfo2 && mt->cbFormat >= sizeof(VIDEOINFOHEADER2)) {
+    auto* vih = reinterpret_cast<const VIDEOINFOHEADER2*>(mt->pbFormat);
+    out.w = vih->bmiHeader.biWidth;
+    out.h = std::abs(vih->bmiHeader.biHeight);
+    out.fps = fps_from_avg_time(vih->AvgTimePerFrame);
+  } else {
+    return false;
+  }
+  if (caps && caps_size >= static_cast<int>(sizeof(VIDEO_STREAM_CONFIG_CAPS))) {
+    const auto* sc = reinterpret_cast<const VIDEO_STREAM_CONFIG_CAPS*>(caps);
+    if (sc->MinFrameInterval > 0) out.hi = fps_from_avg_time(sc->MinFrameInterval);
+    if (sc->MaxFrameInterval > 0) out.lo = fps_from_avg_time(sc->MaxFrameInterval);
+    if (out.lo > 0.0 && out.hi > 0.0 && out.lo > out.hi) std::swap(out.lo, out.hi);
+  }
+  return out.w > 0 && out.h > 0;
+}
+
+void set_media_avg_frame(AM_MEDIA_TYPE* mt, double fps) {
+  if (!mt || !mt->pbFormat || !(fps > 1.0)) return;
+  const REFERENCE_TIME t = static_cast<REFERENCE_TIME>(10000000.0 / fps + 0.5);
+  if (mt->formattype == FORMAT_VideoInfo && mt->cbFormat >= sizeof(VIDEOINFOHEADER)) {
+    reinterpret_cast<VIDEOINFOHEADER*>(mt->pbFormat)->AvgTimePerFrame = t;
+  } else if (mt->formattype == FORMAT_VideoInfo2 && mt->cbFormat >= sizeof(VIDEOINFOHEADER2)) {
+    reinterpret_cast<VIDEOINFOHEADER2*>(mt->pbFormat)->AvgTimePerFrame = t;
+  }
+}
+
+void push_capture_mode(std::vector<CaptureMode>& out, int w, int h, double fps) {
+  if (w < 160 || h < 120 || !(fps >= 1.0)) return;
+  CaptureMode m;
+  m.width = w;
+  m.height = h;
+  m.fps = fps;
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%dx%d @ %.0f", w, h, fps);
+  m.label = buf;
+  out.push_back(m);
+}
+
 }  // namespace
 
 struct DShowCapture::Impl {
@@ -317,36 +377,45 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
     std::vector<BYTE> caps(static_cast<size_t>(size));
     bool set_ok = false;
     auto try_match_fourcc = [&](int fourcc) -> bool {
+      AM_MEDIA_TYPE* range_mt = nullptr;
       for (int i = 0; i < count; ++i) {
         AM_MEDIA_TYPE* pmt = nullptr;
         if (FAILED(cfg->GetStreamCaps(i, &pmt, caps.data())) || !pmt) continue;
-        bool match = false;
-        if (pmt->formattype == FORMAT_VideoInfo && pmt->pbFormat) {
-          auto* vih = reinterpret_cast<VIDEOINFOHEADER*>(pmt->pbFormat);
-          const int w = vih->bmiHeader.biWidth;
-          const int h = std::abs(vih->bmiHeader.biHeight);
-          const double f = vih->AvgTimePerFrame > 0 ? 10000000.0 / static_cast<double>(vih->AvgTimePerFrame) : 0;
-          if (subtype_matches_fourcc(pmt->subtype, fourcc) && w == width && h == height &&
-              std::abs(f - fps) < 1.0)
-            match = true;
-        } else if (pmt->formattype == FORMAT_VideoInfo2 && pmt->pbFormat) {
-          auto* vih = reinterpret_cast<VIDEOINFOHEADER2*>(pmt->pbFormat);
-          const int w = vih->bmiHeader.biWidth;
-          const int h = std::abs(vih->bmiHeader.biHeight);
-          const double f = vih->AvgTimePerFrame > 0 ? 10000000.0 / static_cast<double>(vih->AvgTimePerFrame) : 0;
-          if (subtype_matches_fourcc(pmt->subtype, fourcc) && w == width && h == height &&
-              std::abs(f - fps) < 1.0)
-            match = true;
+        CapFormat fmt;
+        const bool parsed = read_stream_format(pmt, caps.data(), size, fmt);
+        const bool size_ok = parsed && subtype_matches_fourcc(pmt->subtype, fourcc) && fmt.w == width &&
+                             fmt.h == height;
+        const bool exact = size_ok && std::abs(fmt.fps - fps) < 1.0;
+        const bool in_range = size_ok && !exact &&
+                              capture_driver_interval_covers_fps(fmt.fps, fmt.lo, fmt.hi, fps);
+        if (exact) {
+          const bool ok = SUCCEEDED(cfg->SetFormat(pmt));
+          free_media_type(*pmt);
+          CoTaskMemFree(pmt);
+          if (range_mt) {
+            free_media_type(*range_mt);
+            CoTaskMemFree(range_mt);
+            range_mt = nullptr;
+          }
+          if (ok) return true;
+          continue;
         }
-        bool ok = false;
-        if (match) ok = SUCCEEDED(cfg->SetFormat(pmt));
+        if (in_range && !range_mt) {
+          range_mt = pmt;
+          continue;
+        }
         free_media_type(*pmt);
         CoTaskMemFree(pmt);
-        if (ok) return true;
       }
-      // I420: also try alternate GUID if primary pin scan used IYUV-only path above already covers both.
-      (void)primary_subtype_for(fourcc);
-      return false;
+      if (!range_mt) {
+        (void)primary_subtype_for(fourcc);
+        return false;
+      }
+      set_media_avg_frame(range_mt, fps);
+      const bool ok = SUCCEEDED(cfg->SetFormat(range_mt));
+      free_media_type(*range_mt);
+      CoTaskMemFree(range_mt);
+      return ok;
     };
     for (int fc : try_fourccs) {
       if (!try_match_fourcc(fc)) continue;
@@ -606,11 +675,6 @@ IMoniker* find_video_moniker(const std::string& device_name) {
   return found;
 }
 
-double fps_from_avg_time(REFERENCE_TIME t) {
-  if (t <= 0) return 0;
-  return 10000000.0 / static_cast<double>(t);
-}
-
 }  // namespace
 
 std::vector<CaptureMode> list_video_capture_modes(const std::string& device_name) {
@@ -651,44 +715,18 @@ std::vector<CaptureMode> list_video_capture_modes(const std::string& device_name
       for (int i = 0; i < count; ++i) {
         AM_MEDIA_TYPE* mt = nullptr;
         if (FAILED(cfg->GetStreamCaps(i, &mt, caps.data())) || !mt) continue;
-        int w = 0, h = 0;
-        double fps = 0;
-        if (mt->formattype == FORMAT_VideoInfo && mt->cbFormat >= sizeof(VIDEOINFOHEADER) && mt->pbFormat) {
-          auto* vih = reinterpret_cast<VIDEOINFOHEADER*>(mt->pbFormat);
-          w = vih->bmiHeader.biWidth;
-          h = std::abs(vih->bmiHeader.biHeight);
-          fps = fps_from_avg_time(vih->AvgTimePerFrame);
-        } else if (mt->formattype == FORMAT_VideoInfo2 && mt->cbFormat >= sizeof(VIDEOINFOHEADER2) &&
-                   mt->pbFormat) {
-          auto* vih = reinterpret_cast<VIDEOINFOHEADER2*>(mt->pbFormat);
-          w = vih->bmiHeader.biWidth;
-          h = std::abs(vih->bmiHeader.biHeight);
-          fps = fps_from_avg_time(vih->AvgTimePerFrame);
-        }
+        CapFormat fmt;
+        const bool ok = read_stream_format(mt, caps.data(), size, fmt);
         free_media_type(*mt);
         CoTaskMemFree(mt);
-        if (w < 160 || h < 120) continue;
-        if (fps < 1.0) fps = 60.0;
-        // Round common rates
-        if (fps > 59.0 && fps < 61.0) fps = 60.0;
-        else if (fps > 29.0 && fps < 31.0) fps = 30.0;
-        else if (fps > 119.0 && fps < 121.0) fps = 120.0;
-        else if (fps > 49.0 && fps < 51.0) fps = 50.0;
-        else fps = std::round(fps);
-
-        CaptureMode m;
-        m.width = w;
-        m.height = h;
-        m.fps = fps;
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "%dx%d @ %.0f", w, h, fps);
-        m.label = buf;
-        out.push_back(m);
+        if (!ok) continue;
+        std::vector<double> rates;
+        capture_fps_from_driver_interval(fmt.fps, fmt.lo, fmt.hi, rates);
+        for (double fps : rates) push_capture_mode(out, fmt.w, fmt.h, fps);
       }
     }
     cfg->Release();
     pin->Release();
-    break;  // first output pin with StreamConfig is enough
   }
   pins->Release();
   filter->Release();
@@ -749,31 +787,18 @@ std::vector<int> list_video_fourccs_for_mode(const std::string& device_name, int
       for (int i = 0; i < count; ++i) {
         AM_MEDIA_TYPE* mt = nullptr;
         if (FAILED(cfg->GetStreamCaps(i, &mt, caps.data())) || !mt) continue;
-        int w = 0, h = 0;
-        double f = 0;
-        if (mt->formattype == FORMAT_VideoInfo && mt->cbFormat >= sizeof(VIDEOINFOHEADER) && mt->pbFormat) {
-          auto* vih = reinterpret_cast<VIDEOINFOHEADER*>(mt->pbFormat);
-          w = vih->bmiHeader.biWidth;
-          h = std::abs(vih->bmiHeader.biHeight);
-          f = fps_from_avg_time(vih->AvgTimePerFrame);
-        } else if (mt->formattype == FORMAT_VideoInfo2 && mt->cbFormat >= sizeof(VIDEOINFOHEADER2) &&
-                   mt->pbFormat) {
-          auto* vih = reinterpret_cast<VIDEOINFOHEADER2*>(mt->pbFormat);
-          w = vih->bmiHeader.biWidth;
-          h = std::abs(vih->bmiHeader.biHeight);
-          f = fps_from_avg_time(vih->AvgTimePerFrame);
-        }
+        CapFormat fmt;
+        const bool parsed = read_stream_format(mt, caps.data(), size, fmt);
         const int fc = fourcc_from_subtype(mt->subtype);
         free_media_type(*mt);
         CoTaskMemFree(mt);
-        if (fc < 0 || w != width || h != height) continue;
-        if (std::abs(f - fps) > 1.5 && !(fps > 59 && fps < 61 && f > 59 && f < 61)) continue;
+        if (!parsed || fc < 0 || fmt.w != width || fmt.h != height) continue;
+        if (!capture_driver_interval_covers_fps(fmt.fps, fmt.lo, fmt.hi, fps)) continue;
         if (std::find(out.begin(), out.end(), fc) == out.end()) out.push_back(fc);
       }
     }
     cfg->Release();
     pin->Release();
-    break;
   }
   pins->Release();
   filter->Release();

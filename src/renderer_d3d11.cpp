@@ -2176,10 +2176,11 @@ void RestartNotice::load_hold_bmp() {
   }
 }
 
-bool RestartNotice::show(HINSTANCE hi, const std::string& title, const std::string& detail) {
+bool RestartNotice::show(HINSTANCE hi, const std::string& title, const std::string& detail, bool use_hold_image) {
   title_ = utf8_to_wide_hud(title);
   detail_ = utf8_to_wide_hud(detail);
-  load_hold_bmp();
+  if (use_hold_image) load_hold_bmp();
+  else release_hold_bmp();
   if (hwnd_) {
     InvalidateRect(hwnd_, nullptr, FALSE);
     pump();

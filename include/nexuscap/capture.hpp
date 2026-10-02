@@ -33,6 +33,8 @@ struct CaptureStartOptions {
   bool hold_playhead = false;
   // Janela: HWND escolhida no picker. 0 = achar pelo titulo.
   uint64_t hwnd = 0;
+  // Janela: a thread sobe e o Present segue preto. O StartCapture não trava a sessão.
+  bool async_open = false;
   // USB E_FAIL: um recover interno (settle + NV12, buffering off). Evita recurse infinito.
   bool skip_dshow_recover = false;
 };
@@ -198,6 +200,9 @@ public:
   virtual size_t last_sample_bytes() const { return 0; }
   virtual uint64_t rejected_samples() const { return 0; }
   virtual bool finished() const { return false; }
+  // WGC async: a sessão pinta preto até o worker abrir. Erro chega depois, sem travar o Present.
+  virtual bool startup_pending() const { return false; }
+  virtual bool take_startup_error(std::string& /*err*/) { return false; }
   virtual void rebase_playhead(double /*t0_ms*/) {}
 };
 
@@ -433,6 +438,8 @@ public:
   int opened_width() const override { return width_.load(std::memory_order_relaxed); }
   int opened_height() const override { return height_.load(std::memory_order_relaxed); }
   int opened_fourcc() const override { return static_cast<int>(VideoFourcc::Nv12); }
+  bool startup_pending() const override;
+  bool take_startup_error(std::string& err) override;
 
 private:
   struct Impl;
@@ -502,6 +509,36 @@ inline std::string session_capture_fail_notice(const std::string& raw) {
   return std::string(session_capture_fail_title()) + " — " + session_capture_fail_detail(raw);
 }
 
+// WGC TimeSpan é 100 ns. 10000 (1 ms) pede ~1000 fps e trava o Present do jogo:
+// o mouse fica na rodinha e o áudio corta. Um frame do fps da sessão, como a placa.
+inline int64_t wgc_min_update_ticks(double fps) {
+  if (fps < 1.0) fps = 60.0;
+  if (fps > 240.0) fps = 240.0;
+  int64_t n = static_cast<int64_t>(10000000.0 / fps + 0.5);
+  if (n < 41667) n = 41667;
+  if (n > 10000000) n = 10000000;
+  return n;
+}
+
+// Spike da janela: tempos do aviso até o primeiro frame. O HDMI não escreve aqui.
+void note_window_boot_line(const char* msg);
+
+// HDMI só no reinício com hold. Janela abre a tela preta primeiro; o WGC entra depois.
+inline bool session_overlaps_capture_with_renderer(bool window_source, bool hold_boot, bool synthetic,
+                                                  bool smoke) {
+  if (synthetic || smoke || window_source) return false;
+  return hold_boot;
+}
+
+// Vão entre chegadas da captura. O Present (DLSS ligado ou não) não entra.
+// O número da barra não é a média desses vãos: um tick pulado puxaria o fps para baixo.
+// 0 = sem amostra nova (primeiro quadro, hold ou repeat).
+inline double overlay_capture_interval_ms(double cap_t, double last_cap_t, bool holding, bool repeating) {
+  if (holding || repeating) return 0;
+  if (!(last_cap_t > 0.0) || !(cap_t > last_cap_t)) return 0;
+  return cap_t - last_cap_t;
+}
+
 // After MediaControl::Run, wait for first BufferCB. 4K/MJPEG needs more than 1080p.
 inline int capture_first_frame_wait_ms(int width = 1920, int height = 1080) {
   const long long px = static_cast<long long>((std::max)(1, width)) * static_cast<long long>((std::max)(1, height));
@@ -517,6 +554,67 @@ inline bool capture_mode_prefers_nv12(int width, int height) {
   return static_cast<long long>(width) * height >= 3840LL * 2160LL;
 }
 
+// NV12 entra sempre que essa resolucao e esse Hz publicam NV12, em qualquer troca.
+// Sem NV12 na lista, fica o formato que a placa aceita.
+inline int capture_format_for_mode(int /*width*/, int /*height*/, int saved, const std::vector<int>& accepted) {
+  if (accepted.empty()) return clamp_video_fourcc(saved);
+  if (video_fourcc_in_list(static_cast<int>(VideoFourcc::Nv12), accepted))
+    return static_cast<int>(VideoFourcc::Nv12);
+  return resolve_video_fourcc_for_device(saved, accepted);
+}
+
+// 59.94 vira 60. Uma taxa fora dessas faixas continua o valor arredondado (90 fica 90).
+inline double round_capture_fps(double fps) {
+  if (!(fps > 1.0) || fps > 1000.0) return 0;
+  if (fps > 23.5 && fps < 24.5) return 24.0;
+  if (fps > 24.5 && fps < 25.5) return 25.0;
+  if (fps > 29.0 && fps < 31.0) return 30.0;
+  if (fps > 49.0 && fps < 51.0) return 50.0;
+  if (fps > 59.0 && fps < 61.0) return 60.0;
+  if (fps > 119.0 && fps < 121.0) return 120.0;
+  if (fps > 143.0 && fps < 145.0) return 144.0;
+  if (fps > 239.0 && fps < 241.0) return 240.0;
+  return std::round(fps);
+}
+
+// Taxas de um unico cap. fps_lo e a mais lenta, fps_hi a mais rapida (0 = a placa nao
+// publicou intervalo). Intervalo travado (120..120) nao ganha 60. Um minimo de 5 fps
+// nao apaga o intervalo: 5..120 ainda inclui 60. O 5 em si nao entra no menu.
+inline void capture_fps_from_driver_interval(double nominal, double fps_lo, double fps_hi,
+                                            std::vector<double>& out) {
+  auto push = [&](double f) {
+    f = round_capture_fps(f);
+    if (!(f >= 10.0) || f > 480.0) return;
+    for (double e : out) {
+      if (std::abs(e - f) < 0.5) return;
+    }
+    out.push_back(f);
+  };
+  push(nominal);
+  if (!(fps_lo > 1.0) || !(fps_hi > 1.0)) return;
+  if (fps_lo > fps_hi) std::swap(fps_lo, fps_hi);
+  if (fps_hi > 480.0 || fps_hi <= fps_lo + 0.5) return;
+  push(fps_lo);
+  push(fps_hi);
+  static const double kInside[] = {24.0, 25.0, 30.0, 50.0, 60.0, 120.0, 144.0, 240.0};
+  for (double step : kInside) {
+    if (step + 0.51 < fps_lo || step - 0.51 > fps_hi) continue;
+    push(step);
+  }
+}
+
+inline bool capture_driver_interval_covers_fps(double nominal, double fps_lo, double fps_hi,
+                                              double requested) {
+  if (!(requested >= 1.0)) return false;
+  std::vector<double> rates;
+  capture_fps_from_driver_interval(nominal, fps_lo, fps_hi, rates);
+  const double want = round_capture_fps(requested);
+  for (double r : rates) {
+    if (std::abs(r - want) < 1.0) return true;
+  }
+  return false;
+}
+
 std::vector<std::string> list_video_capture_devices();
 
 struct CaptureMode {
@@ -525,6 +623,60 @@ struct CaptureMode {
   double fps = 0;
   std::string label;
 };
+
+// Resolucoes unicas, na ordem da lista (pixels desc). O Hz fica num segundo menu.
+inline void capture_unique_resolutions(const std::vector<CaptureMode>& modes, std::vector<int>& widths,
+                                       std::vector<int>& heights) {
+  widths.clear();
+  heights.clear();
+  for (const auto& m : modes) {
+    if (m.width <= 0 || m.height <= 0) continue;
+    bool seen = false;
+    for (size_t i = 0; i < widths.size(); ++i) {
+      if (widths[i] == m.width && heights[i] == m.height) {
+        seen = true;
+        break;
+      }
+    }
+    if (seen) continue;
+    widths.push_back(m.width);
+    heights.push_back(m.height);
+  }
+}
+
+// Hz que essa resolucao publicou, do maior para o menor.
+inline void capture_hz_for_resolution(const std::vector<CaptureMode>& modes, int width, int height,
+                                     std::vector<double>& hz) {
+  hz.clear();
+  for (const auto& m : modes) {
+    if (m.width != width || m.height != height || !(m.fps >= 1.0)) continue;
+    bool seen = false;
+    for (double e : hz) {
+      if (std::abs(e - m.fps) < 0.5) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) hz.push_back(m.fps);
+  }
+  std::sort(hz.begin(), hz.end(), [](double a, double b) { return a > b; });
+}
+
+// Indice exato (meio Hz) ou o mais perto. Lista vazia devolve 0.
+inline int capture_hz_index_for_fps(const std::vector<double>& hz, double want) {
+  if (hz.empty()) return 0;
+  int best = 0;
+  double best_d = 1e9;
+  for (int i = 0; i < static_cast<int>(hz.size()); ++i) {
+    const double d = std::abs(hz[static_cast<size_t>(i)] - want);
+    if (d < 0.5) return i;
+    if (d < best_d) {
+      best_d = d;
+      best = i;
+    }
+  }
+  return best;
+}
 
 std::vector<CaptureMode> list_video_capture_modes(const std::string& device_name);
 

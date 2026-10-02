@@ -646,6 +646,18 @@ inline SessionCfgApply plan_session_cfg_nr_apply(bool renodx_stack, bool multipa
 inline std::string session_restart_notice_title() { return "A aplicar o motor"; }
 inline std::string lobby_pipeline_hold_title() { return session_restart_notice_title(); }
 inline std::string lobby_iniciar_hold_title() { return "Otimizando pipeline"; }
+
+// Janela: o Iniciar solta o device do lobby antes do filho criar o dele. HDMI deixa o device vivo.
+inline bool lobby_relaunch_releases_device_before_spawn(bool window_source) { return window_source; }
+
+// Cartão "Otimizando pipeline" no Iniciar. A janela entra direto; o HDMI do lobby ainda mostra.
+inline bool lobby_iniciar_shows_pipeline_card(bool window_source) { return !window_source; }
+
+// Capa do boot da janela. Primeiro Iniciar não pinta cartão. Troca de X/preset/NR segura o frame salvo.
+enum class WindowBootCover { None, HoldFrame };
+inline WindowBootCover window_boot_cover(bool hold_boot) {
+  return hold_boot ? WindowBootCover::HoldFrame : WindowBootCover::None;
+}
 inline std::string session_restart_notice_detail(SessionCfgApply a) {
   switch (a) {
     case SessionCfgApply::RecycleWorker:

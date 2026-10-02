@@ -556,6 +556,27 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   }
   (void)console_flag;
 
+  // Pass Count na frente. O "Fixo xN" do FG mora na linha de FPS; o X do motor
+  // ficava depois da resolução e o gráfico cortava.
+  {
+    char nr_part[96]{};
+    const char* preset = (renodx_preset && renodx_preset[0]) ? renodx_preset : "";
+    const char* pass = nr_pass_count_label(nr_pass_count);
+    const char* motor = nr_dlss5_motor_name(nr_pass_count);
+    const char* state = dlss5_overlay_state_word(dlss5_on);
+    if (dlss5_on && preset[0] && dlss_ms > 0.01) {
+      std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s %s NR/%s %.1fms", state, pass, preset, dlss_ms);
+    } else if (dlss5_on && preset[0]) {
+      std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s %s Feed·%s NR/%s", state, pass, motor, preset);
+    } else if (dlss5_on && dlss_ms > 0.01) {
+      std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s %s NR %.1fms", state, pass, dlss_ms);
+    } else {
+      std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s %s Feed·%s", state, pass, motor);
+    }
+    push(nr_part, dlss5_on ? 180 : 140, dlss5_on ? 160 : 150, dlss5_on ? 255 : 170);
+    push_sep();
+  }
+
   HudFpsParts fps_parts{};
   fill_session_hud_fps_parts(fps_parts, fps_cap, fps_fg_est, fg_on, fg_mult, true, ft_stable, fg_adaptive,
                             fg_target, fg_flow_scale);
@@ -574,8 +595,7 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
     push(fila, 120, 255, 200);
   }
 
-  // Signal → DLSS5 work → output. Kept right after FPS: it used to sit after the counters
-  // and fell off the right edge of the bar, so the scale looked like it never changed.
+  // Resolução logo depois do FPS: antes ficava no fim e o gráfico cortava a escala.
   char res_part[96]{};
   if (capture_w > 0 && capture_h > 0) {
     const int ww = work_w > 0 ? work_w : capture_w;
@@ -592,22 +612,6 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
   }
   push_sep();
   push(res_part[0] ? res_part : "-", 120, 220, 255);
-
-  push_sep();
-  char nr_part[64]{};
-  const char* preset = (renodx_preset && renodx_preset[0]) ? renodx_preset : "";
-  const char* pass = nr_pass_count_short(nr_pass_count);
-  const char* motor = nr_dlss5_motor_name(nr_pass_count);
-  if (dlss5_on && preset[0] && dlss_ms > 0.01) {
-    std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s NR/%s %.1fms", pass, preset, dlss_ms);
-  } else if (dlss5_on && preset[0]) {
-    std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s Feed·%s NR/%s", pass, motor, preset);
-  } else if (dlss5_on && dlss_ms > 0.01) {
-    std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s NR %.1fms", pass, dlss_ms);
-  } else {
-    std::snprintf(nr_part, sizeof(nr_part), "DLSS5 %s Feed·%s NR %s", pass, motor, dlss5_on ? "ON" : "off");
-  }
-  push(nr_part, dlss5_on ? 180 : 140, dlss5_on ? 160 : 150, dlss5_on ? 255 : 170);
 
   push_sep();
   if (sync_image) {

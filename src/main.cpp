@@ -66,6 +66,17 @@ std::atomic<bool> g_cfg_open{false};
 nexuscap::SessionCfgOverlay* g_session_cfg = nullptr;
 // Global de propósito: tem de continuar na tela depois do run_app, até o ExitProcess do relaunch.
 nexuscap::RestartNotice g_restart_notice;
+
+void note_restart_boot(const char* msg) {
+  std::printf("%s\n", msg);
+  OutputDebugStringA(msg);
+  OutputDebugStringA("\n");
+  const std::string dir = nexuscap::app_logs_dir();
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  std::ofstream out(dir + "\\restart_boot.txt", std::ios::app);
+  if (out) out << msg << "\n";
+}
 nexuscap::RestartNotice g_hdmi_notice;
 std::atomic<bool> g_return_to_lobby{false};
 std::atomic<bool> g_session_exiting{false};
@@ -317,7 +328,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     return w;
   }();
   const bool hold_boot = cfg.autostart && motor_hold_image_exists();
-  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, session_title.c_str(), hold_boot);
+  const bool synthetic_capture = cfg.fake_capture || cfg.perf_test;
+  const bool window_source =
+      capture_source_is_window(cfg.capture_source) && !synthetic_capture && !cfg.fake_capture;
+  // Janela nasce escondida: o primeiro Present não estoura branco. Sem cartão de pipeline.
+  HWND hwnd = create_app_window(hi, cap_w, cap_h, g_session_fullscreen, session_title.c_str(),
+                                hold_boot || window_source);
   if (!hwnd) {
     std::fprintf(stderr, "create window failed\n");
     return 1;
@@ -333,7 +349,59 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   int bh = rc.bottom - rc.top;
   if (bw <= 0) bw = cap_w;
   if (bh <= 0) bh = cap_h;
+
+  // Restart: a placa abre antes do ReShade. O grafo entrega o frame enquanto o motor sobe.
+  FrameSlot slot;
+  std::unique_ptr<CaptureBase> capture;
+  CaptureStartOptions cap_opt;
+  cap_opt.width = cap_w;
+  cap_opt.height = cap_h;
+  cap_opt.fps = cfg.fps;
+  cap_opt.video_fourcc = cfg.video_fourcc;
+  cap_opt.color_space = cfg.color_space;
+  cap_opt.color_range = cfg.color_range;
+  cap_opt.capture_buffering = cfg.capture_buffering;
+  cap_opt.hold_playhead = cfg.perf_test;
+  const bool overlap_boot =
+      session_overlaps_capture_with_renderer(window_source, hold_boot, synthetic_capture, cfg.smoke);
+  const bool overlap_hdmi = overlap_boot;
+  DWORD restart_boot_tick = 0;
+  if (overlap_hdmi) {
+    restart_boot_tick = GetTickCount();
+    cap_opt.wait_first_frame = false;
+    capture = std::make_unique<DShowCapture>();
+    const DWORD t0 = GetTickCount();
+    std::string cerr;
+    const bool opened = capture->start(cfg.device_name, cap_opt, slot, clock, cerr);
+    char line[180];
+    std::snprintf(line, sizeof(line), "restart boot: captura aberta em %ums running=%d",
+                  static_cast<unsigned>(GetTickCount() - t0), (opened && capture->running()) ? 1 : 0);
+    note_restart_boot(line);
+    cap_opt.wait_first_frame = true;
+    if (!opened) {
+      if (capture) capture->stop();
+      capture.reset();
+    }
+  }
+
+  DWORD window_boot_tick = 0;
+  if (window_source) {
+    window_boot_tick = GetTickCount();
+    note_window_boot_line("aviso");
+    if (window_boot_cover(hold_boot) == WindowBootCover::HoldFrame) {
+      if (!g_restart_notice.visible()) {
+        g_restart_notice.show(hi, session_restart_notice_title(),
+                              session_restart_notice_detail(SessionCfgApply::Live));
+      }
+      g_restart_notice.pump();
+    }
+  }
+  const DWORD renderer_t0 = window_source ? window_boot_tick : (overlap_boot ? GetTickCount() : 0);
   if (!renderer.init(hwnd, bw, bh, err)) {
+    if (capture) {
+      capture->stop();
+      capture.reset();
+    }
     g_session_renderer = nullptr;
     std::fprintf(stderr, "renderer: %s\n", err.c_str());
     if (cfg.perf_test) {
@@ -349,8 +417,25 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
     return 2;
   }
+  if (overlap_hdmi) {
+    char line[120];
+    std::snprintf(line, sizeof(line), "restart boot: renderer.init %ums",
+                  static_cast<unsigned>(GetTickCount() - renderer_t0));
+    note_restart_boot(line);
+  }
+  if (window_source && window_boot_tick != 0) {
+    char line[80];
+    std::snprintf(line, sizeof(line), "renderer.init %ums",
+                  static_cast<unsigned>(GetTickCount() - window_boot_tick));
+    note_window_boot_line(line);
+  }
   if (g_restart_notice.visible()) g_restart_notice.pump();
   renderer.present_black();  // Benchmark/sessao: sem clarão branco no primeiro Present
+  if (window_source && hwnd) {
+    ShowWindow(hwnd, g_session_fullscreen ? SW_SHOW : SW_SHOWMAXIMIZED);
+    UpdateWindow(hwnd);
+    if (g_restart_notice.visible()) g_restart_notice.pump();
+  }
   renderer.set_vsync(cfg.sync_image);
   // v2.0: RenoDX → Present native; UI scale only drives Feed work_resolution.
   const bool renodx_stack = (cfg.enhance == EnhanceBackend::Renodx);
@@ -435,20 +520,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
   }
 
-  FrameSlot slot;
-  std::unique_ptr<CaptureBase> capture;
-  CaptureStartOptions cap_opt;
-  cap_opt.width = cap_w;
-  cap_opt.height = cap_h;
-  cap_opt.fps = cfg.fps;
-  cap_opt.video_fourcc = cfg.video_fourcc;
-  cap_opt.color_space = cfg.color_space;
-  cap_opt.color_range = cfg.color_range;
-  cap_opt.capture_buffering = cfg.capture_buffering;
-  cap_opt.hold_playhead = cfg.perf_test;
-  const bool synthetic_capture = cfg.fake_capture || cfg.perf_test;
-  const bool window_source =
-      capture_source_is_window(cfg.capture_source) && !synthetic_capture && !cfg.fake_capture;
+  if (!capture) {
   if (cfg.fake_capture) {
     capture = std::make_unique<FakeCapture>();
   } else if (cfg.perf_test) {
@@ -458,9 +530,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   } else {
     capture = std::make_unique<DShowCapture>();
   }
+  }
   const std::string capture_name =
       cfg.perf_test ? cfg.video_path : (window_source ? cfg.window_title : cfg.device_name);
-  if (window_source) cap_opt.hwnd = cfg.window_hwnd;
+    if (window_source) {
+      cap_opt.hwnd = cfg.window_hwnd;
+      cap_opt.wait_first_frame = false;
+      cap_opt.async_open = true;
+    }
   auto try_start_capture = [&]() -> bool {
     err.clear();
     return capture->start(capture_name, cap_opt, slot, clock, err);
@@ -469,7 +546,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       cfg.simulate_hdmi_busy, g_session_from_lobby, synthetic_capture, window_source);
   if (skip_hdmi_open) {
     err = hdmi_open_busy_hint();
-  } else if (!try_start_capture()) {
+  } else if (capture && !capture->running() && !try_start_capture()) {
     // Mode churn / exclusive device: one settle+retry before fake fallback.
     if (!synthetic_capture && !window_source) {
       Sleep(static_cast<DWORD>(capture_device_settle_ms()));
@@ -478,7 +555,15 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
     }
   }
-  if (!capture->running()) {
+  if (window_source && window_boot_tick != 0) {
+    char line[120];
+    std::snprintf(line, sizeof(line), "start voltou %ums pending=%d running=%d",
+                  static_cast<unsigned>(GetTickCount() - window_boot_tick),
+                  capture && capture->startup_pending() ? 1 : 0,
+                  capture && capture->running() ? 1 : 0);
+    note_window_boot_line(line);
+  }
+  if (!capture->running() && !capture->startup_pending()) {
     std::fprintf(stderr, "capture: %s\n", err.c_str());
     if (cfg.selftest_cap) {
       std::printf("SKIP selftest-cap: %s\n", err.c_str());
@@ -879,6 +964,9 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   double cfg_restart_until = 0;
 
   double prev_t = clock.now_ms();
+  double last_cap_fps_t = 0;
+  double shown_fps = 0;
+  double shown_ft = 0;
   uint64_t presented = 0;
   double perf_t0 = 0;
   double perf_hold_t0 = 0;
@@ -958,6 +1046,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       DispatchMessageW(&msg);
     }
     if (!g_running) break;
+    if (window_source && capture) {
+      std::string werr;
+      if (capture->take_startup_error(werr)) {
+        std::fprintf(stderr, "capture falhou — voltando ao lobby: %s\n", werr.c_str());
+        cfg.lobby_boot_toast = session_capture_fail_notice(werr);
+        g_return_to_lobby = g_session_from_lobby;
+        g_running = false;
+        break;
+      }
+    }
 
     // Ctrl+M / Esc / botão Fechar — sempre pela flag, nunca dentro da janela.
     if (g_toggle_cfg.exchange(false) && cfg_ui_ready && !cfg_restart_pending) {
@@ -1307,6 +1405,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           frame.cap_qpc_ms = last_good.cap_qpc_ms;
         }
       } else {
+        if (window_source && g_restart_notice.visible()) g_restart_notice.pump();
+        if (window_source && presented == 0) prev_t = now_idle;
         Sleep(1);
         continue;
       }
@@ -1315,18 +1415,26 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     const double now = clock.now_ms();
     const double interval = now - prev_t;
     prev_t = now;
-    const double ft_sample = interval;
-    const double instant_fps = ft_sample > 0 ? 1000.0 / ft_sample : 0;
-    fps_smooth = fps_smooth <= 0 ? instant_fps : (fps_smooth * 0.9 + instant_fps * 0.1);
-
-    if (presented > 0) {
-      ft_win.push(ft_sample);
-      overlay.ft_avg_ms = ft_win.avg();
-      overlay.ft_p95_ms = ft_win.p95();
-      overlay.ft_max_ms = ft_win.max();
-      overlay.ft_stable = ft_win.stable_with_p95(overlay.ft_p95_ms, 1000.0 / (std::max)(1.0, cfg.fps), hitch_ms);
-      overlay.ft_spark = ft_win.sparkline(56, 1000.0 / (std::max)(1.0, cfg.fps));
-      ft_win.chronological(overlay.ft_hist);
+    const double cap_t_meter =
+        holding ? last_good.cap_qpc_ms : (file_repeat ? file_last.cap_qpc_ms : frame.cap_qpc_ms);
+    const double cap_iv = overlay_capture_interval_ms(cap_t_meter, last_cap_fps_t, holding, file_repeat);
+    if (!holding && !file_repeat && cap_t_meter > last_cap_fps_t) last_cap_fps_t = cap_t_meter;
+    if (cap_iv > 0.0) {
+      ft_win.push(cap_iv);
+      const OverlaySourceRate rate = ft_win.source_rate();
+      if (rate.fps > 0.0) {
+        shown_ft = rate.period_ms;
+        shown_fps = rate.fps;
+        fps_smooth = rate.fps;
+        overlay.ft_avg_ms = rate.period_ms;
+        overlay.ft_p95_ms = rate.p95_ms > 0.0 ? rate.p95_ms : rate.period_ms;
+        overlay.ft_max_ms = rate.max_ms > 0.0 ? rate.max_ms : rate.period_ms;
+        overlay.ft_stable = ft_win.stable_for_source(
+            overlay.ft_p95_ms, overlay.ft_max_ms, 1000.0 / (std::max)(1.0, cfg.fps), hitch_ms);
+        ft_win.chronological(overlay.ft_hist);
+        for (double& g : overlay.ft_hist) g = overlay_source_gap_ms(g, rate.period_ms);
+        overlay.ft_spark = ft_win.sparkline(56, 1000.0 / (std::max)(1.0, cfg.fps), rate.period_ms);
+      }
     }
 
     double present_ms = 0;
@@ -1340,12 +1448,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.live_console = cfg.live_console;
     overlay.overlay_console = cfg.overlay_console;
     overlay.analyze_on = analyze_on;
-    overlay.frame_ms = interval;
+    overlay.frame_ms = shown_ft;
     {
       const double cap_t = holding ? last_good.cap_qpc_ms : (file_repeat ? file_last.cap_qpc_ms : frame.cap_qpc_ms);
       overlay.e2e_ms = (cap_t > 0.0 && now >= cap_t) ? (now - cap_t) : 0.0;
     }
-    overlay.fps = instant_fps;
+    overlay.fps = shown_fps;
     overlay.fps_smooth = fps_smooth;
     if (cfg.perf_test) {
       overlay.perf_remain_sec = perf_scoring ? perf_test_remain_sec(now, perf_t0) : -1;
@@ -1828,7 +1936,21 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     overlay.frames = presented;
     // Sessão de volta na tela: só agora o aviso de reinício pode sair.
     // No teste, o aviso fica até o DLSS 5 ligar — o relógio não começa no 1º frame.
+    if (window_source && window_boot_tick != 0 && have_new && !holding) {
+      char line[80];
+      std::snprintf(line, sizeof(line), "primeiro frame %ums",
+                    static_cast<unsigned>(GetTickCount() - window_boot_tick));
+      note_window_boot_line(line);
+      window_boot_tick = 0;
+    }
     if (g_restart_notice.visible() && !cfg.perf_test && have_new && !holding) {
+      if (restart_boot_tick != 0) {
+        char line[160];
+        std::snprintf(line, sizeof(line), "restart boot: imagem ao vivo em %ums",
+                      static_cast<unsigned>(GetTickCount() - restart_boot_tick));
+        note_restart_boot(line);
+        restart_boot_tick = 0;
+      }
       if (hold_boot) {
         ShowWindow(hwnd, g_session_fullscreen ? SW_SHOW : SW_SHOWMAXIMIZED);
         UpdateWindow(hwnd);

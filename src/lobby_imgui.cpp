@@ -1148,30 +1148,28 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
   auto refresh_modes = [&](std::vector<CaptureMode>& modes, int& mode_idx) {
     modes = list_video_capture_modes(current_device());
-    // Keep only modes that advertise NV12 — MJPEG-only (4K60 etc.) can't feed the grabber.
-    {
-      std::vector<CaptureMode> usable;
-      usable.reserve(modes.size());
-      for (const auto& m : modes) {
-        const auto fcs = list_video_fourccs_for_mode(current_device(), m.width, m.height, m.fps);
-        bool has_nv12 = false;
-        for (int fc : fcs) {
-          if (fc == static_cast<int>(VideoFourcc::Nv12)) {
-            has_nv12 = true;
-            break;
-          }
-        }
-        if (has_nv12) usable.push_back(m);
-      }
-      if (!usable.empty()) modes.swap(usable);
-    }
     mode_idx = 0;
+    bool found_mode = false;
     for (size_t i = 0; i < modes.size(); ++i) {
       if (modes[i].width == settings.width && modes[i].height == settings.height &&
           std::abs(modes[i].fps - settings.fps) < 1.0) {
         mode_idx = static_cast<int>(i);
+        found_mode = true;
         break;
       }
+    }
+    if (!found_mode) {
+      int same = -1;
+      double best_d = 1e9;
+      for (size_t i = 0; i < modes.size(); ++i) {
+        if (modes[i].width != settings.width || modes[i].height != settings.height) continue;
+        const double d = std::abs(modes[i].fps - settings.fps);
+        if (d < best_d) {
+          best_d = d;
+          same = static_cast<int>(i);
+        }
+      }
+      if (same >= 0) mode_idx = same;
     }
     if (!modes.empty()) {
       settings.width = modes[static_cast<size_t>(mode_idx)].width;
@@ -1191,12 +1189,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     std::snprintf(key, sizeof(key), "%s|%d|%d|%.3f", current_device().c_str(), settings.width,
                   settings.height, settings.fps);
     if (fourccs_cache_key == key && !fourccs.empty()) return;
-    fourccs = list_video_fourccs_for_mode(current_device(), settings.width, settings.height, settings.fps);
-    if (fourccs.empty()) fourccs.push_back(static_cast<int>(kDefaultVideoFourcc));
-    if (std::find(fourccs.begin(), fourccs.end(), static_cast<int>(VideoFourcc::Any)) == fourccs.end()) {
-      fourccs.insert(fourccs.begin(), static_cast<int>(VideoFourcc::Any));
+    const auto accepted =
+        list_video_fourccs_for_mode(current_device(), settings.width, settings.height, settings.fps);
+    fourccs = capture_format_menu_for_mode(accepted);
+    if (!accepted.empty()) {
+      settings.video_fourcc =
+          capture_format_for_mode(settings.width, settings.height, settings.video_fourcc, accepted);
     }
-    settings.video_fourcc = resolve_video_fourcc_for_device(settings.video_fourcc, fourccs);
     fourccs_cache_key = key;
   };
   refresh_fourccs();
@@ -1639,31 +1638,80 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       }
     }
 
-    ImGui::TextDisabled("MODO");
-    ImGui::SetNextItemWidth(-1);
     if (modes.empty()) {
+      ImGui::TextDisabled("MODO");
       ImGui::TextDisabled("(sem caps — %dx%d @ %.0f)", settings.width, settings.height, settings.fps);
     } else {
-      std::vector<const char*> mlabels;
-      mlabels.reserve(modes.size());
-      for (auto& m : modes) mlabels.push_back(m.label.c_str());
-      if (ImGui::Combo("##mode", &mode_idx, mlabels.data(), static_cast<int>(mlabels.size()))) {
-        const auto& m = modes[static_cast<size_t>(mode_idx)];
-        settings.width = m.width;
-        settings.height = m.height;
-        settings.fps = m.fps;
-        fourccs_cache_key.clear();
-        refresh_fourccs();
-        // 4K+: force NV12 when available — MJPEG often opens then yields white/fake.
-        if (capture_mode_prefers_nv12(settings.width, settings.height)) {
-          for (int fc : fourccs) {
-            if (fc == static_cast<int>(VideoFourcc::Nv12)) {
-              settings.video_fourcc = fc;
-              break;
-            }
+      std::vector<int> res_w;
+      std::vector<int> res_h;
+      capture_unique_resolutions(modes, res_w, res_h);
+      int res_idx = 0;
+      for (size_t i = 0; i < res_w.size(); ++i) {
+        if (res_w[i] == settings.width && res_h[i] == settings.height) {
+          res_idx = static_cast<int>(i);
+          break;
+        }
+      }
+      std::vector<double> hz;
+      if (!res_w.empty()) capture_hz_for_resolution(modes, res_w[static_cast<size_t>(res_idx)],
+                                                   res_h[static_cast<size_t>(res_idx)], hz);
+      int hz_idx = capture_hz_index_for_fps(hz, settings.fps);
+
+      auto sync_mode_idx = [&]() {
+        mode_idx = 0;
+        for (size_t i = 0; i < modes.size(); ++i) {
+          if (modes[i].width == settings.width && modes[i].height == settings.height &&
+              std::abs(modes[i].fps - settings.fps) < 1.0) {
+            mode_idx = static_cast<int>(i);
+            break;
           }
         }
+      };
+      auto apply_capture_mode = [&]() {
+        fourccs_cache_key.clear();
+        refresh_fourccs();
         restart_preview();
+      };
+
+      std::vector<std::string> res_store;
+      std::vector<const char*> res_labels;
+      res_store.reserve(res_w.size());
+      for (size_t i = 0; i < res_w.size(); ++i) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%dx%d", res_w[i], res_h[i]);
+        res_store.emplace_back(buf);
+      }
+      for (auto& s : res_store) res_labels.push_back(s.c_str());
+      ImGui::TextDisabled("RESOLUCAO");
+      ImGui::SetNextItemWidth(-1);
+      if (!res_labels.empty() &&
+          ImGui::Combo("##res", &res_idx, res_labels.data(), static_cast<int>(res_labels.size()))) {
+        settings.width = res_w[static_cast<size_t>(res_idx)];
+        settings.height = res_h[static_cast<size_t>(res_idx)];
+        capture_hz_for_resolution(modes, settings.width, settings.height, hz);
+        hz_idx = capture_hz_index_for_fps(hz, settings.fps);
+        if (!hz.empty()) settings.fps = hz[static_cast<size_t>(hz_idx)];
+        sync_mode_idx();
+        apply_capture_mode();
+      }
+
+      std::vector<std::string> hz_store;
+      std::vector<const char*> hz_labels;
+      hz_store.reserve(hz.size());
+      for (double f : hz) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.0f Hz", f);
+        hz_store.emplace_back(buf);
+      }
+      for (auto& s : hz_store) hz_labels.push_back(s.c_str());
+      ImGui::TextDisabled("HZ");
+      ImGui::SetNextItemWidth(-1);
+      if (hz_labels.empty()) {
+        ImGui::TextDisabled("(sem Hz)");
+      } else if (ImGui::Combo("##hz", &hz_idx, hz_labels.data(), static_cast<int>(hz_labels.size()))) {
+        settings.fps = hz[static_cast<size_t>(hz_idx)];
+        sync_mode_idx();
+        apply_capture_mode();
       }
     }
 
@@ -1684,7 +1732,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       ImGui::BeginGroup();
       ImGui::TextUnformatted("Formato");
       ImGui::SetNextItemWidth(col_w);
-      if (ImGui::Combo("##fmt", &fmt_idx, fmt_labels.data(), static_cast<int>(fmt_labels.size()))) {
+      if (fmt_labels.empty()) {
+        ImGui::TextDisabled("(sem formato)");
+      } else if (ImGui::Combo("##fmt", &fmt_idx, fmt_labels.data(), static_cast<int>(fmt_labels.size()))) {
         const int prev = settings.video_fourcc;
         settings.video_fourcc = fourccs[static_cast<size_t>(fmt_idx)];
         if (!restart_preview()) {
@@ -1934,37 +1984,33 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     ImGui::BeginChild("sessao", ImVec2(right_w, body_h), true);
     ImGui::PushTextWrapPos(0.f);
     ImGui::TextDisabled("SESSAO");
-    ImGui::TextUnformatted("Configuracoes");
+    auto session_tip = [](const char* tip) {
+      if (tip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tip);
+    };
     ImGui::Spacing();
-    // Single column — two-up SameLine clipped labels on the right edge.
+    ImGui::TextDisabled("OVERLAY");
     ImGui::Checkbox("Exibir metricas", &settings.ui.show_fps);
-    if (ImGui::Checkbox("Mini overlay (barra topo)", &settings.ui.mini_overlay)) {
+    session_tip("FPS, latencia e graficos na imagem");
+    if (ImGui::Checkbox("Mini overlay", &settings.ui.mini_overlay)) {
       if (settings.ui.mini_overlay) settings.ui.advanced_metrics = false;
     }
-    ImGui::TextDisabled(settings.ui.mini_overlay ? "  -> 2 linhas · lat cap/present(+NR) · FT/L600/HW"
-                                                 : "  -> HUD multi-linha · latencia cap + present");
-    if (settings.ui.mini_overlay) {
-      ImGui::TextDisabled("  present+NR ≈ processamento c/ DLSS5 (~2ms) · cap = captura pura");
-    }
-    ImGui::Checkbox("Overlay sem fundo", &settings.ui.overlay_no_bg);
-    ImGui::TextDisabled(settings.ui.overlay_no_bg ? "  -> so texto no jogo, sem placa preta"
-                                                  : "  -> placa preta atras do texto");
+    session_tip("Barra curta no topo, com o FPS da captura e do present");
+    ImGui::Checkbox("Sem fundo", &settings.ui.overlay_no_bg);
+    session_tip(settings.ui.overlay_no_bg ? "So o texto, sem a placa preta" : "Placa preta atras do texto");
 
     ImGui::BeginDisabled(settings.ui.mini_overlay);
     ImGui::Checkbox("Metricas avancadas", &settings.ui.advanced_metrics);
-    ImGui::Checkbox("Infos GPU / CPU", &settings.ui.hw_info);
+    session_tip(settings.ui.mini_overlay ? "Indisponivel com o mini overlay" : "Grafico e janela de 600 frames");
+    ImGui::Checkbox("GPU e CPU", &settings.ui.hw_info);
+    session_tip("Uso de GPU, CPU e memoria");
     ImGui::EndDisabled();
 
-    ImGui::Checkbox("Tela cheia", &settings.ui.fullscreen);
-    settings.ui.hide_panel_on_capture = true;
-    ImGui::TextDisabled(settings.ui.fullscreen ? "  -> Iniciar fullscreen" : "  -> Iniciar em janela");
-
-    ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
-    ImGui::TextDisabled(settings.ui.sync_image ? "  -> SYNC VSYNC" : "  -> SYNC TEAR");
     if (ImGui::Checkbox("Overlay live", &settings.ui.live_overlay)) {
       if (settings.ui.live_overlay) settings.ui.overlay_console = true;
     }
-    ImGui::Checkbox("Mostrar console", &settings.ui.overlay_console);
+    session_tip("Overlay por cima de tudo, fora da janela do jogo");
+    ImGui::Checkbox("Console", &settings.ui.overlay_console);
+    session_tip("Nome do console no overlay");
     if (settings.ui.overlay_console) {
       LiveConsole cur = parse_live_console(settings.ui.live_console);
       auto console_imcol = [](LiveConsole c) -> ImVec4 {
@@ -1988,17 +2034,24 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
         ImGui::EndPopup();
       }
-      ImGui::TextDisabled("  -> nome no overlay (PS5 / PS5 Pro / ...)");
     }
+    ImGui::Spacing();
+    ImGui::TextDisabled("IMAGEM");
+    ImGui::Checkbox("Tela cheia", &settings.ui.fullscreen);
+    settings.ui.hide_panel_on_capture = true;
+    session_tip(settings.ui.fullscreen ? "A sessao abre em tela cheia" : "A sessao abre em janela");
+    ImGui::Checkbox("Sincronizar imagem", &settings.ui.sync_image);
+    session_tip(settings.ui.sync_image ? "VSync ligado" : "VSync desligado");
+
+    ImGui::Spacing();
+    ImGui::TextDisabled("RELATORIO");
     ImGui::Checkbox("Reportar bug", &settings.ui.bug_report);
-    ImGui::TextDisabled(settings.ui.bug_report ? "  -> modo diagnostico (report/*.txt)"
-                                               : "  -> off (sem overhead)");
+    session_tip(settings.ui.bug_report ? "Grava diagnostico em report/" : "Desligado");
     if (ImGui::Checkbox("Reportar performance", &settings.ui.perf_report)) {
       std::string serr;
       save_settings(settings, settings_default_path(), serr);
     }
-    ImGui::TextDisabled(settings.ui.perf_report ? "  -> no fim da captura abre a analise (mesmo modelo do Benchmark)"
-                                                : "  -> off (sem analise no fim)");
+    session_tip(settings.ui.perf_report ? "No fim da captura abre a analise" : "Desligado");
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
 
@@ -2061,7 +2114,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             motor_swap_title = lobby_iniciar_hold_title();
             motor_swap_line.clear();
             motor_swap_pending = true;
-            motor_swap_silent = false;
+            motor_swap_silent = !lobby_iniciar_shows_pipeline_card(true);
             motor_swap_sync_session_files = true;
             motor_swap_until = ImGui::GetTime();
             if (lobby_iniciar_needs_session_relaunch(settings.ui.preview_enabled, settings.ui.preview_cfg_live,
@@ -2093,7 +2146,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         motor_swap_title = lobby_iniciar_hold_title();
         motor_swap_line.clear();
         motor_swap_pending = true;
-        motor_swap_silent = false;
+        motor_swap_silent = !lobby_iniciar_shows_pipeline_card(false);
         motor_swap_sync_session_files = true;
         motor_swap_until = ImGui::GetTime();
         if (lobby_iniciar_needs_session_relaunch(settings.ui.preview_enabled, settings.ui.preview_cfg_live,
@@ -2513,10 +2566,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (ImGui::RadioButton("1x##nrpass", pass_i == 1)) pass_i = 1;
         ImGui::SameLine();
         if (ImGui::RadioButton("1,5x##nrpass", pass_i == 4)) pass_i = 4;
-        if (ImGui::RadioButton("2x default##nrpass", pass_i == 2)) pass_i = 2;
-        ImGui::SameLine();
         if (ImGui::RadioButton("2x otimizado##nrpass", pass_i == 5)) pass_i = 5;
-        if (ImGui::RadioButton("3x default##nrpass", pass_i == 3)) pass_i = 3;
         ImGui::SameLine();
         if (ImGui::RadioButton("3x otimizado##nrpass", pass_i == 6)) pass_i = 6;
         settings.nr_pass_count = clamp_nr_pass_count(pass_i);
@@ -2962,42 +3012,31 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (ImGui::RadioButton("1x##perfpass", pass_i == 1)) pass_i = 1;
         ImGui::SameLine();
         if (ImGui::RadioButton("1,5x##perfpass", pass_i == 4)) pass_i = 4;
-        if (ImGui::RadioButton("2x default##perfpass", pass_i == 2)) pass_i = 2;
         if (ImGui::RadioButton("2x otimizado##perfpass", pass_i == 5)) pass_i = 5;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("3x default##perfpass", pass_i == 3)) pass_i = 3;
         ImGui::SameLine();
         if (ImGui::RadioButton("3x otimizado##perfpass", pass_i == 6)) pass_i = 6;
         g_perf_plan.nr_pass_count = clamp_nr_pass_count(pass_i);
         ImGui::TextDisabled("%s", nr_pass_count_2x_opt_hint());
 
         ImGui::Separator();
-        ImGui::TextUnformatted("Resolucao do sinal");
-        int sig = 1;
-        if (g_perf_plan.width >= 3200) sig = 2;
-        else if (g_perf_plan.width >= 2200) sig = 1;
-        else sig = 0;
-        if (ImGui::RadioButton("1920x1080##perfsig", sig == 0)) {
-          g_perf_plan.width = 1920;
-          g_perf_plan.height = 1080;
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton("2560x1440##perfsig", sig == 1)) {
-          g_perf_plan.width = 2560;
-          g_perf_plan.height = 1440;
-        }
-        ImGui::SameLine();
-        if (ImGui::RadioButton("3840x2160##perfsig", sig == 2)) {
-          g_perf_plan.width = 3840;
-          g_perf_plan.height = 2160;
+        ImGui::TextDisabled("RESOLUCAO");
+        ImGui::SetNextItemWidth(-1);
+        {
+          const char* res_labels[] = {"1920x1080", "2560x1440", "3840x2160"};
+          int sig = perf_test_resolution_index(g_perf_plan.width, g_perf_plan.height);
+          if (ImGui::Combo("##perfsig", &sig, res_labels, 3)) {
+            perf_test_resolution_at(sig, g_perf_plan.width, g_perf_plan.height);
+          }
         }
 
-        ImGui::TextUnformatted(perf_test_hz_title());
+        ImGui::TextDisabled("HZ");
+        ImGui::SetNextItemWidth(-1);
+        {
+          const char* hz_labels[] = {"30 Hz", "60 Hz"};
+          int hz_i = perf_test_hz_index(g_perf_plan.fps);
+          if (ImGui::Combo("##perffps", &hz_i, hz_labels, 2)) g_perf_plan.fps = perf_test_hz_value(hz_i);
+        }
         ImGui::TextDisabled("%s", perf_test_hz_blurb());
-        int fps_i = g_perf_plan.fps < 45.0 ? 30 : 60;
-        if (ImGui::RadioButton("30 Hz##perffps", fps_i == 30)) g_perf_plan.fps = 30;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("60 Hz##perffps", fps_i == 60)) g_perf_plan.fps = 60;
 
         ImGui::Separator();
         bool audio_on = g_perf_plan.audio;
@@ -3284,8 +3323,31 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
           (void)restore_reshade_dxgi(std::filesystem::path(exe_path).parent_path().string());
         }
+        // Janela: solta o device do lobby antes do filho criar o dele. O HDMI segue com o device vivo.
+        if (lobby_relaunch_releases_device_before_spawn(capture_source_is_window(settings.capture_source))) {
+          if (logo_srv) {
+            logo_srv->Release();
+            logo_srv = nullptr;
+          }
+          if (watermark_srv) {
+            watermark_srv->Release();
+            watermark_srv = nullptr;
+          }
+          if (g_dx.ctx) g_dx.ctx->Flush();
+          ImGui_ImplDX11_Shutdown();
+          ImGui_ImplWin32_Shutdown();
+          ImGui::DestroyContext();
+          cleanup_device();
+          if (g_hwnd) {
+            DestroyWindow(g_hwnd);
+            g_hwnd = nullptr;
+          }
+        }
         if (relaunch_current_process(motor_swap_args.c_str())) {
           ExitProcess(0);
+        }
+        if (lobby_relaunch_releases_device_before_spawn(capture_source_is_window(settings.capture_source))) {
+          ExitProcess(1);
         }
         push_lobby_toast("Falha ao iniciar: feche e abra o NexusCap");
       } else if (motor_swap_refresh_lobby) {

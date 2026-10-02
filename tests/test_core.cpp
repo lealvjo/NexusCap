@@ -78,6 +78,111 @@ TEST_CASE("capture reopen settle helpers") {
   CHECK_FALSE(capture_mode_prefers_nv12(1920, 1080));
 }
 
+TEST_CASE("capture fps follows the driver interval not a card table") {
+  std::vector<double> locked;
+  capture_fps_from_driver_interval(120.0, 120.0, 120.0, locked);
+  CHECK(locked.size() == 1);
+  CHECK(locked[0] == doctest::Approx(120.0));
+  CHECK_FALSE(capture_driver_interval_covers_fps(120.0, 120.0, 120.0, 60.0));
+
+  std::vector<double> span;
+  capture_fps_from_driver_interval(120.0, 60.0, 240.0, span);
+  auto has = [&](double fps) {
+    for (double r : span)
+      if (std::abs(r - fps) < 0.5) return true;
+    return false;
+  };
+  CHECK(has(60.0));
+  CHECK(has(120.0));
+  CHECK(has(144.0));
+  CHECK(has(240.0));
+  CHECK_FALSE(has(50.0));
+  CHECK(capture_driver_interval_covers_fps(119.88, 59.94, 240.0, 60.0));
+
+  std::vector<double> slow_min;
+  capture_fps_from_driver_interval(120.0, 5.0, 120.0, slow_min);
+  auto has_slow = [&](double fps) {
+    for (double r : slow_min)
+      if (std::abs(r - fps) < 0.5) return true;
+    return false;
+  };
+  CHECK(has_slow(60.0));
+  CHECK(has_slow(120.0));
+  CHECK(has_slow(30.0));
+  CHECK_FALSE(has_slow(5.0));
+  CHECK_FALSE(has_slow(240.0));
+  CHECK(capture_driver_interval_covers_fps(120.0, 5.0, 120.0, 60.0));
+  CHECK_FALSE(capture_driver_interval_covers_fps(120.0, 5.0, 120.0, 240.0));
+
+  std::vector<double> swapped;
+  capture_fps_from_driver_interval(120.0, 240.0, 60.0, swapped);
+  CHECK(swapped.size() == span.size());
+
+  std::vector<double> ntsc;
+  capture_fps_from_driver_interval(59.94, 0.0, 0.0, ntsc);
+  CHECK(ntsc.size() == 1);
+  CHECK(ntsc[0] == doctest::Approx(60.0));
+  CHECK(capture_driver_interval_covers_fps(59.94, 0.0, 0.0, 60.0));
+  CHECK_FALSE(capture_driver_interval_covers_fps(120.0, 0.0, 0.0, 60.0));
+
+  std::vector<double> odd;
+  capture_fps_from_driver_interval(90.0, 90.0, 90.0, odd);
+  CHECK(odd.size() == 1);
+  CHECK(odd[0] == doctest::Approx(90.0));
+}
+
+TEST_CASE("capture menus split resolution from the hz that resolution accepts") {
+  std::vector<CaptureMode> modes;
+  modes.push_back(CaptureMode{3840, 2160, 30.0, "4k30"});
+  modes.push_back(CaptureMode{3840, 2160, 25.0, "4k25"});
+  modes.push_back(CaptureMode{1920, 1080, 120.0, "1080p120"});
+  modes.push_back(CaptureMode{1920, 1080, 60.0, "1080p60"});
+  modes.push_back(CaptureMode{1920, 1080, 60.0, "dup"});
+  std::vector<int> widths;
+  std::vector<int> heights;
+  capture_unique_resolutions(modes, widths, heights);
+  CHECK(widths.size() == 2);
+  CHECK(widths[0] == 3840);
+  CHECK(heights[0] == 2160);
+  CHECK(widths[1] == 1920);
+  CHECK(heights[1] == 1080);
+  std::vector<double> hz4k;
+  std::vector<double> hz1080;
+  capture_hz_for_resolution(modes, 3840, 2160, hz4k);
+  capture_hz_for_resolution(modes, 1920, 1080, hz1080);
+  CHECK(hz4k.size() == 2);
+  CHECK(hz4k[0] == doctest::Approx(30.0));
+  CHECK(hz4k[1] == doctest::Approx(25.0));
+  CHECK(hz1080.size() == 2);
+  CHECK(hz1080[0] == doctest::Approx(120.0));
+  CHECK(capture_hz_index_for_fps(hz1080, 60.0) == 1);
+  CHECK(capture_hz_index_for_fps(hz4k, 120.0) == 0);
+  CHECK(capture_hz_index_for_fps(hz4k, 30.2) == 0);
+  std::vector<double> none;
+  CHECK(capture_hz_index_for_fps(none, 60.0) == 0);
+}
+
+TEST_CASE("capture format menu keeps a mode that has no nv12") {
+  const int nv12 = static_cast<int>(VideoFourcc::Nv12);
+  const int mjpeg = static_cast<int>(VideoFourcc::Mjpeg);
+  const int any = static_cast<int>(VideoFourcc::Any);
+  const std::vector<int> only_mjpeg{mjpeg};
+  const auto menu = capture_format_menu_for_mode(only_mjpeg);
+  CHECK(menu.size() == 2);
+  CHECK(menu[0] == any);
+  CHECK(menu[1] == mjpeg);
+  CHECK(std::find(menu.begin(), menu.end(), nv12) == menu.end());
+  CHECK(capture_format_for_mode(1920, 1080, nv12, only_mjpeg) == mjpeg);
+  CHECK(capture_format_for_mode(3840, 2160, nv12, only_mjpeg) == mjpeg);
+  const std::vector<int> with_nv12{nv12, mjpeg};
+  CHECK(capture_format_for_mode(3840, 2160, mjpeg, with_nv12) == nv12);
+  CHECK(capture_format_for_mode(1920, 1080, mjpeg, with_nv12) == nv12);
+  CHECK(capture_format_for_mode(1280, 720, any, with_nv12) == nv12);
+  const auto empty = capture_format_menu_for_mode({});
+  CHECK(empty.empty());
+  CHECK(capture_format_for_mode(1920, 1080, mjpeg, {}) == mjpeg);
+}
+
 TEST_CASE("nv12 buffer match is the opened mode not a hardcoded 1440p") {
   const size_t n1080 = nv12_packed_bytes(1920, 1080);
   const size_t n1440 = nv12_packed_bytes(2560, 1440);
@@ -684,6 +789,103 @@ TEST_CASE("session capture fail notice is friendly and has no HRESULT") {
   CHECK(lobby_iniciar_blocked_by_hdmi_busy_sim(true, false));
   CHECK_FALSE(lobby_iniciar_blocked_by_hdmi_busy_sim(false, false));
   CHECK_FALSE(lobby_iniciar_blocked_by_hdmi_busy_sim(true, true));
+}
+
+TEST_CASE("window capture asks for one frame not a thousand") {
+  CHECK(wgc_min_update_ticks(60.0) > 100000);
+  CHECK(wgc_min_update_ticks(60.0) < 200000);
+  CHECK(wgc_min_update_ticks(60.0) != 10000);
+  CHECK(wgc_min_update_ticks(0.0) == wgc_min_update_ticks(60.0));
+  CHECK(wgc_min_update_ticks(1000.0) == wgc_min_update_ticks(240.0));
+}
+
+TEST_CASE("overlay fps is the source period, not the mean of skipped ticks") {
+  std::vector<double> mixed;
+  mixed.reserve(120);
+  for (int i = 0; i < 90; ++i) mixed.push_back(1000.0 / 60.0);
+  for (int i = 0; i < 30; ++i) mixed.push_back(2000.0 / 60.0);
+  const OverlaySourceRate r = overlay_source_rate(mixed.data(), mixed.size());
+  CHECK(r.period_ms == doctest::Approx(1000.0 / 60.0).epsilon(0.005));
+  CHECK(r.fps == doctest::Approx(60.0).epsilon(0.005));
+  double sum = 0;
+  for (double x : mixed) sum += x;
+  const double mixture_fps = 1000.0 / (sum / static_cast<double>(mixed.size()));
+  CHECK(mixture_fps < 55.0);
+  CHECK(r.fps > mixture_fps + 5.0);
+
+  std::vector<double> at30(40, 1000.0 / 30.0);
+  const OverlaySourceRate r30 = overlay_source_rate(at30.data(), at30.size());
+  CHECK(r30.fps == doctest::Approx(30.0).epsilon(0.005));
+
+  std::vector<double> at50(40, 20.0);
+  const OverlaySourceRate r50 = overlay_source_rate(at50.data(), at50.size());
+  CHECK(r50.fps == doctest::Approx(50.0).epsilon(0.005));
+
+  std::vector<double> jitter;
+  for (int i = 0; i < 40; ++i) jitter.push_back(16.2);
+  for (int i = 0; i < 40; ++i) jitter.push_back(17.2);
+  for (int i = 0; i < 20; ++i) jitter.push_back(33.4);
+  const OverlaySourceRate rj = overlay_source_rate(jitter.data(), jitter.size());
+  CHECK(rj.period_ms == doctest::Approx(16.7).epsilon(0.02));
+  CHECK(rj.fps == doctest::Approx(1000.0 / 16.7).epsilon(0.02));
+
+  CHECK(overlay_source_gap_ms(33.4, 16.7) == doctest::Approx(16.7));
+  CHECK(overlay_source_gap_ms(31.0, 16.7) == doctest::Approx(16.7));
+  CHECK(overlay_source_gap_ms(25.0, 16.7) == doctest::Approx(25.0));
+  CHECK(overlay_source_rate(nullptr, 0).fps == 0.0);
+
+  FrametimeWindow w(180);
+  for (int i = 0; i < 150; ++i) w.push((i % 4 == 0) ? (2000.0 / 60.0) : (1000.0 / 60.0));
+  const OverlaySourceRate rw = w.source_rate();
+  CHECK(rw.fps == doctest::Approx(60.0).epsilon(0.005));
+  CHECK(w.stable_for_source(rw.p95_ms, rw.max_ms, 1000.0 / 60.0, 25.0));
+  CHECK_FALSE(w.stable(1000.0 / 60.0, 25.0));
+}
+
+TEST_CASE("overlay fps follows capture arrival, not the present gap") {
+  CHECK(overlay_capture_interval_ms(116.7, 100.0, false, false) == doctest::Approx(16.7));
+  CHECK(overlay_capture_interval_ms(112.0, 100.0, false, false) == doctest::Approx(12.0));
+  const double cap_iv = overlay_capture_interval_ms(116.7, 100.0, false, false);
+  CHECK(1000.0 / cap_iv == doctest::Approx(59.88).epsilon(0.01));
+  CHECK(overlay_capture_interval_ms(100.0, 0.0, false, false) == 0);
+  CHECK(overlay_capture_interval_ms(100.0, 100.0, false, false) == 0);
+  CHECK(overlay_capture_interval_ms(116.7, 100.0, true, false) == 0);
+  CHECK(overlay_capture_interval_ms(116.7, 100.0, false, true) == 0);
+}
+
+TEST_CASE("window capture does not overlap the renderer; HDMI only on hold") {
+  CHECK_FALSE(session_overlaps_capture_with_renderer(true, false, false, false));
+  CHECK_FALSE(session_overlaps_capture_with_renderer(true, true, false, false));
+  CHECK_FALSE(session_overlaps_capture_with_renderer(true, false, true, false));
+  CHECK_FALSE(session_overlaps_capture_with_renderer(true, false, false, true));
+  CHECK_FALSE(session_overlaps_capture_with_renderer(false, false, false, false));
+  CHECK(session_overlaps_capture_with_renderer(false, true, false, false));
+  CHECK_FALSE(session_overlaps_capture_with_renderer(false, true, true, false));
+  CHECK_FALSE(session_overlaps_capture_with_renderer(false, true, false, true));
+}
+
+TEST_CASE("window Iniciar skips the pipeline card and releases the device; X holds the frame; HDMI stays") {
+  CHECK(lobby_relaunch_releases_device_before_spawn(true));
+  CHECK_FALSE(lobby_relaunch_releases_device_before_spawn(false));
+
+  CHECK_FALSE(lobby_iniciar_shows_pipeline_card(true));
+  CHECK(lobby_iniciar_shows_pipeline_card(false));
+  CHECK(lobby_iniciar_hold_title().find("Otimizando") != std::string::npos);
+  CHECK(lobby_iniciar_hold_title().find("pipeline") != std::string::npos);
+
+  CHECK(window_boot_cover(false) == WindowBootCover::None);
+  CHECK(window_boot_cover(true) == WindowBootCover::HoldFrame);
+  CHECK(session_restart_notice_title() != lobby_iniciar_hold_title());
+  CHECK(session_restart_notice_detail(SessionCfgApply::RelaunchPassCount).find("tela fica") != std::string::npos);
+
+  CHECK(restart_notice_visible_at_boot(true, true));
+  CHECK_FALSE(restart_notice_visible_at_boot(true, false));
+  CHECK_FALSE(restart_notice_visible_at_boot(false, true));
+
+  CHECK_FALSE(session_overlaps_capture_with_renderer(true, false, false, false));
+  CHECK_FALSE(session_overlaps_capture_with_renderer(true, true, false, false));
+  CHECK_FALSE(session_overlaps_capture_with_renderer(false, false, false, false));
+  CHECK(session_overlaps_capture_with_renderer(false, true, false, false));
 }
 
 TEST_CASE("parse --renodx selects feeder stack backend") {
@@ -1362,7 +1564,7 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
 
   format_mini_overlay_lines(a, sizeof(a), b, sizeof(b), 59.9, 0.0, false, 2, false, false, 16.6, 16.6, 16.6,
                             16.6, true, 12.0, 3.0, 0, 0, 0, 2560, 1440, 1280, 720, 2560, 1440, 50);
-  CHECK(std::strstr(a, "NR off") != nullptr);
+  CHECK(std::strstr(a, "DLSS5 off") != nullptr);
   CHECK(std::strstr(a, "DLSS5") != nullptr);
   CHECK(std::strstr(a, "TEAR") != nullptr);
   CHECK(std::strstr(a, "FG Fixo x2 off") != nullptr);
@@ -2733,8 +2935,8 @@ TEST_CASE("pass count has no 0.5x; 1x multipass is the native floor") {
 TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(clamp_nr_pass_count(0) == 1);
   CHECK(clamp_nr_pass_count(1) == 1);
-  CHECK(clamp_nr_pass_count(2) == 2);
-  CHECK(clamp_nr_pass_count(3) == 3);
+  CHECK(clamp_nr_pass_count(2) == 5);  // 2x default aposentado
+  CHECK(clamp_nr_pass_count(3) == 6);  // 3x default aposentado
   CHECK(clamp_nr_pass_count(4) == 4);
   CHECK(clamp_nr_pass_count(5) == 5);
   CHECK(clamp_nr_pass_count(6) == 6);
@@ -2748,10 +2950,10 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(nr_reshade_pass_count(6) == 3);  // 3x otimizado: tres evaluates
   CHECK(nr_reshade_pass_count(7) == 1);  // 1,7x aposentado → 1,5x
   CHECK(std::string(nr_pass_count_label(1)).find("1x") != std::string::npos);
-  CHECK(std::string(nr_pass_count_label(2)).find("2x") != std::string::npos);
-  CHECK(std::string(nr_pass_count_label(2)).find("default") != std::string::npos);
-  CHECK(std::string(nr_pass_count_label(3)).find("default") != std::string::npos);
-  CHECK(std::string(nr_pass_count_short(3)) == "3x");
+  CHECK(std::string(nr_pass_count_label(2)) == "2x otimizado");
+  CHECK(std::string(nr_pass_count_label(2)).find("default") == std::string::npos);
+  CHECK(std::string(nr_pass_count_label(3)) == "3x otimizado");
+  CHECK(std::string(nr_pass_count_short(3)) == "3x+");
   CHECK(std::string(nr_pass_count_label(4)).find("1,5x") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(5)).find("otimizado") != std::string::npos);
   CHECK(std::string(nr_pass_count_label(6)).find("otimizado") != std::string::npos);
@@ -2760,19 +2962,19 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(std::string(nr_pass_count_short(5)) == "2x+");
   CHECK(std::string(nr_pass_count_short(6)) == "3x+");
   CHECK(std::string(nr_pass_count_short(7)) == "1.5x");
-  CHECK_FALSE(nr_pass_is_2x_optimized(2));
+  CHECK(nr_pass_is_2x_optimized(2));
   CHECK(nr_pass_is_2x_optimized(5));
-  CHECK_FALSE(nr_pass_is_3x_optimized(3));
+  CHECK(nr_pass_is_3x_optimized(3));
   CHECK(nr_pass_is_3x_optimized(6));
   CHECK(nr_pass_is_15x_plus(4));
   CHECK(nr_pass_is_15x_plus(7));
   CHECK_FALSE(nr_pass_is_15x_plus(1));
-  CHECK_FALSE(nr_pass_uses_optimized_look(3));
+  CHECK(nr_pass_uses_optimized_look(3));
   CHECK(nr_pass_uses_optimized_look(4));
   CHECK(nr_pass_uses_optimized_look(5));
   CHECK(nr_pass_uses_optimized_look(6));
   CHECK(nr_pass_uses_optimized_look(7));
-  CHECK_FALSE(nr_pass_uses_optimized_look(2));
+  CHECK(nr_pass_uses_optimized_look(2));
   CHECK(nr_pass_uses_optimized_look(1));
   CHECK(nr_pass_count_uses_multipass_addon(1));
   CHECK(nr_pass_count_uses_multipass_addon(2));
@@ -2792,10 +2994,10 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 5));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(3, 6));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 1));
-  CHECK_FALSE(nr_pass_count_change_applies_live(2, 5));
-  CHECK_FALSE(nr_pass_count_change_applies_live(5, 2));
-  CHECK_FALSE(nr_pass_count_change_applies_live(3, 6));
-  CHECK_FALSE(nr_pass_count_change_applies_live(6, 3));
+  CHECK(nr_pass_count_change_applies_live(2, 5));
+  CHECK(nr_pass_count_change_applies_live(5, 2));
+  CHECK(nr_pass_count_change_applies_live(3, 6));
+  CHECK(nr_pass_count_change_applies_live(6, 3));
 
   {
     std::string win =
@@ -2903,10 +3105,15 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK(s.nr_pass_count == 1);
   s.nr_pass_count = 2;
   const std::string ini = serialize_settings_ini(s);
-  CHECK(ini.find("nr_pass_count=2") != std::string::npos);
+  CHECK(ini.find("nr_pass_count=5") != std::string::npos);
   PersistedSettings loaded;
   REQUIRE(parse_settings_ini(ini, loaded));
-  CHECK(loaded.nr_pass_count == 2);
+  CHECK(loaded.nr_pass_count == 5);
+  PersistedSettings loaded_old_default;
+  REQUIRE(parse_settings_ini("[session]\nnr_pass_count=2\n", loaded_old_default));
+  CHECK(loaded_old_default.nr_pass_count == 5);
+  REQUIRE(parse_settings_ini("[session]\nnr_pass_count=3\n", loaded_old_default));
+  CHECK(loaded_old_default.nr_pass_count == 6);
   s.nr_pass_count = 4;
   const std::string ini15 = serialize_settings_ini(s);
   CHECK(ini15.find("nr_pass_count=4") != std::string::npos);
@@ -2925,7 +3132,7 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
 
   AppConfig cfg;
   apply_persisted_to_config(loaded, cfg);
-  CHECK(cfg.nr_pass_count == 2);
+  CHECK(cfg.nr_pass_count == 5);
 
   std::string reshade = "EnableHooks=2\nNRPreset=0\nNeuralUplift=1\n";
   reshade = apply_reshade_nr_pass_count(std::move(reshade), 3);
@@ -2942,14 +3149,14 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
 
   reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 2, /*visual=*/0);
   CHECK(parse_reshade_nr_pass_count(reshade) == 2);
-  CHECK(reshade.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
-  CHECK(reshade.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
-  CHECK(reshade.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingDiffuseWhiteNits=100") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingHookPoint=2") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingRequireDlss=1") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingSkinStructureStrength=1") != std::string::npos);
-  CHECK(reshade.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
+  CHECK(reshade.find("DirectNeuralRenderingUiCorrectionMode=2") != std::string::npos);
   CHECK(reshade.find("DirectNeuralRenderingStyle=0") != std::string::npos);
-  CHECK_FALSE(reshade_look_is_2x_optimized(reshade));
+  CHECK(reshade_look_is_2x_optimized(reshade));
   reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 1, /*Model C=*/2);
   CHECK(reshade.find("DirectNeuralRenderingStyle=2") != std::string::npos);
   reshade = apply_reshade_multipass_look_defaults(std::move(reshade), 4, /*visual=*/0);
@@ -3053,7 +3260,7 @@ TEST_CASE("boot migrates an old addons-stable ReShade.ini to multipass Pass 1 de
   fs::remove_all(tmp, ec);
 }
 
-TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact") {
+TEST_CASE("1.5x and 2x otimizado share hook look; retired default folds into optimized") {
   CHECK(nr_reshade_pass_count(2) == 2);
   CHECK(nr_reshade_pass_count(5) == 2);
   CHECK(perf_test_pass_work(2) == 2.0);
@@ -3063,8 +3270,8 @@ TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact"
   CHECK(perf_test_pass_work(1) == 1.0);
   CHECK(perf_test_pass_work(3) == 3.0);
 
-  const char* hints[] = {nr_pass_count_15x_hint(), nr_pass_count_2x_opt_hint(), nr_pass_count_23x_hint(),
-                         nr_pass_count_label(2), nr_pass_count_label(5)};
+  const char* hints[] = {nr_pass_count_15x_hint(), nr_pass_count_2x_opt_hint(), nr_pass_count_label(2),
+                         nr_pass_count_label(5)};
   for (const char* h : hints) {
     const std::string s(h);
     CHECK(s.find("1,7") == std::string::npos);
@@ -3100,13 +3307,10 @@ TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact"
   const std::string look5 = apply(5);
   const std::string look6 = apply(6);
   CHECK(look2 == look2b);
-  CHECK(look2 != look5);
+  CHECK(look2 == look5);
+  CHECK(look3 == look6);
   CHECK(look1 != look15);
-  CHECK(look15 != look2);
   CHECK(look15 != look5);
-  CHECK(look3 != look2);
-  CHECK(look3 != look5);
-  CHECK(look3 != look6);
   CHECK(look6 != look5);
 
   CHECK(parse_reshade_nr_pass_count(look1) == 1);
@@ -3131,23 +3335,22 @@ TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact"
   CHECK(reshade_look_is_2x_optimized(look15));
   CHECK(infer_multipass_ui_pass_count("AddonPath=.\\addons-multipass\n" + look15) == 4);
 
-  CHECK(look2.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
-  CHECK(look2.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
-  CHECK(look2.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
-  CHECK(look2.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
-  CHECK(look2.find("NRDiffuseWhiteNits=500") != std::string::npos);
-  CHECK(look2.find("NRUICorrection=1") != std::string::npos);
-  CHECK(look2.find("DirectNeuralRenderingAutoMask=1") != std::string::npos);
-  CHECK(look2.find("DirectNeuralRenderingLocalStructureStrength=1") != std::string::npos);
-  CHECK(look2.find("DirectNeuralRenderingSkinStructureStrength=1") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingHookPoint=2") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingUiCorrectionMode=2") != std::string::npos);
+  CHECK(look2.find("DirectNeuralRenderingDiffuseWhiteNits=100") != std::string::npos);
+  CHECK(look2.find("NRDiffuseWhiteNits=100") != std::string::npos);
+  CHECK(look2.find("NRUICorrection=2") != std::string::npos);
+  CHECK(reshade_look_is_2x_optimized(look2));
+  CHECK(infer_multipass_ui_pass_count("AddonPath=.\\addons-multipass\n" + look2) == 5);
 
-  CHECK(look3.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
-  CHECK(look3.find("DirectNeuralRenderingHookPoint=1") != std::string::npos);
-  CHECK(look3.find("DirectNeuralRenderingUiCorrectionMode=1") != std::string::npos);
-  CHECK(look3.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+  CHECK(look3.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
+  CHECK(look3.find("DirectNeuralRenderingHookPoint=2") != std::string::npos);
+  CHECK(look3.find("DirectNeuralRenderingUiCorrectionMode=2") != std::string::npos);
+  CHECK(look3.find("DirectNeuralRenderingDiffuseWhiteNits=100") != std::string::npos);
   CHECK(look3.find("DirectNeuralRenderingPassCount=3") != std::string::npos);
-  CHECK_FALSE(reshade_look_is_2x_optimized(look3));
-  CHECK(infer_multipass_ui_pass_count("AddonPath=.\\addons-multipass\n" + look3) == 3);
+  CHECK(reshade_look_is_2x_optimized(look3));
+  CHECK(infer_multipass_ui_pass_count("AddonPath=.\\addons-multipass\n" + look3) == 6);
 
   CHECK(look6.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
   CHECK(look6.find("DirectNeuralRenderingHookPoint=2") != std::string::npos);
@@ -3170,7 +3373,7 @@ TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact"
   CHECK(look5.find("NRLocalStructure=1") != std::string::npos);
   CHECK(look5.find("DirectNeuralRenderingPassCount=2") != std::string::npos);
   CHECK(reshade_look_is_2x_optimized(look5));
-  CHECK_FALSE(reshade_look_is_2x_optimized(look2));
+  CHECK(reshade_look_is_2x_optimized(look2));
 
   {
     std::string infer15 = "AddonPath=.\\addons-multipass\n" + look15;
@@ -3196,10 +3399,10 @@ TEST_CASE("1.5x and 2x otimizado share hook look; 2x default and 3x stay intact"
   {
     std::string infer = "AddonPath=.\\addons-multipass\n" + look2;
     infer = apply_reshade_look_for_current_stack(std::move(infer), 0);
-    CHECK_FALSE(reshade_look_is_2x_optimized(infer));
-    CHECK(infer_multipass_ui_pass_count(infer) == 2);
-    CHECK(infer.find("DirectNeuralRenderingEncoding=0") != std::string::npos);
-    CHECK(infer.find("DirectNeuralRenderingDiffuseWhiteNits=500") != std::string::npos);
+    CHECK(reshade_look_is_2x_optimized(infer));
+    CHECK(infer_multipass_ui_pass_count(infer) == 5);
+    CHECK(infer.find("DirectNeuralRenderingEncoding=2") != std::string::npos);
+    CHECK(infer.find("DirectNeuralRenderingDiffuseWhiteNits=100") != std::string::npos);
   }
   {
     std::string keep5 = "AddonPath=.\\addons-multipass\nDirectNeuralRenderingPassCount=2\n";
@@ -3301,7 +3504,7 @@ TEST_CASE("Krish 8.5 recipes: 6 modos x 3 cenas") {
         CHECK(t.find("NRLookStrength=1.75") == std::string::npos);
         CHECK(t.find("NRLookBrighten=0.50") == std::string::npos);
       }
-      CHECK(infer_multipass_ui_pass_count(t) == p);
+      CHECK(infer_multipass_ui_pass_count(t) == clamp_nr_pass_count(p));
       CHECK(reshade_look_is_2x_optimized(t) == opt);
     }
   }
@@ -4064,19 +4267,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 0, 4));
+  CHECK(app_version_is(6, 5, 0));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.0.4");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.0.4") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.0.4");
+  CHECK(std::string(kAppVersion) == "6.5.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.5.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.0.4") != std::string::npos);
+  CHECK(lobby_t.find("6.5.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.0.4") != std::string::npos);
+  CHECK(sess_t.find("6.5.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.0.4 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.5.0 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
@@ -4546,9 +4749,44 @@ TEST_CASE("mini overlay DLSS5 follows renodx_on only (not passthrough dlss_on)")
   // passthrough — after Invert-bug fix, status is solely renodx_on / g_nr_runtime_on.
   char line[512]{};
   format_mini_overlay_line(line, sizeof(line), 60.0, 0.0, false, 2, true, 16.0, 8.0, 0, 0, 2560, 1440);
-  CHECK(std::strstr(line, "NR ON") != nullptr);
+  CHECK(std::strstr(line, "DLSS5 ON") != nullptr);
   format_mini_overlay_line(line, sizeof(line), 60.0, 0.0, false, 2, false, 16.0, 8.0, 0, 0, 2560, 1440);
-  CHECK(std::strstr(line, "NR off") != nullptr);
+  CHECK(std::strstr(line, "DLSS5 off") != nullptr);
+}
+
+TEST_CASE("overlays say DLSS5 ON or off and keep the menu name") {
+  MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+  char a[384]{}, b[384]{};
+  format_mini_overlay_segments(segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 0.0, false, 2, true,
+                               true, 16.7, 16.6, 17.0, 18.0, true, 8.5, 2.2, 0, 0, 0, 2560, 1440, 2560, 1440,
+                               2560, 1440, 100, false, 0, 0, 0, 0, "Cinematic", nullptr, 0, 0, 0, nullptr, 60.0,
+                               5);
+  CHECK(std::strstr(a, "DLSS5 ON") != nullptr);
+  CHECK(std::strstr(a, "2x otimizado") != nullptr);
+  CHECK(std::strstr(a, "Cinematic") != nullptr);
+  CHECK(std::strstr(a, "DLSS5 off") == nullptr);
+
+  format_mini_overlay_segments(segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 0.0, false, 2, false,
+                               true, 16.7, 16.6, 17.0, 18.0, true, 8.5, 2.2, 0, 0, 0, 2560, 1440, 2560, 1440,
+                               2560, 1440, 100, false, 0, 0, 0, 0, "Cinematic", nullptr, 0, 0, 0, nullptr, 60.0,
+                               5);
+  CHECK(std::strstr(a, "DLSS5 off") != nullptr);
+  CHECK(std::strstr(a, "2x otimizado") != nullptr);
+  CHECK(std::strstr(a, "DLSS5 ON") == nullptr);
+
+  char live[40]{};
+  format_live_dlss5_line(live, sizeof(live), true, 5, true);
+  CHECK(std::string(live) == "DLSS5 ON 2x otimizado");
+  format_live_dlss5_line(live, sizeof(live), false, 5, true);
+  CHECK(std::string(live) == "DLSS5 off");
+
+  char stack[96]{};
+  format_dlss5_stack_hud_line(stack, sizeof(stack), true, true, 5);
+  CHECK(std::strstr(stack, "DLSS5 ON") != nullptr);
+  CHECK(std::strstr(stack, "2x otimizado") != nullptr);
+  format_dlss5_stack_hud_line(stack, sizeof(stack), false, true, 5);
+  CHECK(std::strstr(stack, "DLSS5 off") != nullptr);
+  CHECK(std::strstr(stack, "DLSS5 ON") == nullptr);
 }
 
 TEST_CASE("format change must not re-query device every frame") {
@@ -5169,23 +5407,23 @@ TEST_CASE("live fps line shows FG bar when on") {
   format_live_fps_line(line, sizeof(line), 59.9, 0.0, false, 2);
   CHECK(std::string(line) == "59.9");
   format_live_dlss5_line(line, sizeof(line), true, 1, true);
-  CHECK(std::string(line) == "DLSS 1x");
+  CHECK(std::string(line) == "DLSS5 ON 1x");
   CHECK(std::string(line).find("stable") == std::string::npos);
   CHECK(std::string(line).find("Model") == std::string::npos);
   format_live_dlss5_line(line, sizeof(line), true, 2, true);
-  CHECK(std::string(line) == "DLSS 2x");
+  CHECK(std::string(line) == "DLSS5 ON 2x otimizado");
   format_live_dlss5_line(line, sizeof(line), true, 5, true);
-  CHECK(std::string(line) == "DLSS 2x+");
+  CHECK(std::string(line) == "DLSS5 ON 2x otimizado");
   format_live_dlss5_line(line, sizeof(line), true, 6, true);
-  CHECK(std::string(line) == "DLSS 3x+");
+  CHECK(std::string(line) == "DLSS5 ON 3x otimizado");
   format_live_dlss5_line(line, sizeof(line), true, 3, true);
-  CHECK(std::string(line) == "DLSS 3x");
+  CHECK(std::string(line) == "DLSS5 ON 3x otimizado");
   format_live_dlss5_line(line, sizeof(line), true, 4, true);
-  CHECK(std::string(line) == "DLSS 1.5x");
+  CHECK(std::string(line) == "DLSS5 ON 1,5x");
   format_live_dlss5_line(line, sizeof(line), true, 7, true);
-  CHECK(std::string(line) == "DLSS 1.5x");
+  CHECK(std::string(line) == "DLSS5 ON 1,5x");
   format_live_dlss5_line(line, sizeof(line), false, 2, true);
-  CHECK(std::string(line) == "DLSS off");
+  CHECK(std::string(line) == "DLSS5 off");
   format_live_fg_line(line, sizeof(line), true, 2);
   CHECK(std::string(line) == "FG Fixo x2 f0");
   format_live_fg_line(line, sizeof(line), true, 3);
@@ -5203,7 +5441,7 @@ TEST_CASE("live fps line shows FG bar when on") {
   fill_live_strip_lines(strip, true, LiveConsole::Ps5Pro, true, 5, true, 3, 60.0);
   CHECK(strip.has_console);
   CHECK(std::string(strip.console) == "PS5 Pro");
-  CHECK(std::string(strip.dlss) == "DLSS 2x+");
+  CHECK(std::string(strip.dlss) == "DLSS5 ON 2x otimizado");
   CHECK(std::string(strip.fg) == "FG Fixo x3 f0");
   CHECK(std::string(strip.fps_cap.text) == "60.0");
   CHECK(strip.has_fg_fps);
@@ -5486,22 +5724,22 @@ TEST_CASE("3.0 HUD stack line names motor and pass count") {
   format_dlss5_stack_hud_line(line, sizeof(line), true, true, 1);
   CHECK(std::strstr(line, "1x") != nullptr);
   CHECK(std::strstr(line, "multipass") != nullptr);
-  CHECK(std::strstr(line, "NR ON") != nullptr);
+  CHECK(std::strstr(line, "DLSS5 ON") != nullptr);
   format_dlss5_stack_hud_line(line, sizeof(line), false, true, 2);
   CHECK(std::strstr(line, "2x") != nullptr);
   CHECK(std::strstr(line, "multipass") != nullptr);
-  CHECK(std::strstr(line, "NR off") != nullptr);
+  CHECK(std::strstr(line, "DLSS5 off") != nullptr);
   format_dlss5_stack_hud_line(line, sizeof(line), true, true, 4);
-  CHECK(std::strstr(line, "1.5x") != nullptr);
+  CHECK(std::strstr(line, "1,5x") != nullptr);
   CHECK(std::strstr(line, "multipass") != nullptr);
   CHECK(std::strstr(line, "1x") == nullptr);  // must not look like Krish 1x
   format_dlss5_stack_hud_line(line, sizeof(line), true, true, 5);
-  CHECK(std::strstr(line, "2x+") != nullptr);
-  CHECK(std::strstr(line, "2x+") == std::strstr(line, "2x"));
+  CHECK(std::strstr(line, "2x otimizado") != nullptr);
+  CHECK(std::strstr(line, "2x default") == nullptr);
   format_live_dlss5_line(line, sizeof(line), true, 5, true);
-  CHECK(std::string(line) == "DLSS 2x+");
+  CHECK(std::string(line) == "DLSS5 ON 2x otimizado");
   format_live_dlss5_line(line, sizeof(line), true, 6, true);
-  CHECK(std::string(line) == "DLSS 3x+");
+  CHECK(std::string(line) == "DLSS5 ON 3x otimizado");
 }
 
 TEST_CASE("1.5x mini overlay names multipass motor not 1x stable") {
@@ -5515,9 +5753,9 @@ TEST_CASE("1.5x mini overlay names multipass motor not 1x stable") {
   bool found_motor = false;
   bool found_1x_token = false;
   for (int i = 0; i < n; ++i) {
-    if (std::strstr(segs[i].text, "1.5x")) found_15 = true;
+    if (std::strstr(segs[i].text, "1,5x")) found_15 = true;
     if (std::strstr(segs[i].text, "multipass")) found_motor = true;
-    if (std::strstr(segs[i].text, "1x") && std::strstr(segs[i].text, "1.5x") == nullptr) found_1x_token = true;
+    if (std::strstr(segs[i].text, "1x") && std::strstr(segs[i].text, "1,5x") == nullptr) found_1x_token = true;
     if (std::strstr(segs[i].text, "stable")) found_1x_token = true;
   }
   CHECK(found_15);
@@ -5525,7 +5763,7 @@ TEST_CASE("1.5x mini overlay names multipass motor not 1x stable") {
   CHECK_FALSE(found_1x_token);
 }
 
-TEST_CASE("2x otimizado mini and live overlays show 2x+") {
+TEST_CASE("2x otimizado mini and live overlays show the menu name") {
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
   char a[8]{}, b[8]{};
   const int n = format_mini_overlay_segments(
@@ -5535,16 +5773,42 @@ TEST_CASE("2x otimizado mini and live overlays show 2x+") {
   bool found_2xp = false;
   bool found_bare_2x = false;
   for (int i = 0; i < n; ++i) {
-    if (std::strstr(segs[i].text, "2x+")) found_2xp = true;
-    if (std::strstr(segs[i].text, "2x") && std::strstr(segs[i].text, "2x+") == nullptr) found_bare_2x = true;
+    if (std::strstr(segs[i].text, "2x otimizado")) found_2xp = true;
+    if (std::strstr(segs[i].text, "2x default")) found_bare_2x = true;
+    if (std::strstr(segs[i].text, "2x+")) found_bare_2x = true;
   }
   CHECK(found_2xp);
   CHECK_FALSE(found_bare_2x);
   char live[32]{};
   format_live_dlss5_line(live, sizeof(live), true, 5, true);
-  CHECK(std::string(live) == "DLSS 2x+");
+  CHECK(std::string(live) == "DLSS5 ON 2x otimizado");
   format_live_dlss5_line(live, sizeof(live), true, 2, true);
-  CHECK(std::string(live) == "DLSS 2x");
+  CHECK(std::string(live) == "DLSS5 ON 2x otimizado");
+}
+
+TEST_CASE("mini overlay pass name leads the row for every X") {
+  const int passes[] = {1, 4, 2, 5, 3, 6};
+  for (int p : passes) {
+    MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
+    char a[8]{}, b[8]{};
+    const int n = format_mini_overlay_segments(
+        segs, kMiniOverlayMaxSegs, a, sizeof(a), b, sizeof(b), 60.0, 0.0, false, 2, true, false, 16.7, 16.6,
+        17.0, 18.0, true, 8.5, 2.2, 0, 0, 0, 2560, 1440, 2560, 1440, 2560, 1440, 100, true, 59.9, 2.0, 2.1, 0,
+        "Cinematic", nullptr, 12.0, 900, 20.0, nullptr, 60.0, p, nullptr, true, 0, 55, 145, 0, false, 60, 80);
+    int dlss_i = -1;
+    int res_i = -1;
+    int fg_i = -1;
+    const char* label = nr_pass_count_label(p);
+    for (int i = 0; i < n; ++i) {
+      if (dlss_i < 0 && std::strstr(segs[i].text, "DLSS5")) dlss_i = i;
+      if (res_i < 0 && std::strstr(segs[i].text, "2560x1440")) res_i = i;
+      if (fg_i < 0 && std::strstr(segs[i].text, "Fixo x")) fg_i = i;
+    }
+    REQUIRE(dlss_i == 0);
+    CHECK(std::strstr(segs[dlss_i].text, label) != nullptr);
+    CHECK(res_i > dlss_i);
+    CHECK(fg_i > dlss_i);
+  }
 }
 
 TEST_CASE("1.5x keeps the edit recipe; 1.7x slot maps to 1.5x") {
@@ -5660,19 +5924,19 @@ TEST_CASE("1.5x keeps the edit recipe; 1.7x slot maps to 1.5x") {
   for (int i = 0; i < n; ++i) {
     if (std::strstr(segs[i].text, "1.7x")) found_17 = true;
     if (std::strstr(segs[i].text, "1.5x++")) found_old_pp = true;
-    if (std::strstr(segs[i].text, "1.5x") && std::strstr(segs[i].text, "1.7x") == nullptr) found_bare_15 = true;
+    if (std::strstr(segs[i].text, "1,5x") && std::strstr(segs[i].text, "1.7x") == nullptr) found_bare_15 = true;
   }
   CHECK_FALSE(found_17);
   CHECK_FALSE(found_old_pp);
   CHECK(found_bare_15);
   char live[32]{};
   format_live_dlss5_line(live, sizeof(live), true, 7, true);
-  CHECK(std::string(live) == "DLSS 1.5x");
+  CHECK(std::string(live) == "DLSS5 ON 1,5x");
   format_live_dlss5_line(live, sizeof(live), true, 4, true);
-  CHECK(std::string(live) == "DLSS 1.5x");
+  CHECK(std::string(live) == "DLSS5 ON 1,5x");
   char stack[80]{};
   format_dlss5_stack_hud_line(stack, sizeof(stack), true, true, 7);
-  CHECK(std::strstr(stack, "1.5x") != nullptr);
+  CHECK(std::strstr(stack, "1,5x") != nullptr);
   CHECK(std::strstr(stack, "1.7x") == nullptr);
   CHECK(std::strstr(stack, "1.5x++") == nullptr);
   CHECK(std::strstr(stack, "multipass") != nullptr);
@@ -5698,7 +5962,7 @@ TEST_CASE("feed boot scale is 100 in lobby and session scale when autostart") {
 }
 
 TEST_CASE("Ctrl plus and minus cycle Pass Count and wrap") {
-  const int forward[] = {4, 2, 5, 3, 6, 1};
+  const int forward[] = {4, 5, 6, 1};
   int pass = 1;
   for (int expect : forward) {
     pass = step_nr_pass_count(pass, 1);
@@ -5707,7 +5971,7 @@ TEST_CASE("Ctrl plus and minus cycle Pass Count and wrap") {
   CHECK(std::string(nr_pass_count_label(step_nr_pass_count(1, -1))) == "3x otimizado");
   CHECK(step_nr_pass_count(6, 1) == 1);
   CHECK(std::string(nr_pass_count_label(step_nr_pass_count(6, 1))) == "1x");
-  const int back[] = {6, 3, 5, 2, 4, 1};
+  const int back[] = {6, 5, 4, 1};
   pass = 1;
   for (int expect : back) {
     pass = step_nr_pass_count(pass, -1);
@@ -5842,7 +6106,7 @@ TEST_CASE("session CFG changes survive the restart through settings.ini") {
   AppConfig cfg;
   cfg.enhance = EnhanceBackend::Renodx;
   cfg.renodx_preset = 2;  // Cinematic
-  cfg.nr_pass_count = 2;
+  cfg.nr_pass_count = 5;
   cfg.scale_percent = 50;
   cfg.neural_rendering = true;
   cfg.fg_auto_start = true;
@@ -5851,7 +6115,7 @@ TEST_CASE("session CFG changes survive the restart through settings.ini") {
   PersistedSettings s = default_settings();
   apply_session_cfg_to_persisted(cfg, s);
   CHECK(s.renodx_preset == 2);
-  CHECK(s.nr_pass_count == 2);
+  CHECK(s.nr_pass_count == 5);
   CHECK(s.scale_percent == 50);
   CHECK(s.neural_rendering);
   CHECK(s.enhance_renodx);
@@ -5861,7 +6125,7 @@ TEST_CASE("session CFG changes survive the restart through settings.ini") {
   PersistedSettings out;
   CHECK(parse_settings_ini(serialize_settings_ini(s), out));
   CHECK(out.renodx_preset == 2);
-  CHECK(out.nr_pass_count == 2);
+  CHECK(out.nr_pass_count == 5);
   CHECK(out.scale_percent == 50);
   CHECK(out.fg_enabled);
   CHECK(out.fg_multiplier == 4);
@@ -5870,7 +6134,7 @@ TEST_CASE("session CFG changes survive the restart through settings.ini") {
   AppConfig back;
   apply_persisted_to_config(out, back);
   CHECK(back.renodx_preset == 2);
-  CHECK(back.nr_pass_count == 2);
+  CHECK(back.nr_pass_count == 5);
   CHECK(back.scale_percent == 50);
   CHECK(back.enhance == EnhanceBackend::Renodx);
 }
@@ -6165,6 +6429,24 @@ TEST_CASE("perf test lobby says Benchmark") {
   CHECK(std::string(perf_test_counting_notice()).find("Benchmark") != std::string::npos);
   CHECK(std::string(perf_test_hz_title()).find("30") != std::string::npos);
   CHECK(std::string(perf_test_hz_title()).find("60 Hz") != std::string::npos);
+  int w = 0, h = 0;
+  perf_test_resolution_at(0, w, h);
+  CHECK(w == 1920);
+  CHECK(h == 1080);
+  perf_test_resolution_at(1, w, h);
+  CHECK(w == 2560);
+  CHECK(h == 1440);
+  perf_test_resolution_at(2, w, h);
+  CHECK(w == 3840);
+  CHECK(h == 2160);
+  CHECK(perf_test_resolution_index(1920, 1080) == 0);
+  CHECK(perf_test_resolution_index(2560, 1440) == 1);
+  CHECK(perf_test_resolution_index(3840, 2160) == 2);
+  CHECK(perf_test_resolution_index(1280, 720) == 0);
+  CHECK(perf_test_hz_index(30.0) == 0);
+  CHECK(perf_test_hz_index(60.0) == 1);
+  CHECK(perf_test_hz_value(0) == doctest::Approx(30.0));
+  CHECK(perf_test_hz_value(1) == doctest::Approx(60.0));
   CHECK(std::string(perf_test_hz_blurb()).find("HDMI") != std::string::npos);
   CHECK(std::string(perf_test_audio_toggle()) == "Habilitar som no teste");
   CHECK(std::string(perf_test_audio_hint()).find("audio") != std::string::npos);
@@ -6217,7 +6499,7 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(session_notice_named_preset_apply("TLOU").find("TLOU") != std::string::npos);
   const std::string toast = session_notice_nr_pass_count_apply(4, 2);
   CHECK(toast.find("1,5x") != std::string::npos);
-  CHECK(toast.find("2x default") != std::string::npos);
+  CHECK(toast.find("2x otimizado") != std::string::npos);
   CHECK(toast.find("Pass Count") != std::string::npos);
   CHECK(toast.find("reinicio") == std::string::npos);
   CHECK(motor.find("tela") != std::string::npos);
@@ -6241,15 +6523,14 @@ TEST_CASE("restart notice explains the reason and covers the new process boot") 
   CHECK(std::string(nr_pass_count_15x_hint()).find("exclusivo") != std::string::npos);
   CHECK(std::string(nr_pass_count_15x_hint()).find("2x") != std::string::npos);
   CHECK(std::string(nr_pass_count_15x_hint()).find("evolucao") != std::string::npos);
-  CHECK(std::string(nr_pass_count_23x_hint()).find("2x default") != std::string::npos);
-  CHECK(std::string(nr_pass_count_23x_hint()).find("3x") != std::string::npos);
   CHECK(std::string(nr_pass_count_2x_opt_hint()).find("exclusivo") != std::string::npos);
   CHECK(std::string(nr_pass_count_2x_opt_hint()).find("1,7") == std::string::npos);
   CHECK(nr_pass_count_selected_hint(1) == nr_pass_count_1x_hint());
   CHECK(nr_pass_count_selected_hint(4) == nr_pass_count_15x_hint());
   CHECK(nr_pass_count_selected_hint(7) == nr_pass_count_15x_hint());
   CHECK(nr_pass_count_selected_hint(5) == nr_pass_count_2x_opt_hint());
-  CHECK(nr_pass_count_selected_hint(2) == nr_pass_count_23x_hint());
+  CHECK(nr_pass_count_selected_hint(2) == nr_pass_count_2x_opt_hint());
+  CHECK(nr_pass_count_selected_hint(3) == nr_pass_count_2x_opt_hint());
   CHECK(std::string(cfg_tab_image()) == "Imagem");
   CHECK(std::string(cfg_tab_hud()) == "HUD");
   CHECK(std::string(cfg_tab_sound()) == "Som");
@@ -6341,7 +6622,7 @@ TEST_CASE("advanced config per X matches the mod, resets, and stays in presets")
   CHECK(one.look_mode == 0);
   CHECK(nr_advanced_near(one.look_strength, 1.0));
   CHECK(two.look_mode == 0);
-  CHECK(two.ui_correction == 1);
+  CHECK(two.ui_correction == 2);
   CHECK_FALSE(nr_advanced_equal(plus, one));
   CHECK_FALSE(nr_advanced_equal(plus, two));
 
@@ -6382,7 +6663,7 @@ TEST_CASE("advanced config per X matches the mod, resets, and stays in presets")
   CHECK(parse_reshade_nr_pass_count(as_15) == 1);
   const std::string as_2 = apply_reshade_multipass_look_defaults(seed, 2, 0, nullptr);
   CHECK(as_2.find("NRLookStrength=1.75") == std::string::npos);
-  CHECK(every_keyed_int_is(as_2, "NRUICorrection=", 1));
+  CHECK(every_keyed_int_is(as_2, "NRUICorrection=", 2));
   CHECK(parse_reshade_nr_pass_count(as_2) == 2);
 
   const std::string kept = apply_reshade_look_for_current_stack(written, 1, 5, &custom);
@@ -6722,7 +7003,7 @@ TEST_CASE("visual preset names and disk keys follow the DLSS5 motor") {
   feed = apply_renodx_visual_preset_to_feed(std::move(feed), 2, 4);
   CHECK(parse_feed_model_preset(feed) == 2);
 
-  const int motors[] = {1, 4, 2, 3};
+  const int motors[] = {1, 4, 5, 6};
   const int scales[] = {100, 50};
 
   auto feed_look_and_scale_ok = [](const std::string& f, int v, int p, int scale) {
@@ -6824,7 +7105,7 @@ TEST_CASE("visual preset names and disk keys follow the DLSS5 motor") {
             2.0, 2.1, 0, want, nullptr, 1.5, 0, 0, nullptr, 60.0, p);
         CHECK(n > 0);
         CHECK(std::strstr(a, want) != nullptr);
-        CHECK(std::strstr(a, nr_pass_count_short(p)) != nullptr);
+        CHECK(std::strstr(a, nr_pass_count_label(p)) != nullptr);
         CHECK(std::strstr(a, at_tag) != nullptr);
         CHECK(std::strstr(a, other_at) == nullptr);
         if (scale == 50) {
@@ -6894,7 +7175,7 @@ TEST_CASE("visual preset names and disk keys follow the DLSS5 motor") {
 TEST_CASE("lobby gear and Ctrl+M session CFG share motor names, disk, and scale") {
   // Os dois menus chamam a mesma API de nome; o disco e o mesmo apply. O que muda e o plano:
   // lobby (tela principal / F12) aplica look ao vivo no 1x; Ctrl+M sempre reinicia.
-  const int motors[] = {1, 4, 2, 3};
+  const int motors[] = {1, 4, 5, 6};
   const int scales[] = {100, 50};
   for (int p : motors) {
     for (int v : {0, 1, 2}) {
@@ -7307,7 +7588,7 @@ TEST_CASE("parse_args --perf-test keeps windowed plan knobs") {
   CHECK(c.height == 1080);
   CHECK(c.fps == 30.0);
   CHECK(c.scale_percent == 80);
-  CHECK(c.nr_pass_count == 2);
+  CHECK(c.nr_pass_count == 5);
   CHECK(c.renodx_preset == 1);
   CHECK(c.fg_multiplier == 3);
   CHECK(c.fg_auto_start);
@@ -7358,7 +7639,7 @@ TEST_CASE("perf test plan never writes into real HDMI presets") {
   apply_perf_test_plan_to_config(p, cfg);
   CHECK(cfg.perf_test);
   CHECK(cfg.perf_test_audio);
-  CHECK(cfg.nr_pass_count == 3);
+  CHECK(cfg.nr_pass_count == 6);
   CHECK(cfg.renodx_preset == 2);
   CHECK(cfg.scale_percent == 50);
 
@@ -7549,7 +7830,7 @@ TEST_CASE("benchmark always writes bug report and does not wait for FG when off"
 }
 
 TEST_CASE("perf test combos pass x scale x scene color") {
-  const int passes[] = {1, 4, 2, 3};
+  const int passes[] = {1, 4, 5, 6};
   const int scales[] = {50, 100};
   PerfTestSample ok;
   ok.fps = 59.9;
@@ -7752,7 +8033,7 @@ TEST_CASE("perf test every lobby combo has a coherent next step") {
   const int heights[] = {1080, 1440, 2160};
   const double metas[] = {30.0, 60.0};
   const int scales[] = {50, 70, 100};
-  const int passes[] = {1, 4, 2, 3};
+  const int passes[] = {1, 4, 5, 6};
   const int fgs[] = {1, 2, 3, 4};
   int n = 0;
   for (int i = 0; i < 3; ++i) {
@@ -8133,7 +8414,7 @@ TEST_CASE("user preset snapshot is the whole Ctrl+M and roundtrips") {
   REQUIRE(parse_user_preset(serialize_user_preset(a), b));
   require_preset_equal(a, b);
 
-  const int passes[] = {1, 4, 2, 5, 3};
+  const int passes[] = {1, 4, 5, 6};
   const int looks[] = {0, 1, 2};
   const int fgs[] = {0, 2, 3, 4};
   for (int pass : passes) {
@@ -8168,7 +8449,7 @@ TEST_CASE("user preset snapshot is the whole Ctrl+M and roundtrips") {
   CHECK(a1.nr_pass_count == 1);
   CHECK(a1.fg_enabled);
   CHECK(a1.fg_multiplier == 4);
-  CHECK(a3.nr_pass_count == 3);
+  CHECK(a3.nr_pass_count == 6);
   CHECK_FALSE(a3.fg_enabled);
   CHECK(a3.scale_percent == 75);
 
@@ -8182,8 +8463,8 @@ TEST_CASE("user preset list summary is Pass look FG and scale") {
   CHECK(user_preset_list_summary(make_user_preset("a", 5, 2, true, 3, 100)) == "2x+  Cinematic  FG x3  100%");
   CHECK(user_preset_list_summary(make_user_preset("b", 1, 0, false, 2, 100)) == "1x  Default  FG off  100%");
   CHECK(user_preset_list_summary(make_user_preset("c", 4, 1, true, 2, 100)) == "1.5x  Natural  FG x2  100%");
-  CHECK(user_preset_list_summary(make_user_preset("d", 2, 0, true, 4, 100)) == "2x  Default  FG x4  100%");
-  CHECK(user_preset_list_summary(make_user_preset("e", 3, 2, false, 3, 80)) == "3x  Cinematic  FG off  80%");
+  CHECK(user_preset_list_summary(make_user_preset("d", 2, 0, true, 4, 100)) == "2x+  Default  FG x4  100%");
+  CHECK(user_preset_list_summary(make_user_preset("e", 3, 2, false, 3, 80)) == "3x+  Cinematic  FG off  80%");
   CHECK(user_preset_list_summary(make_user_preset("e6", 6, 2, false, 3, 80)) == "3x+  Cinematic  FG off  80%");
   CHECK(user_preset_list_summary(make_user_preset("f", 1, 2, true, 3, 100)) == "1x  Cinematic  FG x3  100%");
   CHECK(user_preset_list_summary(make_user_preset("g", 1, 1, false, 2, 100)) == "1x  Natural  FG off  100%");
@@ -8434,9 +8715,9 @@ TEST_CASE("user preset apply plan matches Ctrl+M actions and is fill-safe") {
 
   const SessionCfgActions same_motor = plan_user_preset_apply(make_preset_session(2, 0, false, 2, 100),
                                                              make_user_preset("opt", 5, 0, false, 2, 100), true);
-  CHECK(same_motor.pass_count_changed);
+  CHECK_FALSE(same_motor.pass_count_changed);
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 5));
-  CHECK(plan_session_cfg_apply(true, 2, 5, 100, 100) == SessionCfgApply::RecycleWorker);
+  CHECK(plan_session_cfg_apply(true, 2, 5, 100, 100) == SessionCfgApply::Live);
 
   const SessionCfgActions cinema = plan_user_preset_apply(make_preset_session(1, 0, false, 2, 100),
                                                          make_user_preset("cin", 1, 2, false, 2, 100), true);
@@ -8551,7 +8832,7 @@ TEST_CASE("user preset disk overwrite is one file and load sorts A-Z") {
   CHECK(have.size() == 2);
   CHECK(have[0].name == "Alpha");
   CHECK(have[1].name == "beta");
-  CHECK(have[1].nr_pass_count == 3);
+  CHECK(have[1].nr_pass_count == 6);
   REQUIRE(delete_user_preset_in(dir, "Alpha", err));
   files = 0;
   for (const auto& e : std::filesystem::directory_iterator(dir)) {

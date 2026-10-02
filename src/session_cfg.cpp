@@ -335,10 +335,7 @@ void SessionCfgOverlay::draw_panel() {
     if (ImGui::RadioButton("1x##nrpass", pass == 1)) pass = 1;
     ImGui::SameLine();
     if (ImGui::RadioButton("1,5x##nrpass", pass == 4)) pass = 4;
-    if (ImGui::RadioButton("2x default##nrpass", pass == 2)) pass = 2;
-    ImGui::SameLine();
     if (ImGui::RadioButton("2x otimizado##nrpass", pass == 5)) pass = 5;
-    if (ImGui::RadioButton("3x default##nrpass", pass == 3)) pass = 3;
     ImGui::SameLine();
     if (ImGui::RadioButton("3x otimizado##nrpass", pass == 6)) pass = 6;
     state.nr_pass_count = clamp_nr_pass_count(pass);

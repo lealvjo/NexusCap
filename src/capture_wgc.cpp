@@ -1,4 +1,5 @@
 #include "nexuscap/capture.hpp"
+#include "nexuscap/settings_store.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +16,7 @@
 #include <windows.h>
 #include <dwmapi.h>
 #include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi.h>
 #include <dispatcherqueue.h>
 
@@ -231,6 +233,20 @@ void copy_mapped_nv12(const D3D11_MAPPED_SUBRESOURCE& mapped, int w, int h, uint
 
 }  // namespace
 
+void note_window_boot_line(const char* msg) {
+  if (!msg || !msg[0]) return;
+  std::printf("%s\n", msg);
+  OutputDebugStringA(msg);
+  OutputDebugStringA("\n");
+  const std::string path = app_logs_dir() + "\\window_boot.txt";
+  FILE* f = nullptr;
+  if (fopen_s(&f, path.c_str(), "a") == 0 && f) {
+    std::fputs(msg, f);
+    std::fputc('\n', f);
+    std::fclose(f);
+  }
+}
+
 std::vector<CapturableWindowInfo> list_capturable_windows(uint64_t exclude_hwnd) {
   std::vector<CapturableWindowInfo> out;
   EnumCtx ctx{&out, exclude_hwnd};
@@ -259,6 +275,27 @@ struct WindowCapture::Impl {
   winrt::com_ptr<ID3D11Texture2D> staging;
   UINT staging_w = 0;
   UINT staging_h = 0;
+  // Duas cópias. O callback só escreve na livre. O loop lê a anterior, já pronta na GPU.
+  struct HeldCopy {
+    winrt::com_ptr<ID3D11Texture2D> tex;
+    UINT tex_w = 0;
+    UINT tex_h = 0;
+    UINT src_w = 0;
+    UINT src_h = 0;
+    int w = 0;
+    int h = 0;
+    double arrived_ms = 0;
+    uint64_t seq = 0;
+    int state = 0;  // 0 livre, 1 cheia, 2 em conversão
+  };
+  HeldCopy copies_[2]{};
+  uint64_t copy_seq_ = 0;
+  std::mutex copy_mu;
+  std::thread convert;
+  std::atomic<bool> convert_stop{false};
+  bool boot_log = false;
+  int maps_logged = 0;
+  bool copy_logged = false;
   winrt::com_ptr<ID3D11VideoDevice> video_dev;
   winrt::com_ptr<ID3D11VideoContext> video_ctx;
   winrt::com_ptr<ID3D11VideoProcessorEnumerator> video_enum;
@@ -289,6 +326,8 @@ struct WindowCapture::Impl {
   std::condition_variable start_cv;
   std::atomic<bool> start_signaled{false};
   std::string start_err;
+  bool opening = false;
+  double capture_fps = 60.0;
 
   void reset_video() {
     video_in = nullptr;
@@ -340,6 +379,11 @@ struct WindowCapture::Impl {
     staging = nullptr;
     staging_w = 0;
     staging_h = 0;
+    copies_[0] = {};
+    copies_[1] = {};
+    copy_seq_ = 0;
+    maps_logged = 0;
+    copy_logged = false;
     reset_video();
     ctx = nullptr;
     d3d = nullptr;
@@ -488,21 +532,43 @@ struct WindowCapture::Impl {
     return true;
   }
 
-  void publish_nv12(int w, int h) {
+  void publish_nv12(int w, int h, double arrived_ms) {
     FramePayload p;
     p.nv12.swap(nv12);
     p.width = w;
     p.height = h;
-    p.cap_qpc_ms = clock ? clock->now_ms() : 0;
+    p.cap_qpc_ms = arrived_ms > 0.0 ? arrived_ms : (clock ? clock->now_ms() : 0);
     p.frame_index = frames->fetch_add(1, std::memory_order_relaxed);
     out_w->store(w, std::memory_order_relaxed);
     out_h->store(h, std::memory_order_relaxed);
     if (slot) slot->publish(std::move(p));
   }
 
+  void boot_line(const char* msg) const {
+    if (boot_log) note_window_boot_line(msg);
+  }
+
+  bool ensure_copy_tex(HeldCopy& dst, UINT w, UINT h) {
+    if (dst.tex && dst.tex_w == w && dst.tex_h == h) return true;
+    dst.tex = nullptr;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w;
+    td.Height = h;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    if (!d3d || FAILED(d3d->CreateTexture2D(&td, nullptr, dst.tex.put()))) return false;
+    dst.tex_w = w;
+    dst.tex_h = h;
+    return true;
+  }
+
+  // Callback: só CopyResource na textura livre e solta o frame do WGC.
   void on_frame() {
-    std::lock_guard<std::mutex> lock(mu);
-    if (!running || !running->load(std::memory_order_relaxed) || !pool) return;
+    if (!running || !running->load(std::memory_order_relaxed) || !pool || !ctx) return;
     auto frame = pool.TryGetNextFrame();
     if (!frame) return;
     auto surface = frame.Surface();
@@ -510,24 +576,93 @@ struct WindowCapture::Impl {
     D3D11_TEXTURE2D_DESC desc{};
     tex->GetDesc(&desc);
     if (desc.Width < 2 || desc.Height < 2) return;
-    const int w = even_capture_dim(static_cast<int>(desc.Width));
-    const int h = even_capture_dim(static_cast<int>(desc.Height));
+    int slot = -1;
+    {
+      std::lock_guard<std::mutex> lock(copy_mu);
+      for (int i = 0; i < 2; ++i) {
+        if (copies_[i].state == 0) {
+          slot = i;
+          copies_[i].state = 2;
+          break;
+        }
+      }
+    }
+    if (slot < 0) return;
+    HeldCopy& dst = copies_[slot];
+    if (!ensure_copy_tex(dst, desc.Width, desc.Height)) {
+      std::lock_guard<std::mutex> lock(copy_mu);
+      dst.state = 0;
+      return;
+    }
+    ctx->CopyResource(dst.tex.get(), tex.get());
+    {
+      std::lock_guard<std::mutex> lock(copy_mu);
+      dst.src_w = desc.Width;
+      dst.src_h = desc.Height;
+      dst.w = even_capture_dim(static_cast<int>(desc.Width));
+      dst.h = even_capture_dim(static_cast<int>(desc.Height));
+      dst.arrived_ms = clock ? clock->now_ms() : 0;
+      dst.seq = ++copy_seq_;
+      dst.state = 1;
+    }
+    if (!copy_logged) {
+      copy_logged = true;
+      boot_line("primeira copia");
+    }
+  }
+
+  void drain_copy() {
+    int picked = -1;
+    uint64_t best = 0;
+    {
+      std::lock_guard<std::mutex> lock(copy_mu);
+      if (copy_seq_ < 2) return;
+      for (int i = 0; i < 2; ++i) {
+        if (copies_[i].state != 1 || !copies_[i].tex) continue;
+        if (copies_[i].seq == copy_seq_) continue;
+        if (picked < 0 || copies_[i].seq < best) {
+          picked = i;
+          best = copies_[i].seq;
+        }
+      }
+      if (picked < 0) return;
+      copies_[picked].state = 2;
+    }
+    HeldCopy& src = copies_[picked];
+    const int w = src.w;
+    const int h = src.h;
+    const UINT src_w = src.src_w;
+    const UINT src_h = src.src_h;
+    const double arrived = src.arrived_ms;
+    auto release_slot = [&]() {
+      std::lock_guard<std::mutex> lock(copy_mu);
+      src.state = 0;
+    };
+    if (w < 2 || h < 2) {
+      release_slot();
+      return;
+    }
     const size_t need = static_cast<size_t>(w) * static_cast<size_t>(h) * 3u / 2u;
     if (nv12.size() != need) {
-      if (slot) slot->take_recycle_nv12(nv12);
+      if (this->slot) this->slot->take_recycle_nv12(nv12);
       if (nv12.size() != need) nv12.resize(need);
     }
-    const UINT gw = static_cast<UINT>(w);
-    const UINT gh = static_cast<UINT>(h);
+    const DWORD map_t0 = GetTickCount();
     bool ok = false;
-    if (video_ok && static_cast<UINT>(desc.Width) == gw && static_cast<UINT>(desc.Height) == gh) {
-      ok = gpu_to_nv12(tex.get(), gw, gh, nv12.data());
+    if (video_ok && src_w == static_cast<UINT>(w) && src_h == static_cast<UINT>(h)) {
+      ok = gpu_to_nv12(src.tex.get(), static_cast<UINT>(w), static_cast<UINT>(h), nv12.data());
     }
-    if (!ok) {
-      ok = cpu_to_nv12(tex.get(), desc.Width, desc.Height, w, h, nv12.data());
+    if (!ok) ok = cpu_to_nv12(src.tex.get(), src_w, src_h, w, h, nv12.data());
+    const DWORD map_ms = GetTickCount() - map_t0;
+    if (boot_log && maps_logged < 6) {
+      char line[80];
+      std::snprintf(line, sizeof(line), "map %ums ok=%d", static_cast<unsigned>(map_ms), ok ? 1 : 0);
+      boot_line(line);
+      ++maps_logged;
     }
+    release_slot();
     if (!ok) return;
-    publish_nv12(w, h);
+    publish_nv12(w, h, arrived);
   }
 
   void signal_start(std::string err) {
@@ -571,6 +706,10 @@ struct WindowCapture::Impl {
         fail("WGC: falha D3D11 (" + hresult_hex(hr) + ")");
         return;
       }
+      {
+        winrt::com_ptr<ID3D11Multithread> mt;
+        if (SUCCEEDED(d3d->QueryInterface(IID_PPV_ARGS(mt.put()))) && mt) mt->SetMultithreadProtected(TRUE);
+      }
       init_video();
       winrt_d3d = wrap_d3d_device(d3d.get());
 
@@ -607,7 +746,8 @@ struct WindowCapture::Impl {
       } catch (...) {
       }
       try {
-        session.MinUpdateInterval(winrt::Windows::Foundation::TimeSpan{10000});
+        session.MinUpdateInterval(
+            winrt::Windows::Foundation::TimeSpan{wgc_min_update_ticks(capture_fps)});
       } catch (...) {
       }
       arrived = pool.FrameArrived([this](auto&&, auto&&) {
@@ -620,8 +760,17 @@ struct WindowCapture::Impl {
         if (running) running->store(false, std::memory_order_relaxed);
       });
       if (running) running->store(true, std::memory_order_relaxed);
+      convert_stop.store(false, std::memory_order_relaxed);
+      convert = std::thread([this]() {
+        while (!convert_stop.load(std::memory_order_relaxed) && running &&
+               running->load(std::memory_order_relaxed)) {
+          drain_copy();
+          Sleep(1);
+        }
+      });
       session.StartCapture();
       signal_start({});
+      boot_line("StartCapture ok");
 
       MSG msg{};
       while (running && running->load(std::memory_order_relaxed)) {
@@ -638,15 +787,21 @@ struct WindowCapture::Impl {
       }
     } catch (const winrt::hresult_error& e) {
       if (!start_signaled.load(std::memory_order_acquire)) {
+        convert_stop.store(true, std::memory_order_relaxed);
+        if (convert.joinable()) convert.join();
         fail("WGC falhou (borderless / DRM): " + wide_to_utf8(e.message().c_str()) + " (" + hresult_hex(e.code()) + ")");
         return;
       }
     } catch (...) {
       if (!start_signaled.load(std::memory_order_acquire)) {
+        convert_stop.store(true, std::memory_order_relaxed);
+        if (convert.joinable()) convert.join();
         fail("WGC falhou (borderless / DRM)");
         return;
       }
     }
+    convert_stop.store(true, std::memory_order_relaxed);
+    if (convert.joinable()) convert.join();
     reset_pool();
     if (running) running->store(false, std::memory_order_relaxed);
   }
@@ -658,6 +813,20 @@ WindowCapture::~WindowCapture() {
   stop();
   delete impl_;
   impl_ = nullptr;
+}
+
+bool WindowCapture::startup_pending() const {
+  return impl_ && impl_->opening && !impl_->start_signaled.load(std::memory_order_acquire);
+}
+
+bool WindowCapture::take_startup_error(std::string& err) {
+  if (!impl_ || !impl_->start_signaled.load(std::memory_order_acquire)) return false;
+  std::lock_guard<std::mutex> lock(impl_->start_mu);
+  if (impl_->start_err.empty()) return false;
+  err = std::move(impl_->start_err);
+  impl_->start_err.clear();
+  impl_->opening = false;
+  return true;
 }
 
 bool WindowCapture::start(const std::string& device_name, const CaptureStartOptions& opt, FrameSlot& slot,
@@ -697,6 +866,11 @@ bool WindowCapture::start(const std::string& device_name, const CaptureStartOpti
   impl_->out_h = &height_;
   impl_->start_signaled.store(false, std::memory_order_relaxed);
   impl_->start_err.clear();
+  impl_->opening = opt.async_open;
+  impl_->boot_log = opt.async_open;
+  impl_->maps_logged = 0;
+  impl_->copy_logged = false;
+  impl_->capture_fps = opt.fps;
   frames_ = 0;
   width_ = 0;
   height_ = 0;
@@ -704,13 +878,27 @@ bool WindowCapture::start(const std::string& device_name, const CaptureStartOpti
   try {
     impl_->worker = std::thread([this, hwnd]() { impl_->run(hwnd); });
   } catch (...) {
+    impl_->opening = false;
     err = "WGC falhou: thread";
     return false;
   }
+  if (opt.async_open) {
+    opened_ = device_name;
+    return true;
+  }
   {
-    std::unique_lock<std::mutex> lock(impl_->start_mu);
-    impl_->start_cv.wait_for(lock, std::chrono::seconds(5),
-                             [this]() { return impl_->start_signaled.load(std::memory_order_acquire); });
+    // Sem bomba de mensagem a janela do NexusCap fica "não responde" e o cursor vira a rodinha.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!impl_->start_signaled.load(std::memory_order_acquire)) {
+      if (std::chrono::steady_clock::now() >= deadline) break;
+      {
+        std::unique_lock<std::mutex> lock(impl_->start_mu);
+        impl_->start_cv.wait_for(lock, std::chrono::milliseconds(15), [this]() {
+          return impl_->start_signaled.load(std::memory_order_acquire);
+        });
+      }
+      pump_ui_briefly();
+    }
     if (!impl_->start_signaled.load(std::memory_order_acquire)) {
       err = "WGC falhou: timeout ao abrir janela";
       running_ = false;

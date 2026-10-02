@@ -237,6 +237,20 @@ inline int resolve_video_fourcc_for_device(int saved, const std::vector<int>& av
   return pick_best_video_fourcc(available);
 }
 
+// Formato da combinacao escolhida. So entra o que essa res/Hz publicou.
+// Sem NV12 na lista, NV12 nao aparece. Qualquer fica na frente se houver algum.
+inline std::vector<int> capture_format_menu_for_mode(const std::vector<int>& accepted) {
+  std::vector<int> out;
+  for (int fc : accepted) {
+    if (fc < 0) continue;
+    const int f = clamp_video_fourcc(fc);
+    if (f == static_cast<int>(VideoFourcc::Any)) continue;
+    if (std::find(out.begin(), out.end(), f) == out.end()) out.push_back(f);
+  }
+  if (!out.empty()) out.insert(out.begin(), static_cast<int>(VideoFourcc::Any));
+  return out;
+}
+
 // Concrete subtype to open when user picked Qualquer / a specific fourcc.
 inline int concrete_video_fourcc_for_start(int saved, const std::vector<int>& available) {
   const int f = clamp_video_fourcc(saved);

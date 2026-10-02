@@ -177,15 +177,15 @@ inline void format_live_fps_line(char* out, size_t out_n, double fps_cap, double
   }
 }
 
-// Live strip: same Pass tag as Mini/ADV (1x / 1.5x / 2x / 2x+ / 3x / 3x+).
+// Live strip: mesmo nome do menu (1x / 1,5x / 2x otimizado / 3x otimizado).
 inline void format_live_dlss5_line(char* out, size_t out_n, bool dlss5_on, int pass_count = 1,
                                   bool /*feed_on*/ = true) {
   if (!out || out_n == 0) return;
   if (!dlss5_on) {
-    std::snprintf(out, out_n, "DLSS off");
+    std::snprintf(out, out_n, "DLSS5 off");
     return;
   }
-  std::snprintf(out, out_n, "DLSS %s", nr_pass_count_short(pass_count));
+  std::snprintf(out, out_n, "DLSS5 %s %s", dlss5_overlay_state_word(true), nr_pass_count_label(pass_count));
 }
 
 // Frame Gen on the live strip. FG is always uppercase: "FG x2" / "FG x3" / "FG x4" / "FG off".

@@ -271,7 +271,7 @@ struct PersistedSettings {
   bool neural_rendering = true;
   // Gear: Default / Natural / Cinematic (RenoDX Home overlay names).
   int renodx_preset = 0;  // 1x Default/Natural/Cinematic; 1.5x/2x/3x Model A/B/C
-  // Pass Count: 1=1x, 2=2x default, 3=3x, 4=1.5x, 5=2x otimizado, 6=3x otimizado.
+  // Pass Count: 1=1x, 4=1.5x, 5=2x otimizado, 6=3x otimizado. 2 e 3 (default) aposentados.
   int nr_pass_count = 1;
   // Receita avançada de cada X (índice = Pass Count 1..6). Ausente no ini = fábrica.
   NrAdvancedLook nr_advanced[7]{};
@@ -300,7 +300,8 @@ inline int clamp_renodx_visual_preset(int v) {
   return v;
 }
 
-// Pass Count UI: 1=1x, 2=2x default, 3=3x default, 4=1.5x, 5=2x otimizado, 6=3x otimizado.
+// Pass Count UI: 1=1x, 4=1.5x, 5=2x otimizado, 6=3x otimizado.
+// 2 e 3 (default, gancho antigo e mais pesado) aposentados: caem no otimizado.
 // 7 (1.7x) aposentado: clamp para 4 (1.5x herda a receita).
 inline constexpr int kMaxNrPassCount = 6;
 inline constexpr int kNr15xPlusUi = 4;
@@ -308,6 +309,8 @@ inline constexpr const char* kDefaultMgfSharpness = "0.450000";
 
 inline int clamp_nr_pass_count(int v) {
   if (v == 7) return 4;
+  if (v == 2) return 5;
+  if (v == 3) return 6;
   if (v < 1) return 1;
   if (v > kMaxNrPassCount) return kMaxNrPassCount;
   return v;
@@ -318,7 +321,6 @@ inline bool nr_pass_is_3x_optimized(int ui) { return clamp_nr_pass_count(ui) == 
 inline bool nr_pass_is_15x_plus(int ui) { return clamp_nr_pass_count(ui) == kNr15xPlusUi; }
 
 // 1x / 1,5x / 2x otimizado / 3x otimizado: gancho barato no HDMI 8.5.
-// 2x/3x default ficam no gancho antigo (mais pesado).
 inline bool nr_pass_uses_optimized_look(int ui) {
   const int v = clamp_nr_pass_count(ui);
   return v == 1 || v == 4 || v == 5 || v == 6;
@@ -483,10 +485,6 @@ inline int nr_reshade_pass_count(int ui) {
 
 inline const char* nr_pass_count_label(int v) {
   switch (clamp_nr_pass_count(v)) {
-    case 2:
-      return "2x default";
-    case 3:
-      return "3x default";
     case 4:
       return "1,5x";
     case 5:
@@ -498,9 +496,9 @@ inline const char* nr_pass_count_label(int v) {
   }
 }
 
-// Ordem dos radios: 1x, 1,5x, 2x default, 2x otimizado, 3x default, 3x otimizado.
-inline constexpr int kNrPassCycleOrder[] = {1, 4, 2, 5, 3, 6};
-inline constexpr int kNrPassCycleCount = 6;
+// Ordem dos radios: 1x, 1,5x, 2x otimizado, 3x otimizado.
+inline constexpr int kNrPassCycleOrder[] = {1, 4, 5, 6};
+inline constexpr int kNrPassCycleCount = 4;
 
 inline int nr_pass_cycle_index(int pass) {
   const int c = clamp_nr_pass_count(pass);
@@ -551,10 +549,6 @@ inline const char* nr_pass_count_15x_plus_hint() { return nr_pass_count_15x_hint
 inline const char* nr_pass_count_2x_opt_hint() {
   return "2x otimizado exclusivo NexusCap: 2x de verdade, menos flicker e ghost, melhor qualidade de imagem.";
 }
-inline const char* nr_pass_count_23x_hint() {
-  return "2x default / 3x default: look antigo. 2x/3x otimizado: menos flicker.";
-}
-
 // Um hint — o do X escolhido. Os quatro de uma vez deixavam o CFG uma lista.
 inline const char* nr_pass_count_selected_hint(int ui) {
   switch (clamp_nr_pass_count(ui)) {
@@ -562,22 +556,16 @@ inline const char* nr_pass_count_selected_hint(int ui) {
       return nr_pass_count_1x_hint();
     case 4:
       return nr_pass_count_15x_hint();
-    case 5:
-      return nr_pass_count_2x_opt_hint();
     case 6:
       return nr_pass_count_2x_opt_hint();
     default:
-      return nr_pass_count_23x_hint();
+      return nr_pass_count_2x_opt_hint();
   }
 }
 
-// Short HUD tag: "1x" / "1.5x" / "2x" / "2x+" / "3x" / "3x+".
+// Short HUD tag: "1x" / "1.5x" / "2x+" / "3x+".
 inline const char* nr_pass_count_short(int v) {
   switch (clamp_nr_pass_count(v)) {
-    case 2:
-      return "2x";
-    case 3:
-      return "3x";
     case 4:
       return "1.5x";
     case 5:
@@ -594,11 +582,13 @@ inline bool nr_pass_count_uses_multipass_addon(int /*pass_count*/) { return true
 
 inline const char* nr_dlss5_motor_name(int /*pass_count*/) { return "multipass"; }
 
-// Compact overlay line: "DLSS5 1x Feed·multipass NR ON"
+inline const char* dlss5_overlay_state_word(bool on) { return on ? "ON" : "off"; }
+
+// Compact overlay line: "DLSS5 ON 2x otimizado Feed·multipass"
 inline void format_dlss5_stack_hud_line(char* out, size_t out_n, bool nr_on, bool feed_on, int pass_count) {
   if (!out || out_n == 0) return;
-  std::snprintf(out, out_n, "DLSS5 %s Feed·%s NR %s", nr_pass_count_short(pass_count),
-                nr_dlss5_motor_name(pass_count), nr_on ? "ON" : "off");
+  std::snprintf(out, out_n, "DLSS5 %s %s Feed·%s", dlss5_overlay_state_word(nr_on),
+                nr_pass_count_label(pass_count), nr_dlss5_motor_name(pass_count));
   (void)feed_on;
 }
 
@@ -1383,7 +1373,7 @@ inline std::string sanitize_home_windows_for_pass(std::string text, int pass_cou
   return sanitize_home_windows(std::move(text), nr_pass_count_uses_multipass_addon(pass_count));
 }
 
-// Align DirectNeuralRendering* keys (2/3 = default look; 4/5/6 = gancho otimizado).
+// Align DirectNeuralRendering* keys. Todo X vivo usa o gancho otimizado.
 inline std::string apply_reshade_multipass_look_defaults(std::string text, int pass_count,
                                                          int visual_preset = 0,
                                                          const NrAdvancedLook* custom = nullptr) {

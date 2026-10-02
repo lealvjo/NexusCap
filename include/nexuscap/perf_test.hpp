@@ -262,6 +262,35 @@ inline const char* perf_test_signal_label(int w, int h) {
   return "1080p";
 }
 
+// Mesmos dois menus do config: resolucao, depois o Hz que esse plano aceita (30 ou 60).
+inline int perf_test_resolution_index(int width, int height = 0) {
+  int w = width;
+  int h = height;
+  clamp_perf_test_signal(w, h);
+  if (w >= 3200) return 2;
+  if (w >= 2200) return 1;
+  return 0;
+}
+
+inline void perf_test_resolution_at(int index, int& w, int& h) {
+  if (index >= 2) {
+    w = 3840;
+    h = 2160;
+    return;
+  }
+  if (index == 1) {
+    w = 2560;
+    h = 1440;
+    return;
+  }
+  w = 1920;
+  h = 1080;
+}
+
+inline int perf_test_hz_index(double fps) { return clamp_perf_test_fps(fps) < 45.0 ? 0 : 1; }
+
+inline double perf_test_hz_value(int index) { return index <= 0 ? 30.0 : 60.0; }
+
 inline PerfTestPlan clamp_perf_test_plan(PerfTestPlan p) {
   clamp_perf_test_signal(p.width, p.height);
   p.fps = clamp_perf_test_fps(p.fps);

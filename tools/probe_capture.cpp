@@ -1,5 +1,5 @@
 // Real-hardware probe: open every mode×fourcc on the capture card; print OK/FAIL.
-// Usage: nexuscap_probe.exe [device_substr]
+// Usage: nexuscap_probe.exe [device_substr] [--list]
 #include "nexuscap/capture.hpp"
 #include "nexuscap/capture_format.hpp"
 #include "nexuscap/clock.hpp"
@@ -20,10 +20,12 @@ using namespace nexuscap;
 int wmain(int argc, wchar_t** argv) {
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   std::string prefer;
-  if (argc >= 2) {
+  bool list_only = false;
+  for (int i = 1; i < argc; ++i) {
     char buf[512]{};
-    WideCharToMultiByte(CP_UTF8, 0, argv[1], -1, buf, sizeof(buf), nullptr, nullptr);
-    prefer = buf;
+    WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, buf, sizeof(buf), nullptr, nullptr);
+    if (std::string(buf) == "--list") list_only = true;
+    else if (prefer.empty()) prefer = buf;
   }
 
   const auto devices = list_video_capture_devices();
@@ -45,6 +47,11 @@ int wmain(int argc, wchar_t** argv) {
   if (modes.empty()) {
     std::printf("FAIL: sem modos\n");
     return 3;
+  }
+  if (list_only) {
+    for (const auto& m : modes) std::printf("%s\n", m.label.c_str());
+    std::fflush(stdout);
+    return 0;
   }
 
   QpcClock clock;

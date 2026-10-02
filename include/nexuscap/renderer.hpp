@@ -127,7 +127,7 @@ private:
 class RestartNotice {
 public:
   ~RestartNotice() { destroy(); }
-  bool show(HINSTANCE hi, const std::string& title, const std::string& detail);
+  bool show(HINSTANCE hi, const std::string& title, const std::string& detail, bool use_hold_image = true);
   void destroy();
   void pump() const;  // repinta enquanto a sessão está sendo desmontada
   bool visible() const { return hwnd_ != nullptr; }

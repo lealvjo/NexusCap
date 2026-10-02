@@ -184,8 +184,12 @@ void AudioMonitor::thread_main(std::string prefer) {
           } else {
             const size_t nbytes = static_cast<size_t>(to_write) * frame_bytes;
             std::memcpy(out, data, nbytes);
-            apply_capture_volume_mix_pcm(out, to_write, mix->nChannels, mix->wBitsPerSample,
-                                        capture_volume_gain(volume_.load()));
+            const float gain = capture_volume_gain(volume_.load());
+            if (gain > 0.f) {
+              apply_capture_tone_mix_pcm(out, to_write, mix->nChannels, mix->wBitsPerSample, mix->nSamplesPerSec,
+                                        tone_.load(), tone_filter_);
+            }
+            apply_capture_volume_mix_pcm(out, to_write, mix->nChannels, mix->wBitsPerSample, gain);
           }
           arc->ReleaseBuffer(to_write, 0);
         }

@@ -191,18 +191,6 @@ void set_media_avg_frame(AM_MEDIA_TYPE* mt, double fps) {
   }
 }
 
-void push_capture_mode(std::vector<CaptureMode>& out, int w, int h, double fps) {
-  if (w < 160 || h < 120 || !(fps >= 1.0)) return;
-  CaptureMode m;
-  m.width = w;
-  m.height = h;
-  m.fps = fps;
-  char buf[64];
-  std::snprintf(buf, sizeof(buf), "%dx%d @ %.0f", w, h, fps);
-  m.label = buf;
-  out.push_back(m);
-}
-
 }  // namespace
 
 struct DShowCapture::Impl {
@@ -281,6 +269,10 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   opened_fourcc_ = try_fourccs.front();
   impl_->width = width;
   impl_->height = height;
+  auto fail_open = [&](unsigned long hr) {
+    err = hdmi_hresult_is_device_busy(hr) ? std::string(hdmi_open_busy_hint())
+                                          : hdmi_mode_refused_text(width, height, fps);
+  };
 
   HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   const bool com_init = SUCCEEDED(hr) || hr == S_FALSE || hr == RPC_E_CHANGED_MODE;
@@ -385,9 +377,10 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
         const bool parsed = read_stream_format(pmt, caps.data(), size, fmt);
         const bool size_ok = parsed && subtype_matches_fourcc(pmt->subtype, fourcc) && fmt.w == width &&
                              fmt.h == height;
-        const bool exact = size_ok && std::abs(fmt.fps - fps) < 1.0;
-        const bool in_range = size_ok && !exact &&
-                              capture_driver_interval_covers_fps(fmt.fps, fmt.lo, fmt.hi, fps);
+        const bool listed =
+            size_ok && capture_driver_interval_accepts_fps(fmt.fps, fmt.lo, fmt.hi, fps);
+        const bool exact = listed && std::abs(fmt.fps - fps) < 1.0;
+        const bool in_range = listed && !exact;
         if (exact) {
           const bool ok = SUCCEEDED(cfg->SetFormat(pmt));
           free_media_type(*pmt);
@@ -462,7 +455,7 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
         err = "RenderStream falhou p/ " + std::string(video_fourcc_name(was_fc)) + "; usando NV12";
         return true;
       }
-      err = hdmi_open_busy_hint();
+      fail_open(static_cast<unsigned long>(hr));
       return false;
     }
     if (!opt.skip_dshow_recover) {
@@ -476,10 +469,10 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
         if (clamp_capture_buffering(opt.capture_buffering) != 0) err += " sem buffering extra";
         return true;
       }
-      err = hdmi_open_busy_hint();
+      fail_open(static_cast<unsigned long>(hr));
       return false;
     }
-    err = hdmi_open_busy_hint();
+    fail_open(static_cast<unsigned long>(hr));
     return false;
   }
 
@@ -527,10 +520,10 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
         if (clamp_capture_buffering(opt.capture_buffering) != 0) err += " sem buffering extra";
         return true;
       }
-      err = hdmi_open_busy_hint();
+      fail_open(static_cast<unsigned long>(hr));
       return false;
     }
-    err = hdmi_open_busy_hint();
+    fail_open(static_cast<unsigned long>(hr));
     stop();
     return false;
   }
@@ -551,8 +544,7 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
       Sleep(10);
     }
     if (frames_.load(std::memory_order_relaxed) == 0) {
-      const std::string detail =
-          "nenhum frame apos Run (troca de modo / placa ocupada / formato sem NV12)";
+      const std::string detail = hdmi_mode_refused_text(width, height, fps);
       stop();
       // MJPEG@4K often negotiates then never produces NV12 — retry NV12 once.
       if (want_saved != static_cast<int>(VideoFourcc::Nv12)) {
@@ -720,9 +712,7 @@ std::vector<CaptureMode> list_video_capture_modes(const std::string& device_name
         free_media_type(*mt);
         CoTaskMemFree(mt);
         if (!ok) continue;
-        std::vector<double> rates;
-        capture_fps_from_driver_interval(fmt.fps, fmt.lo, fmt.hi, rates);
-        for (double fps : rates) push_capture_mode(out, fmt.w, fmt.h, fps);
+        capture_modes_from_driver_cap(fmt.w, fmt.h, fmt.fps, fmt.lo, fmt.hi, out);
       }
     }
     cfg->Release();
@@ -730,6 +720,14 @@ std::vector<CaptureMode> list_video_capture_modes(const std::string& device_name
   }
   pins->Release();
   filter->Release();
+
+  for (const CaptureMode& src : out) {
+    if (!src.hz_discrete) continue;
+    for (CaptureMode& dst : out) {
+      if (dst.width == src.width && dst.height == src.height && std::abs(dst.fps - src.fps) < 0.5)
+        dst.hz_discrete = true;
+    }
+  }
 
   // Unique by w/h/fps, sort descending by pixels then fps.
   std::sort(out.begin(), out.end(), [](const CaptureMode& a, const CaptureMode& b) {
@@ -793,7 +791,7 @@ std::vector<int> list_video_fourccs_for_mode(const std::string& device_name, int
         free_media_type(*mt);
         CoTaskMemFree(mt);
         if (!parsed || fc < 0 || fmt.w != width || fmt.h != height) continue;
-        if (!capture_driver_interval_covers_fps(fmt.fps, fmt.lo, fmt.hi, fps)) continue;
+        if (!capture_driver_interval_accepts_fps(fmt.fps, fmt.lo, fmt.hi, fps)) continue;
         if (std::find(out.begin(), out.end(), fc) == out.end()) out.push_back(fc);
       }
     }

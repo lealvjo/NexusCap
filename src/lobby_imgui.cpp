@@ -1149,29 +1149,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
 
   auto refresh_modes = [&](std::vector<CaptureMode>& modes, int& mode_idx) {
     modes = list_video_capture_modes(current_device());
-    mode_idx = 0;
-    bool found_mode = false;
-    for (size_t i = 0; i < modes.size(); ++i) {
-      if (modes[i].width == settings.width && modes[i].height == settings.height &&
-          std::abs(modes[i].fps - settings.fps) < 1.0) {
-        mode_idx = static_cast<int>(i);
-        found_mode = true;
-        break;
-      }
-    }
-    if (!found_mode) {
-      int same = -1;
-      double best_d = 1e9;
-      for (size_t i = 0; i < modes.size(); ++i) {
-        if (modes[i].width != settings.width || modes[i].height != settings.height) continue;
-        const double d = std::abs(modes[i].fps - settings.fps);
-        if (d < best_d) {
-          best_d = d;
-          same = static_cast<int>(i);
-        }
-      }
-      if (same >= 0) mode_idx = same;
-    }
+    mode_idx = capture_select_mode_index(modes, settings.width, settings.height, settings.fps);
     if (!modes.empty()) {
       settings.width = modes[static_cast<size_t>(mode_idx)].width;
       settings.height = modes[static_cast<size_t>(mode_idx)].height;
@@ -1422,6 +1400,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       if (lobby_audio.running()) {
         lobby_audio.set_muted(settings.ui.preview_mute);
         lobby_audio.set_volume(settings.capture_volume);
+        lobby_audio.set_tone(settings.capture_tone);
       }
     }
 
@@ -1905,6 +1884,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             if (lobby_audio.running()) {
               lobby_audio.set_muted(settings.ui.preview_mute);
               lobby_audio.set_volume(settings.capture_volume);
+              lobby_audio.set_tone(settings.capture_tone);
             }
           }
           ImGui::SameLine();
@@ -2279,11 +2259,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       const ImGuiViewport* mvp = ImGui::GetMainViewport();
       // Largura minima cabe label + tecla + checkbox Ctrl.
       const float gear_w = (std::max)(hotkey_table_min_width(), (std::min)(mvp->WorkSize.x * 0.40f, 980.f));
-      const float gear_h = (std::max)(240.f, mvp->WorkSize.y - 120.f);
-      ImGui::SetNextWindowSizeConstraints(ImVec2(hotkey_table_min_width(), 240.f), ImVec2(FLT_MAX, FLT_MAX));
-      ImGui::SetNextWindowPos(ImVec2(mvp->WorkPos.x + mvp->WorkSize.x - gear_w - 40.f, mvp->WorkPos.y + 80.f),
-                              ImGuiCond_Appearing);
-      ImGui::SetNextWindowSize(ImVec2(gear_w, gear_h), ImGuiCond_Always);
+      const float gear_h = (std::max)(240.f, (std::min)(mvp->WorkSize.y - 60.f, 1120.f));
+      const float gear_x = (std::max)(mvp->WorkPos.x, mvp->WorkPos.x + mvp->WorkSize.x - gear_w - 40.f);
+      const float gear_y = (std::max)(mvp->WorkPos.y, mvp->WorkPos.y + (mvp->WorkSize.y - gear_h) * 0.5f);
+      ImGui::SetNextWindowPos(ImVec2(gear_x, gear_y), ImGuiCond_Appearing);
+      ImGui::SetNextWindowSize(ImVec2(gear_w, gear_h), ImGuiCond_Appearing);
       bool gear_p_open = true;
       if (ImGui::Begin("Configuracoes (CFG)", &gear_p_open, ImGuiWindowFlags_NoCollapse)) {
         ImGui::TextColored(nexuscap_accent_color(),
@@ -2303,6 +2283,53 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           gear_snapshot = settings;
         }
         ImGui::TextDisabled("HDMI no fone / caixa  |  0-100  |  nao vai para o preset");
+        ImGui::TextUnformatted("Modo de som");
+        int tone = clamp_capture_tone(settings.capture_tone);
+        bool tone_hit = false;
+        tone_hit |= ImGui::RadioButton("Padrao", &tone, kCaptureTonePadrao);
+        ImGui::SameLine();
+        tone_hit |= ImGui::RadioButton("Gamer", &tone, kCaptureToneGamer);
+        ImGui::SameLine();
+        tone_hit |= ImGui::RadioButton("Graves", &tone, kCaptureToneGraves);
+        if (tone_hit) {
+          settings.capture_tone = clamp_capture_tone(tone);
+          if (lobby_audio.running()) lobby_audio.set_tone(settings.capture_tone);
+          std::string serr;
+          save_settings(settings, settings_default_path(), serr);
+          gear_snapshot = settings;
+        }
+        ImGui::TextDisabled("Padrao plano  |  Gamer clareia  |  Graves realca o grave");
+        ImGui::Separator();
+        ImGui::Checkbox("Overlay HUD", &settings.ui.show_fps);
+        ImGui::Checkbox("Overlay sem fundo", &settings.ui.overlay_no_bg);
+        ImGui::TextDisabled(settings.ui.overlay_no_bg ? "so texto, sem placa preta" : "placa preta atras do texto");
+        ImGui::Separator();
+        ImGui::Checkbox("Mostrar console", &settings.ui.overlay_console);
+        if (settings.ui.overlay_console) {
+          LiveConsole cur = parse_live_console(settings.ui.live_console);
+          auto console_imcol = [](LiveConsole c) -> ImVec4 {
+            const COLORREF rgb = live_console_color(c);
+            return ImVec4(GetRValue(rgb) / 255.f, GetGValue(rgb) / 255.f, GetBValue(rgb) / 255.f, 1.f);
+          };
+          ImGui::SameLine();
+          ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(cur));
+          char console_btn[48]{};
+          std::snprintf(console_btn, sizeof(console_btn), "%s##cfg_console_pick", live_console_label(cur));
+          if (ImGui::Button(console_btn)) ImGui::OpenPopup("##cfg_console_menu");
+          ImGui::PopStyleColor();
+          if (ImGui::BeginPopup("##cfg_console_menu")) {
+            for (LiveConsole o : kLiveConsoleOrder) {
+              const bool selected = (o == cur);
+              ImGui::PushStyleColor(ImGuiCol_Text, console_imcol(o));
+              if (ImGui::MenuItem(live_console_label(o), nullptr, selected)) {
+                settings.ui.live_console = live_console_key(o);
+              }
+              ImGui::PopStyleColor();
+            }
+            ImGui::EndPopup();
+          }
+          ImGui::TextDisabled("  -> nome no overlay (padrao PS5)");
+        }
         };
         auto lobby_cfg_fg = [&]() {
         ImGui::TextUnformatted("Frame Gen (Lossless Scaling)");
@@ -2444,6 +2471,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextDisabled("HUD do preview muda na hora.");
         };
         auto lobby_cfg_image = [&]() {
+        auto lobby_cfg_scale = [&]() {
         ImGui::TextUnformatted("Escala de resolucao (trabalho GPU)");
         int scale_i = clamp_scale_percent(settings.scale_percent);
         // Writing the cfg here would not reach this process' Feed (locked at 100%) and would
@@ -2478,8 +2506,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         if (ImGui::Button("Abrir logs")) {
           if (!open_app_logs_folder()) push_lobby_toast("Nao foi possivel abrir a pasta de logs.");
         }
-
-        ImGui::Separator();
+        };
         if (ImGui::Checkbox("RenoDX / Neural Rendering (preview ao vivo)", &settings.enhance_renodx)) {
           // Stack on → arm NR for preview; stack off → clear NR.
           settings.neural_rendering = settings.enhance_renodx;
@@ -2507,7 +2534,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                                             : "  runtime NR: Aplicando / aguardando Bridge");
         }
         ImGui::BeginDisabled(!settings.enhance_renodx);
-        ImGui::TextUnformatted("Preset visual (ao vivo no preview)");
+        ImGui::TextUnformatted("Preset visual");
         const int preset_before = clamp_renodx_visual_preset(settings.renodx_preset);
         int preset_i = preset_before;
         if (ImGui::RadioButton(renodx_visual_preset_name(0, settings.nr_pass_count), preset_i == 0))
@@ -2568,7 +2595,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           draw_nr_advanced_panel(adv_draft, shown, adv_apply, adv_reset, force_adv);
           if (adv_apply || adv_reset) (void)commit_advanced(adv_reset);
         }
-        ImGui::TextUnformatted("Pass Count (NR multipass)");
+        ImGui::TextUnformatted("Pass Count");
         const int pass_before = clamp_nr_pass_count(settings.nr_pass_count);
         int pass_i = pass_before;
         if (ImGui::RadioButton("1x##nrpass", pass_i == 1)) pass_i = 1;
@@ -2635,6 +2662,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
         ImGui::TextDisabled("%s", nr_pass_count_selected_hint(settings.nr_pass_count));
         ImGui::EndDisabled();
+        ImGui::Separator();
+        lobby_cfg_scale();
         ImGui::Separator();
         ImGui::TextUnformatted("Presets");
         if (ImGui::BeginChild("##cfg_preset_list", ImVec2(0.f, 168.f), true)) {
@@ -2914,7 +2943,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             lobby_cfg_image();
             ImGui::EndTabItem();
           }
-          if (ImGui::BeginTabItem(cfg_tab_sound())) {
+          if (ImGui::BeginTabItem(cfg_tab_hud())) {
             lobby_cfg_volume();
             ImGui::EndTabItem();
           }
@@ -3013,6 +3042,21 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           save_settings(settings, settings_default_path(), serr);
         }
         ImGui::TextDisabled("abre com o volume do CFG  |  0-100  |  nao vai para o preset");
+        ImGui::TextUnformatted("Modo de som");
+        int perf_tone = clamp_capture_tone(settings.capture_tone);
+        bool perf_tone_hit = false;
+        perf_tone_hit |= ImGui::RadioButton("Padrao##perf", &perf_tone, kCaptureTonePadrao);
+        ImGui::SameLine();
+        perf_tone_hit |= ImGui::RadioButton("Gamer##perf", &perf_tone, kCaptureToneGamer);
+        ImGui::SameLine();
+        perf_tone_hit |= ImGui::RadioButton("Graves##perf", &perf_tone, kCaptureToneGraves);
+        if (perf_tone_hit) {
+          settings.capture_tone = clamp_capture_tone(perf_tone);
+          if (lobby_audio.running()) lobby_audio.set_tone(settings.capture_tone);
+          std::string serr;
+          save_settings(settings, settings_default_path(), serr);
+        }
+        ImGui::TextDisabled("Padrao plano  |  Gamer clareia  |  Graves realca o grave");
         ImGui::Separator();
 
         ImGui::TextUnformatted("Pass Count");

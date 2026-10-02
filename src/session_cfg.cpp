@@ -406,6 +406,19 @@ void SessionCfgOverlay::draw_panel() {
       actions_.volume_changed = true;
     }
     ImGui::TextDisabled("HDMI no fone / caixa  |  0-100  |  nao vai para o preset");
+    ImGui::TextUnformatted("Modo de som");
+    int tone = clamp_capture_tone(state.capture_tone);
+    bool tone_hit = false;
+    tone_hit |= ImGui::RadioButton("Padrao", &tone, kCaptureTonePadrao);
+    ImGui::SameLine();
+    tone_hit |= ImGui::RadioButton("Gamer", &tone, kCaptureToneGamer);
+    ImGui::SameLine();
+    tone_hit |= ImGui::RadioButton("Graves", &tone, kCaptureToneGraves);
+    if (tone_hit) {
+      state.capture_tone = clamp_capture_tone(tone);
+      actions_.tone_changed = true;
+    }
+    ImGui::TextDisabled("Padrao plano  |  Gamer clareia  |  Graves realca o grave");
     ImGui::Separator();
     if (ImGui::Checkbox("Overlay HUD", &state.hud_visible)) actions_.hud_changed = true;
     if (ImGui::Checkbox("Overlay sem fundo", &state.overlay_no_bg)) actions_.overlay_no_bg_changed = true;
@@ -678,7 +691,7 @@ void draw_hotkey_config_table(HotkeyConfig& hk, bool in_session, int*& capture_v
     hk_row("Pass Count -", "passprev", &hk.vk_pass_prev, &hk.pass_prev_ctrl);
     hk_row("Tela cheia", "fs", &hk.vk_fullscreen, nullptr);
     hk_row("Analise", "analyze", &hk.vk_analyze, nullptr);
-    hk_row("Preset visual", "renodx", &hk.vk_renodx, nullptr);
+    hk_row("RenoDX", "renodx", &hk.vk_renodx, nullptr);
     ImGui::EndTable();
   }
   ImGui::PopTextWrapPos();

@@ -457,7 +457,7 @@ bool browse_import_user_preset(HWND owner, std::string& text);
 inline bool persisted_untouched_by_user_preset(const PersistedSettings& before, const PersistedSettings& after) {
   return before.device_name == after.device_name && before.hotkeys.vk_quit == after.hotkeys.vk_quit &&
          before.fg_path == after.fg_path && before.width == after.width && before.height == after.height &&
-         before.capture_volume == after.capture_volume;
+         before.capture_volume == after.capture_volume && before.capture_tone == after.capture_tone;
 }
 
 inline std::string user_presets_dir_in(const std::string& app_data) {

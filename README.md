@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `6.5.5` |
+| **Versão** | `6.5.6` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -71,6 +71,12 @@ Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que a
 **Ctrl+M** na captura ou **F12** no lobby — a mesma lista. Um nome (até 50). Aplicar devolve o look inteiro: escala, FG, NR, cena, Pass, HUD.
 
 O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
+
+### Novidades 6.5.6
+
+- A resolucao, o Hz e o formato seguem a placa selecionada. Trocar a placa e recarregar as entradas monta a lista dela. 1440p volta a oferecer 30 quando a faixa da placa cobre 30.
+- Se o modo nao abre, o aviso diz a resolucao e o Hz. A frase de placa em uso fica para quando o USB esta ocupado.
+- O CFG do lobby acompanha o Ctrl+M. Home abre o RenoDX. O som tem Padrao, Gamer e Graves.
 
 ### Novidades 6.5.5
 

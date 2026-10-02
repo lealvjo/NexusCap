@@ -67,6 +67,7 @@ struct AppConfig {
   int color_range = 0;      // Limitado
   int capture_buffering = 0;  // Desativado
   int capture_volume = 100;  // HDMI WASAPI 0–100; settings.ini, not presets
+  int capture_tone = 0;      // 0 padrao, 1 gamer, 2 graves; settings.ini, not presets
   int capture_source = 0;    // 0 HDMI, 1 Janela
   std::string window_title;
   uint64_t window_hwnd = 0;
@@ -986,6 +987,7 @@ inline void apply_session_cfg_to_persisted(const AppConfig& cfg, PersistedSettin
   copy_nr_advanced(s.nr_advanced, cfg.nr_advanced);
   s.scale_percent = clamp_scale_percent(cfg.scale_percent);
   s.capture_volume = clamp_capture_volume_percent(cfg.capture_volume);
+  s.capture_tone = clamp_capture_tone(cfg.capture_tone);
   s.ui.live_console = live_console_key(clamp_live_console(cfg.live_console));
   s.ui.overlay_console = cfg.overlay_console;
   s.ui.overlay_no_bg = cfg.overlay_no_bg;

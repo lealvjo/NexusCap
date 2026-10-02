@@ -60,16 +60,25 @@ TEST_CASE("FrameSlot clear drops stale frame after format change") {
 TEST_CASE("capture reopen settle helpers") {
   CHECK(capture_device_settle_ms() >= 100);
   CHECK(dshow_hresult_hex(0x80004005ul) == "0x80004005");
-  CHECK(hdmi_open_err_is_busy("RenderStream falhou 0x80004005"));
-  CHECK(std::string(hdmi_open_error_user("RenderStream falhou 0x80004005")) == hdmi_open_busy_hint());
+  CHECK_FALSE(hdmi_open_err_is_busy("RenderStream falhou 0x80004005"));
+  CHECK(hdmi_open_error_user("RenderStream falhou 0x80004005") == "Esse modo nao abriu.");
   CHECK(hdmi_open_error_user("placa recusou o grafo; reabriu NV12") == "Placa reabriu em NV12.");
   {
     const std::string shown = hdmi_open_error_user(
         std::string(hdmi_open_busy_hint()) + " (0x80004005)");
     CHECK(shown == hdmi_open_busy_hint());
     CHECK(shown.find("0x") == std::string::npos);
-    CHECK(hdmi_open_error_user("RenderStream falhou 0x2147500037").find("0x") == std::string::npos);
-    CHECK(hdmi_open_error_user("A placa nao abriu. (0x80040217)") == hdmi_open_busy_hint());
+    const std::string graph = hdmi_open_error_user("RenderStream falhou 0x2147500037");
+    CHECK(graph.find("0x") == std::string::npos);
+    CHECK(graph.find("em uso") == std::string::npos);
+    const std::string refused = hdmi_open_error_user("A placa nao abriu. (0x80040217)");
+    CHECK(refused != hdmi_open_busy_hint());
+    CHECK(refused.find("0x") == std::string::npos);
+    CHECK(refused.find("em uso") == std::string::npos);
+    CHECK(hdmi_open_error_user(hdmi_mode_refused_text(3840, 2160, 60.0)) == "3840x2160 @ 60 nao abriu.");
+    CHECK(hdmi_open_err_is_busy("0x80070020"));
+    CHECK_FALSE(hdmi_hresult_is_device_busy(0x80040217ul));
+    CHECK(hdmi_hresult_is_device_busy(0x80070020ul));
   }
   CHECK_FALSE(CaptureStartOptions{}.skip_dshow_recover);
   CHECK(capture_first_frame_wait_ms(1920, 1080) >= capture_device_settle_ms());
@@ -114,6 +123,18 @@ TEST_CASE("capture fps follows the driver interval not a card table") {
   CHECK(capture_driver_interval_covers_fps(120.0, 5.0, 120.0, 60.0));
   CHECK_FALSE(capture_driver_interval_covers_fps(120.0, 5.0, 120.0, 240.0));
 
+  std::vector<double> qhd;
+  capture_fps_from_driver_interval(60.0, 5.0, 60.0, qhd);
+  auto has_qhd = [&](double fps) {
+    for (double r : qhd)
+      if (std::abs(r - fps) < 0.5) return true;
+    return false;
+  };
+  CHECK(has_qhd(30.0));
+  CHECK(has_qhd(60.0));
+  CHECK(has_qhd(25.0));
+  CHECK_FALSE(has_qhd(120.0));
+
   std::vector<double> swapped;
   capture_fps_from_driver_interval(120.0, 240.0, 60.0, swapped);
   CHECK(swapped.size() == span.size());
@@ -129,6 +150,20 @@ TEST_CASE("capture fps follows the driver interval not a card table") {
   capture_fps_from_driver_interval(90.0, 90.0, 90.0, odd);
   CHECK(odd.size() == 1);
   CHECK(odd[0] == doctest::Approx(90.0));
+
+  std::vector<CaptureMode> built;
+  capture_modes_from_driver_cap(2560, 1440, 60.0, 5.0, 60.0, built);
+  std::vector<double> hz_qhd;
+  capture_hz_for_resolution(built, 2560, 1440, hz_qhd);
+  bool qhd30 = false;
+  for (double f : hz_qhd)
+    if (std::abs(f - 30.0) < 0.5) qhd30 = true;
+  CHECK(qhd30);
+
+  std::vector<CaptureMode> uhd;
+  uhd.push_back(CaptureMode{3840, 2160, 30.0, "4k30"});
+  CHECK(capture_fps_saved_on_card(uhd, 3840, 2160, 60.0) == doctest::Approx(30.0));
+  CHECK(capture_fps_saved_on_card({}, 3840, 2160, 60.0) == doctest::Approx(60.0));
 }
 
 TEST_CASE("capture menus split resolution from the hz that resolution accepts") {
@@ -764,23 +799,27 @@ TEST_CASE("parse --simulate-hdmi-busy seeds the lobby placa-em-uso preview") {
   CHECK(c.simulate_hdmi_busy);
   CHECK(c.show_lobby);
   CHECK(c.lobby_boot_toast.empty());
-  CHECK(std::string(hdmi_open_error_user("RenderStream falhou 0x80004005")) == hdmi_open_busy_hint());
+  CHECK(hdmi_open_error_user("RenderStream falhou 0x80004005") == "Esse modo nao abriu.");
   CHECK(std::string(hdmi_open_busy_hint()).find("0x") == std::string::npos);
+  CHECK(hdmi_open_error_user(hdmi_open_busy_hint()) == hdmi_open_busy_hint());
 }
 
 TEST_CASE("session capture fail notice is friendly and has no HRESULT") {
   CHECK(std::string(session_capture_fail_title()).find("captura") != std::string::npos);
   const auto d = session_capture_fail_detail("RenderStream falhou 0x80004005");
-  CHECK(d == hdmi_open_busy_hint());
+  CHECK(d == "Esse modo nao abriu.");
   CHECK(d.find("0x") == std::string::npos);
-  const auto n = session_capture_fail_notice("A placa nao abriu. (0x80040217)");
+  CHECK(d.find("em uso") == std::string::npos);
+  const auto n = session_capture_fail_notice(hdmi_mode_refused_text(3840, 2160, 60.0));
   CHECK(n.find(session_capture_fail_title()) != std::string::npos);
-  CHECK(n.find(hdmi_open_busy_hint()) != std::string::npos);
-  CHECK(n.find("0x") == std::string::npos);
+  CHECK(n.find("3840x2160 @ 60 nao abriu.") != std::string::npos);
+  CHECK(n.find(hdmi_open_busy_hint()) == std::string::npos);
+  CHECK(n.find("8004") == std::string::npos);
+  CHECK(n.find("em uso") == std::string::npos);
   std::string t, det;
   session_notice_split(n, t, det);
   CHECK(t == session_capture_fail_title());
-  CHECK(det == hdmi_open_busy_hint());
+  CHECK(det == "3840x2160 @ 60 nao abriu.");
   CHECK(session_hdmi_open_blocked_by_busy_sim(true, true, false, false));
   CHECK_FALSE(session_hdmi_open_blocked_by_busy_sim(true, false, false, false));
   CHECK_FALSE(session_hdmi_open_blocked_by_busy_sim(false, true, false, false));
@@ -2516,6 +2555,33 @@ TEST_CASE("capture volume clamps gain persists and stays out of presets") {
   CHECK(capture_volume_gain(-8) == 0.f);
   CHECK(capture_volume_gain(140) == 1.f);
 
+  auto tone_rms = [](int mode, float hz) {
+    CaptureToneFilter filt;
+    std::vector<float> s(48000);
+    for (int i = 0; i < 48000; ++i)
+      s[static_cast<size_t>(i)] = std::sin(6.28318530718f * hz * static_cast<float>(i) / 48000.f);
+    apply_capture_tone_f32(s.data(), s.size(), 1, filt, mode, 48000);
+    double acc = 0;
+    for (size_t i = 40000; i < s.size(); ++i) acc += static_cast<double>(s[i]) * s[i];
+    float peak = 0.f;
+    for (float v : s) {
+      const float a = v < 0.f ? -v : v;
+      if (a > peak) peak = a;
+    }
+    CHECK(peak < 1.05f);
+    return std::sqrt(acc / 8000.0);
+  };
+  std::vector<float> plain(8, 0.25f);
+  CaptureToneFilter idle;
+  apply_capture_tone_f32(plain.data(), plain.size(), 1, idle, kCaptureTonePadrao, 48000);
+  CHECK(plain[0] == doctest::Approx(0.25f));
+  const double graves_low = tone_rms(kCaptureToneGraves, 50.f);
+  const double graves_high = tone_rms(kCaptureToneGraves, 8000.f);
+  CHECK(graves_low > graves_high * 1.25);
+  const double gamer_low = tone_rms(kCaptureToneGamer, 200.f);
+  const double gamer_high = tone_rms(kCaptureToneGamer, 8000.f);
+  CHECK(gamer_high > gamer_low * 1.15);
+
   float f32[] = {1.f, -0.5f, 0.25f};
   apply_capture_volume_f32(f32, 3, 1.f);
   CHECK(f32[0] == 1.f);
@@ -2539,16 +2605,24 @@ TEST_CASE("capture volume clamps gain persists and stays out of presets") {
   CHECK(s16[1] == 0);
 
   CHECK(default_settings().capture_volume == kDefaultCaptureVolumePercent);
+  CHECK(default_settings().capture_tone == kCaptureTonePadrao);
   PersistedSettings s = default_settings();
   s.capture_volume = 40;
+  s.capture_tone = kCaptureToneGraves;
   PersistedSettings out;
   REQUIRE(parse_settings_ini(serialize_settings_ini(s), out));
   CHECK(out.capture_volume == 40);
+  CHECK(out.capture_tone == kCaptureToneGraves);
   CHECK(serialize_settings_ini(out).find("capture_volume=40") != std::string::npos);
+  CHECK(serialize_settings_ini(out).find("capture_tone=2") != std::string::npos);
 
   PersistedSettings missing;
   REQUIRE(parse_settings_ini("show_fps=1\n", missing));
   CHECK(missing.capture_volume == 100);
+  CHECK(missing.capture_tone == kCaptureTonePadrao);
+  PersistedSettings tone_over;
+  REQUIRE(parse_settings_ini("capture_tone=9\n", tone_over));
+  CHECK(tone_over.capture_tone == kCaptureToneGraves);
   PersistedSettings over;
   REQUIRE(parse_settings_ini("capture_volume=180\n", over));
   CHECK(over.capture_volume == 100);
@@ -2559,9 +2633,12 @@ TEST_CASE("capture volume clamps gain persists and stays out of presets") {
   AppConfig cfg;
   apply_persisted_to_config(out, cfg);
   CHECK(cfg.capture_volume == 40);
+  CHECK(cfg.capture_tone == kCaptureToneGraves);
   cfg.capture_volume = 25;
+  cfg.capture_tone = kCaptureToneGamer;
   apply_session_cfg_to_persisted(cfg, s);
   CHECK(s.capture_volume == 25);
+  CHECK(s.capture_tone == kCaptureToneGamer);
   cfg.perf_test = true;
   cfg.capture_volume = 90;
   apply_session_cfg_to_persisted(cfg, s);
@@ -2576,18 +2653,22 @@ TEST_CASE("capture volume clamps gain persists and stays out of presets") {
   p.scale_percent = 80;
   const std::string text = serialize_user_preset(p);
   CHECK(text.find("capture_volume") == std::string::npos);
+  CHECK(text.find("capture_tone") == std::string::npos);
   UserPreset junk;
   REQUIRE(parse_user_preset(text + "capture_volume=10\n", junk));
   CHECK(junk.scale_percent == 80);
 
   PersistedSettings disk = default_settings();
   disk.capture_volume = 40;
+  disk.capture_tone = kCaptureToneGamer;
   disk.device_name = "Elgato 4K X";
   apply_user_preset_to_persisted(disk, p, true);
   CHECK(disk.capture_volume == 40);
+  CHECK(disk.capture_tone == kCaptureToneGamer);
   CHECK(disk.nr_pass_count == 5);
   PersistedSettings before = default_settings();
   before.capture_volume = 40;
+  before.capture_tone = kCaptureToneGraves;
   before.device_name = "Elgato 4K X";
   PersistedSettings after = before;
   apply_user_preset_to_persisted(after, p, true);
@@ -2596,9 +2677,11 @@ TEST_CASE("capture volume clamps gain persists and stays out of presets") {
 
   SessionCfgState sess{};
   sess.capture_volume = 40;
+  sess.capture_tone = kCaptureToneGamer;
   sess.nr_pass_count = 1;
   stamp_session_from_user_preset(sess, p, true);
   CHECK(sess.capture_volume == 40);
+  CHECK(sess.capture_tone == kCaptureToneGamer);
   CHECK(sess.nr_pass_count == 5);
 
   AppConfig bench;
@@ -4340,19 +4423,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 5, 5));
+  CHECK(app_version_is(6, 5, 6));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.5.5");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.5.5") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.5");
+  CHECK(std::string(kAppVersion) == "6.5.6");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.5.6") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.6");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.5.5") != std::string::npos);
+  CHECK(lobby_t.find("6.5.6") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.5.5") != std::string::npos);
+  CHECK(sess_t.find("6.5.6") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.5.5 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.5.6 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {

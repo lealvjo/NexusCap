@@ -262,8 +262,12 @@ void ClipAudioPlayer::thread_main(std::string video_path, std::string sidecar_pa
       gained = avail;
     }
     if (gained > 0) {
-      apply_capture_volume_mix_pcm(out, gained, mix->nChannels, mix->wBitsPerSample,
-                                  capture_volume_gain(volume_.load()));
+      const float gain = capture_volume_gain(volume_.load());
+      if (gain > 0.f) {
+        apply_capture_tone_mix_pcm(out, gained, mix->nChannels, mix->wBitsPerSample, mix->nSamplesPerSec,
+                                  tone_.load(), tone_filter_);
+      }
+      apply_capture_volume_mix_pcm(out, gained, mix->nChannels, mix->wBitsPerSample, gain);
     }
     render->ReleaseBuffer(avail, 0);
     Sleep(5);

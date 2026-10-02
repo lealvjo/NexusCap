@@ -206,6 +206,7 @@ void apply_persisted_to_config(const PersistedSettings& s, AppConfig& cfg) {
   cfg.color_range = clamp_color_range(s.color_range);
   cfg.capture_buffering = clamp_capture_buffering(s.capture_buffering);
   cfg.capture_volume = clamp_capture_volume_percent(s.capture_volume);
+  cfg.capture_tone = clamp_capture_tone(s.capture_tone);
   cfg.capture_source = clamp_capture_source(s.capture_source);
   cfg.window_title = s.window_title;
   cfg.window_hwnd = s.window_hwnd;

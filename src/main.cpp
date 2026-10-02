@@ -666,12 +666,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       std::printf("audio: monitorando %s -> saida padrao\n",
                   audio_prefer.empty() ? "auto" : audio_prefer.c_str());
       audio.set_volume(cfg.capture_volume);
+      audio.set_tone(cfg.capture_tone);
     }
     }
   } else if (cfg.perf_test && cfg.perf_test_audio && !cfg.smoke) {
     std::string aerr;
     const std::string audio_side = perf_test_audio_sidecar_path(cfg.video_path);
     clip_audio.set_volume(cfg.capture_volume);
+    clip_audio.set_tone(cfg.capture_tone);
     if (!clip_audio.start(cfg.video_path, audio_side, aerr)) {
       std::fprintf(stderr, "perf-test audio: %s (continuando sem som)\n", aerr.c_str());
     } else {
@@ -1557,6 +1559,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.hud_visible = g_overlay.load();
       ui.overlay_no_bg = cfg.overlay_no_bg;
       ui.capture_volume = clamp_capture_volume_percent(cfg.capture_volume);
+      ui.capture_tone = clamp_capture_tone(cfg.capture_tone);
       ui.live_console = cfg.live_console;
       ui.overlay_console = cfg.overlay_console;
       ui.signal_w = overlay.capture_w > 0 ? overlay.capture_w : cap_w;
@@ -1681,6 +1684,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         std::string serr;
         load_settings(ps, settings_default_path(), serr);
         ps.capture_volume = cfg.capture_volume;
+        save_settings(ps, settings_default_path(), serr);
+      }
+      if (act.tone_changed) {
+        cfg.capture_tone = clamp_capture_tone(ui.capture_tone);
+        audio.set_tone(cfg.capture_tone);
+        clip_audio.set_tone(cfg.capture_tone);
+        PersistedSettings ps = default_settings();
+        std::string serr;
+        load_settings(ps, settings_default_path(), serr);
+        ps.capture_tone = cfg.capture_tone;
         save_settings(ps, settings_default_path(), serr);
       }
       if (act.console_changed) {
@@ -2037,6 +2050,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           std::fprintf(stderr, "audio: %s (continuando sem som)\n", aerr.c_str());
         } else {
           audio.set_volume(cfg.capture_volume);
+          audio.set_tone(cfg.capture_tone);
         }
       }
     }
@@ -2474,6 +2488,7 @@ int main(int argc, char** argv) {
       nexuscap::apply_perf_test_plan_to_config(nexuscap::perf_test_plan_from_config(cfg), cfg);
     }
     cfg.capture_volume = nexuscap::clamp_capture_volume_percent(settings.capture_volume);
+    cfg.capture_tone = nexuscap::clamp_capture_tone(settings.capture_tone);
     cfg.fg_flow_scale = nexuscap::clamp_fg_flow_scale(settings.fg_flow_scale);
     if (cfg.fg_path.empty()) cfg.fg_path = settings.fg_path;
     {
@@ -2542,6 +2557,14 @@ int main(int argc, char** argv) {
     cfg.width = settings.width;
     cfg.height = settings.height;
     cfg.fps = settings.fps;
+    if (cfg.autostart && !cfg.perf_test &&
+        !nexuscap::capture_source_is_window(nexuscap::clamp_capture_source(settings.capture_source))) {
+      const auto card_modes = nexuscap::list_video_capture_modes(settings.device_name);
+      const double snapped =
+          nexuscap::capture_fps_saved_on_card(card_modes, cfg.width, cfg.height, cfg.fps);
+      cfg.fps = snapped;
+      settings.fps = snapped;
+    }
     cfg.scale_percent = settings.scale_percent;
     cfg.renodx_preset = nexuscap::clamp_renodx_visual_preset(settings.renodx_preset);
     cfg.nr_pass_count = nexuscap::clamp_nr_pass_count(settings.nr_pass_count);
@@ -2555,6 +2578,7 @@ int main(int argc, char** argv) {
     cfg.mini_overlay = settings.ui.mini_overlay;
     cfg.overlay_no_bg = settings.ui.overlay_no_bg;
     cfg.capture_volume = nexuscap::clamp_capture_volume_percent(settings.capture_volume);
+    cfg.capture_tone = nexuscap::clamp_capture_tone(settings.capture_tone);
     cfg.capture_source = nexuscap::clamp_capture_source(settings.capture_source);
     cfg.window_title = settings.window_title;
     cfg.window_hwnd = settings.window_hwnd;

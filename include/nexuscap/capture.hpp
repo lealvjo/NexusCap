@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -466,16 +467,36 @@ inline std::string dshow_hresult_hex(unsigned long hr) {
   return s;
 }
 
-inline bool hdmi_open_err_is_busy(const std::string& e) {
-  if (e.empty()) return false;
-  return e.find("RenderStream") != std::string::npos || e.find("0x") != std::string::npos ||
-         e.find("MediaControl::Run") != std::string::npos || e.find("recusou") != std::string::npos ||
-         e.find("placa ocupada") != std::string::npos || e.find("grafo") != std::string::npos ||
-         e.find("A placa nao abriu") != std::string::npos || e.find("em uso") != std::string::npos;
-}
-
 inline const char* hdmi_open_busy_hint() {
   return "A placa esta em uso. Fecha o OBS ou outro app no USB e clica Recarregar entradas.";
+}
+
+// So compartilhamento real do USB. 0x80040217 (nao conectou) e recusa de modo.
+inline bool hdmi_hresult_is_device_busy(unsigned long hr) {
+  switch (hr) {
+    case 0x80070020ul:  // ERROR_SHARING_VIOLATION
+    case 0x800700AAul:  // ERROR_BUSY
+    case 0x80070005ul:  // E_ACCESSDENIED
+    case 0x800704CBul:  // ERROR_DEVICE_IN_USE
+      return true;
+    default:
+      return false;
+  }
+}
+
+inline std::string hdmi_mode_refused_text(int width, int height, double fps) {
+  char buf[80];
+  std::snprintf(buf, sizeof(buf), "%dx%d @ %.0f nao abriu.", (std::max)(0, width), (std::max)(0, height),
+                fps > 1.0 ? fps : 0.0);
+  return buf;
+}
+
+inline bool hdmi_open_err_is_busy(const std::string& e) {
+  if (e.empty()) return false;
+  if (e.find("nao abriu") != std::string::npos) return false;
+  return e.find("placa ocupada") != std::string::npos || e.find("em uso") != std::string::npos ||
+         e.find("0x80070020") != std::string::npos || e.find("0x800700AA") != std::string::npos ||
+         e.find("0x80070005") != std::string::npos || e.find("0x800704CB") != std::string::npos;
 }
 
 inline std::string hdmi_open_error_user(const std::string& raw) {
@@ -484,6 +505,17 @@ inline std::string hdmi_open_error_user(const std::string& raw) {
     return "Placa reabriu em NV12.";
   }
   if (hdmi_open_err_is_busy(raw)) return hdmi_open_busy_hint();
+  const auto named = raw.find("nao abriu");
+  if (named != std::string::npos) {
+    size_t end = named + 9;
+    if (end < raw.size() && raw[end] == '.') ++end;
+    return raw.substr(0, end);
+  }
+  if (raw.find("RenderStream") != std::string::npos || raw.find("MediaControl") != std::string::npos ||
+      raw.find("SetFormat") != std::string::npos || raw.find("0x") != std::string::npos ||
+      raw.find("A placa nao abriu") != std::string::npos) {
+    return "Esse modo nao abriu.";
+  }
   return raw;
 }
 
@@ -577,29 +609,37 @@ inline double round_capture_fps(double fps) {
   return std::round(fps);
 }
 
-// Taxas de um unico cap. fps_lo e a mais lenta, fps_hi a mais rapida (0 = a placa nao
-// publicou intervalo). Intervalo travado (120..120) nao ganha 60. Um minimo de 5 fps
-// nao apaga o intervalo: 5..120 ainda inclui 60. O 5 em si nao entra no menu.
+inline void capture_push_fps(std::vector<double>& out, double fps) {
+  fps = round_capture_fps(fps);
+  if (!(fps >= 10.0) || fps > 480.0) return;
+  for (double e : out) {
+    if (std::abs(e - fps) < 0.5) return;
+  }
+  out.push_back(fps);
+}
+
+inline bool capture_fps_listed(const std::vector<double>& rates, double fps) {
+  const double want = round_capture_fps(fps);
+  for (double r : rates) {
+    if (std::abs(r - want) < 1.0) return true;
+  }
+  return false;
+}
+
+// Igual a 6.5.5: a taxa nomeada, as pontas do intervalo e os Hz comuns que cabem nele.
+// 1440p com faixa ate 60 inclui 30. Intervalo travado fica so na taxa nomeada.
 inline void capture_fps_from_driver_interval(double nominal, double fps_lo, double fps_hi,
                                             std::vector<double>& out) {
-  auto push = [&](double f) {
-    f = round_capture_fps(f);
-    if (!(f >= 10.0) || f > 480.0) return;
-    for (double e : out) {
-      if (std::abs(e - f) < 0.5) return;
-    }
-    out.push_back(f);
-  };
-  push(nominal);
+  capture_push_fps(out, nominal);
   if (!(fps_lo > 1.0) || !(fps_hi > 1.0)) return;
   if (fps_lo > fps_hi) std::swap(fps_lo, fps_hi);
   if (fps_hi > 480.0 || fps_hi <= fps_lo + 0.5) return;
-  push(fps_lo);
-  push(fps_hi);
+  capture_push_fps(out, fps_lo);
+  capture_push_fps(out, fps_hi);
   static const double kInside[] = {24.0, 25.0, 30.0, 50.0, 60.0, 120.0, 144.0, 240.0};
   for (double step : kInside) {
     if (step + 0.51 < fps_lo || step - 0.51 > fps_hi) continue;
-    push(step);
+    capture_push_fps(out, step);
   }
 }
 
@@ -615,6 +655,12 @@ inline bool capture_driver_interval_covers_fps(double nominal, double fps_lo, do
   return false;
 }
 
+// O fourcc acompanha a resolucao e o Hz que a placa nomeou nesse cap.
+inline bool capture_driver_interval_accepts_fps(double nominal, double fps_lo, double fps_hi,
+                                               double requested) {
+  return capture_driver_interval_covers_fps(nominal, fps_lo, fps_hi, requested);
+}
+
 std::vector<std::string> list_video_capture_devices();
 
 struct CaptureMode {
@@ -622,6 +668,8 @@ struct CaptureMode {
   int height = 0;
   double fps = 0;
   std::string label;
+  // false = ponta de faixa ainda sem frame. A resolucao existe; o Hz nao entra no combo.
+  bool hz_discrete = true;
 };
 
 // Resolucoes unicas, na ordem da lista (pixels desc). O Hz fica num segundo menu.
@@ -662,6 +710,36 @@ inline void capture_hz_for_resolution(const std::vector<CaptureMode>& modes, int
   std::sort(hz.begin(), hz.end(), [](double a, double b) { return a > b; });
 }
 
+// Um cap publicado vira o Hz que a placa nomeou. A faixa nao vira outro Hz.
+inline void capture_modes_from_driver_cap(int width, int height, double nominal, double fps_lo, double fps_hi,
+                                         std::vector<CaptureMode>& out) {
+  if (width < 160 || height < 120) return;
+  std::vector<double> rates;
+  capture_fps_from_driver_interval(nominal, fps_lo, fps_hi, rates);
+  for (double fps : rates) {
+    fps = round_capture_fps(fps);
+    if (!(fps >= 10.0)) continue;
+    bool seen = false;
+    for (auto& e : out) {
+      if (e.width == width && e.height == height && std::abs(e.fps - fps) < 0.5) {
+        e.hz_discrete = true;
+        seen = true;
+        break;
+      }
+    }
+    if (seen) continue;
+    CaptureMode m;
+    m.width = width;
+    m.height = height;
+    m.fps = fps;
+    m.hz_discrete = true;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%dx%d @ %.0f", width, height, fps);
+    m.label = buf;
+    out.push_back(m);
+  }
+}
+
 // Indice exato (meio Hz) ou o mais perto. Lista vazia devolve 0.
 inline int capture_hz_index_for_fps(const std::vector<double>& hz, double want) {
   if (hz.empty()) return 0;
@@ -676,6 +754,36 @@ inline int capture_hz_index_for_fps(const std::vector<double>& hz, double want) 
     }
   }
   return best;
+}
+
+// Hz gravado que essa resolucao publicou. Fora da lista, o mais perto. Lista vazia mantem o gravado.
+inline double capture_fps_saved_on_card(const std::vector<CaptureMode>& modes, int width, int height,
+                                       double saved) {
+  std::vector<double> hz;
+  capture_hz_for_resolution(modes, width, height, hz);
+  if (hz.empty()) return saved;
+  return hz[static_cast<size_t>(capture_hz_index_for_fps(hz, saved))];
+}
+
+// Indice do modo publicado mais perto do Hz gravado nessa resolucao.
+inline int capture_select_mode_index(const std::vector<CaptureMode>& modes, int width, int height, double saved) {
+  if (modes.empty()) return 0;
+  int matched = -1;
+  int closest = -1;
+  double closest_d = 1e9;
+  for (int i = 0; i < static_cast<int>(modes.size()); ++i) {
+    const CaptureMode& m = modes[static_cast<size_t>(i)];
+    if (m.width != width || m.height != height || !(m.fps >= 1.0)) continue;
+    const double d = std::abs(m.fps - saved);
+    if (d < 0.5 && matched < 0) matched = i;
+    if (d < closest_d) {
+      closest_d = d;
+      closest = i;
+    }
+  }
+  if (matched >= 0) return matched;
+  if (closest >= 0) return closest;
+  return 0;
 }
 
 std::vector<CaptureMode> list_video_capture_modes(const std::string& device_name);

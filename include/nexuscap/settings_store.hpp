@@ -19,7 +19,7 @@ struct HotkeyConfig {
   int vk_dlss = 0x74;       // VK_F5
   int vk_fg_toggle = 0x22;  // VK_NEXT (Page Down) — X2 framegen
   int vk_fg_cycle = 0x21;   // VK_PRIOR (Page Up)
-  int vk_renodx = 0x24;     // VK_HOME — overlay presets
+  int vk_renodx = 0x24;     // VK_HOME — overlay do RenoDX
   int vk_nr_toggle = 0x2E;  // VK_DELETE — Neural Rendering on/off (FG independente)
   int vk_fullscreen = 0x7A; // VK_F11
   int vk_gear = 0x7B;       // VK_F12 — open gear in lobby
@@ -282,6 +282,7 @@ struct PersistedSettings {
   int capture_buffering = 0;  // CaptureBuffering::Disabled
   // HDMI WASAPI monitor gain (CFG). App setting — never a user preset field.
   int capture_volume = 100;
+  int capture_tone = 0;  // 0 padrao, 1 gamer, 2 graves. App setting, not a preset.
   // 0=HDMI (default no boot). 1=Janela. Lobby sempre abre em HDMI; Iniciar Janela grava 1 para --autostart.
   int capture_source = 0;
   std::string window_title;  // ultimo titulo do picker Janela

@@ -142,7 +142,14 @@ foreach ($f in $runtimeFiles) {
   $src = Join-Path $Release $f
   if (Test-Path -LiteralPath $src) {
     Copy-Item -LiteralPath $src -Destination (Join-Path $Stage $f) -Force
-  } elseif ($f -in @("dxgi.dll", "dlss5-feed.addon64", "dlss5-bridge.addon64")) {
+  } elseif ($f -eq "dxgi.dll") {
+    $parked = Join-Path $Release "dxgi.session.dll"
+    if (Test-Path -LiteralPath $parked) {
+      Copy-Item -LiteralPath $parked -Destination (Join-Path $Stage "dxgi.dll") -Force
+    } else {
+      $missingCritical += $f
+    }
+  } elseif ($f -in @("dlss5-feed.addon64", "dlss5-bridge.addon64")) {
     $missingCritical += $f
   }
 }

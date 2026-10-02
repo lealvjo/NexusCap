@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `6.5.3` |
+| **Versão** | `6.5.4` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -71,6 +71,10 @@ Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que a
 **Ctrl+M** na captura ou **F12** no lobby — a mesma lista. Um nome (até 50). Aplicar devolve o look inteiro: escala, FG, NR, cena, Pass, HUD.
 
 O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
+
+### Novidades 6.5.4
+
+- Trocar o X, pelo atalho ou pelo Ctrl+M, não abre mais o que está atrás. A capa segura o último frame enquanto o scanout sai, inclusive no 3x.
 
 ### Novidades 6.5.3
 

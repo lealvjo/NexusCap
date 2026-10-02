@@ -827,14 +827,27 @@ void RendererD3D11::present_black() {
 }
 
 void RendererD3D11::release_flip_for_cover() {
-  if (!impl_ || !impl_->swap) return;
-  impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
-  impl_->ctx->Flush();
-  impl_->rtv.Reset();
-  impl_->swap->ResizeBuffers(0, 2, 2, DXGI_FORMAT_B8G8R8A8_UNORM, swap_flags_);
-  back_w_ = 2;
-  back_h_ = 2;
+  if (!hwnd_) return;
+  SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+  const LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
+  SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+  SetLayeredWindowAttributes(hwnd_, 0, 255, LWA_ALPHA);
   DwmFlush();
+  // Um refresh com a fila de mensagens viva. WaitForVBlank travava o Ctrl+M e o cursor.
+  const DWORD t0 = GetTickCount();
+  while (GetTickCount() - t0 < 20) {
+    MSG msg{};
+    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      if (msg.message == WM_QUIT) {
+        PostQuitMessage(static_cast<int>(msg.wParam));
+        return;
+      }
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+    Sleep(1);
+  }
 }
 
 namespace {

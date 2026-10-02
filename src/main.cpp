@@ -110,6 +110,12 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (cw > 0 && ch > 0) g_session_renderer->resize(cw, ch);
       }
       return 0;
+    case WM_SETCURSOR:
+      if (g_restart_notice.visible()) {
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        return TRUE;
+      }
+      break;
     case WM_ERASEBKGND: {
       // Com o frame congelado por cima, apagar de preto vaza um flash só na imagem.
       if (g_restart_notice.visible()) return 1;
@@ -1939,7 +1945,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       (void)save_motor_hold_from_hwnd(hwnd);
       g_restart_notice.show(hi, session_restart_notice_title(),
                             session_restart_notice_detail(cfg_restart_kind));
-      if (g_restart_notice.has_hold_image()) renderer.release_flip_for_cover();
+      if (g_restart_notice.visible()) renderer.release_flip_for_cover();
       std::printf("cfg restart: saindo para reiniciar na sessao\n");
       g_running = false;
       break;

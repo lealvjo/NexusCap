@@ -216,6 +216,9 @@ public:
   ID3D11DeviceContext* context() const;
   bool present_frame(const FramePayload& frame, OverlayState& overlay, double& present_ms, std::string& err);
   void present_black();
+  // A capa GDI já está por cima, mas o FLIP ainda manda na tela. Solta esse scanout
+  // antes de esconder a janela, senão o desktop aparece por um quadro.
+  void release_flip_for_cover();
   // Same HWND: destroi e cria a swapchain para o ReShade reler o INI sem fechar a janela.
   bool recycle_swapchain();
   uint32_t swapchain_flags() const { return swap_flags_; }

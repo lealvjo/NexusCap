@@ -832,6 +832,45 @@ TEST_CASE("overlay fps is the source period, not the mean of skipped ticks") {
   CHECK(overlay_source_gap_ms(33.4, 16.7) == doctest::Approx(16.7));
   CHECK(overlay_source_gap_ms(31.0, 16.7) == doctest::Approx(16.7));
   CHECK(overlay_source_gap_ms(25.0, 16.7) == doctest::Approx(25.0));
+
+  const double t60 = 1000.0 / 60.0;
+  std::vector<double> beat2x;
+  beat2x.reserve(12);
+  for (int i = 0; i < 12; ++i) beat2x.push_back((i % 2 == 0) ? t60 : t60 * 2.0);
+  CHECK(overlay_calm_frametime_graph(beat2x));
+  for (double g : beat2x) CHECK(g == doctest::Approx(25.0).epsilon(0.02));
+
+  std::vector<double> beat2x_stall;
+  for (int i = 0; i < 12; ++i) beat2x_stall.push_back((i % 2 == 0) ? t60 : t60 * 2.0);
+  beat2x_stall.push_back(80.0);
+  CHECK(overlay_calm_frametime_graph(beat2x_stall));
+  CHECK(beat2x_stall.back() == doctest::Approx(80.0));
+  CHECK(beat2x_stall.front() == doctest::Approx(25.0).epsilon(0.02));
+
+  std::vector<double> beat3x;
+  const double steps3[] = {t60, t60 * 2.0, t60 * 3.0, t60 * 2.0};
+  for (int i = 0; i < 12; ++i) beat3x.push_back(steps3[i % 4]);
+  CHECK(overlay_calm_frametime_graph(beat3x));
+  for (double g : beat3x) CHECK(g == doctest::Approx(t60 * 2.0).epsilon(0.04));
+
+  // Mais vãos curtos do que longos: a mediana cairia em 16,7 e a linha diria 60.
+  std::vector<double> tipped60;
+  for (int i = 0; i < 8; ++i) tipped60.push_back(t60);
+  for (int i = 0; i < 6; ++i) tipped60.push_back(t60 * 2.0);
+  double tipped_level = 0;
+  CHECK(overlay_calm_frametime_graph(tipped60, &tipped_level));
+  CHECK(tipped_level > 20.0);
+  CHECK(tipped_level < 30.0);
+  CHECK(1000.0 / tipped_level < 50.0);
+  for (double g : tipped60) {
+    CHECK(g > 20.0);
+    CHECK(g < 30.0);
+  }
+
+  std::vector<double> steady1x(12, t60);
+  steady1x.push_back(25.0);
+  CHECK_FALSE(overlay_calm_frametime_graph(steady1x));
+  CHECK(steady1x.back() == doctest::Approx(25.0));
   CHECK(overlay_source_rate(nullptr, 0).fps == 0.0);
 
   FrametimeWindow w(180);
@@ -4293,19 +4332,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 5, 2));
+  CHECK(app_version_is(6, 5, 3));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.5.2");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.5.2") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.2");
+  CHECK(std::string(kAppVersion) == "6.5.3");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.5.3") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.3");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.5.2") != std::string::npos);
+  CHECK(lobby_t.find("6.5.3") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.5.2") != std::string::npos);
+  CHECK(sess_t.find("6.5.3") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.5.2 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.5.3 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {

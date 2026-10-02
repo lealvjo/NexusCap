@@ -99,6 +99,61 @@ inline double overlay_source_gap_ms(double gap_ms, double period_ms) {
   return gap_ms;
 }
 
+// Harmônicos do ritmo 2x (T e 2T em volta da média) e 3x (T, 2T e 3T).
+inline bool overlay_frametime_on_pace(double rel) {
+  const double marks[] = {0.5, 2.0 / 3.0, 1.0, 4.0 / 3.0, 1.5};
+  for (double m : marks) {
+    if (std::fabs(rel - m) <= 0.12) return true;
+  }
+  return false;
+}
+
+// O gráfico liga cada vão. No 2x isso alterna ~16,7 e ~33,3. A mediana às vezes
+// cai no vão curto e a linha azul inteira vira 60. O nível é a média da série,
+// não essa mediana. Um travamento fora do ritmo fica no sítio.
+// true = a série era o ritmo e os vãos sentaram na média.
+// level_ms, se vier, recebe essa média: o número do overlay usa o mesmo valor.
+inline bool overlay_calm_frametime_graph(std::vector<double>& samples, double* level_ms = nullptr) {
+  if (samples.size() < 8) return false;
+  double sum = 0;
+  int n = 0;
+  for (double g : samples) {
+    if (g > 1.0 && g < 80.0) {
+      sum += g;
+      ++n;
+    }
+  }
+  if (n < 8) return false;
+  const double mean = sum / static_cast<double>(n);
+  if (!(mean > 1.0)) return false;
+  int on_beat = 0;
+  int away = 0;
+  for (double g : samples) {
+    if (!(g > 1.0) || !(g < 80.0)) continue;
+    const double rel = g / mean;
+    if (overlay_frametime_on_pace(rel)) ++on_beat;
+    if (rel < 0.85 || rel > 1.15) ++away;
+  }
+  if (on_beat * 4 < static_cast<int>(samples.size()) * 3) return false;
+  if (away * 4 < static_cast<int>(samples.size())) return false;
+  double level_sum = 0;
+  int level_n = 0;
+  for (double g : samples) {
+    if (!(g > 1.0) || !(g < 80.0)) continue;
+    if (!overlay_frametime_on_pace(g / mean)) continue;
+    level_sum += g;
+    ++level_n;
+  }
+  if (level_n < 4) return false;
+  const double level = level_sum / static_cast<double>(level_n);
+  if (level_ms) *level_ms = level;
+  for (double& g : samples) {
+    if (!(g > 1.0) || !(g < 80.0)) continue;
+    if (overlay_frametime_on_pace(g / mean)) g = level;
+  }
+  return true;
+}
+
 // Short rolling window for live frametime stability on the HUD.
 class FrametimeWindow {
 public:

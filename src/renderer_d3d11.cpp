@@ -25,6 +25,7 @@
 #include <vector>
 
 #include <avrt.h>
+#include <dwmapi.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -823,6 +824,17 @@ void RendererD3D11::present_black() {
   impl_->ctx->OMSetRenderTargets(1, impl_->rtv.GetAddressOf(), nullptr);
   impl_->ctx->ClearRenderTargetView(impl_->rtv.Get(), clear);
   impl_->swap->Present(0, 0);
+}
+
+void RendererD3D11::release_flip_for_cover() {
+  if (!impl_ || !impl_->swap) return;
+  impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+  impl_->ctx->Flush();
+  impl_->rtv.Reset();
+  impl_->swap->ResizeBuffers(0, 2, 2, DXGI_FORMAT_B8G8R8A8_UNORM, swap_flags_);
+  back_w_ = 2;
+  back_h_ = 2;
+  DwmFlush();
 }
 
 namespace {
@@ -2203,17 +2215,24 @@ bool RestartNotice::show(HINSTANCE hi, const std::string& title, const std::stri
   wc.lpfnWndProc = RestartNotice::WndProc;
   wc.hInstance = hi;
   wc.lpszClassName = kRestartNoticeClass;
-  wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+  wc.hbrBackground = nullptr;
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   RegisterClassW(&wc);
 
   const int sw = GetSystemMetrics(SM_CXSCREEN);
   const int sh = GetSystemMetrics(SM_CYSCREEN);
   // GDI em ecrã inteiro: cobre a sessão a morrer. Sem D3D, sem segunda janela de motor.
+  // Pinta o frame salvo antes de aparecer. O fundo preto da classe piscava a imagem.
   hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kRestartNoticeClass,
                           L"NexusCap", WS_POPUP, 0, 0, sw, sh, nullptr, nullptr, hi, this);
   if (!hwnd_) return false;
+  if (HDC hdc = GetDC(hwnd_)) {
+    paint(hdc);
+    ReleaseDC(hwnd_, hdc);
+    ValidateRect(hwnd_, nullptr);
+  }
   ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  DwmFlush();
   pump();
   return true;
 }
@@ -2228,8 +2247,8 @@ void RestartNotice::destroy() {
 
 void RestartNotice::pump() const {
   if (!hwnd_) return;
-  SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-  UpdateWindow(hwnd_);
+  SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW);
   MSG msg{};
   while (PeekMessageW(&msg, hwnd_, 0, 0, PM_REMOVE)) {
     TranslateMessage(&msg);
@@ -2243,7 +2262,7 @@ void RestartNotice::paint(HDC hdc) const {
   if (hold_bmp_ && hold_w_ > 0 && hold_h_ > 0) {
     HDC mem = CreateCompatibleDC(hdc);
     HGDIOBJ old = SelectObject(mem, hold_bmp_);
-    SetStretchBltMode(hdc, HALFTONE);
+    SetStretchBltMode(hdc, COLORONCOLOR);
     StretchBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, hold_w_, hold_h_, SRCCOPY);
     SelectObject(mem, old);
     DeleteDC(mem);
@@ -2298,6 +2317,7 @@ LRESULT CALLBACK RestartNotice::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
     return TRUE;
   }
   auto* self = reinterpret_cast<RestartNotice*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+  if (msg == WM_ERASEBKGND) return 1;
   if (msg == WM_SETCURSOR) {
     SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     return TRUE;

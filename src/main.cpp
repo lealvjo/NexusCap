@@ -111,6 +111,8 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     case WM_ERASEBKGND: {
+      // Com o frame congelado por cima, apagar de preto vaza um flash só na imagem.
+      if (g_restart_notice.visible()) return 1;
       HDC hdc = reinterpret_cast<HDC>(wp);
       RECT rc{};
       GetClientRect(hwnd, &rc);
@@ -430,7 +432,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     note_window_boot_line(line);
   }
   if (g_restart_notice.visible()) g_restart_notice.pump();
-  renderer.present_black();  // Benchmark/sessao: sem clarão branco no primeiro Present
+  // O cover já segura o último frame. Um Present preto aqui vira o flash da troca de X.
+  if (!(hold_boot && g_restart_notice.has_hold_image())) {
+    renderer.present_black();  // Benchmark/sessao: sem clarão branco no primeiro Present
+  }
   if (window_source && hwnd) {
     ShowWindow(hwnd, g_session_fullscreen ? SW_SHOW : SW_SHOWMAXIMIZED);
     UpdateWindow(hwnd);
@@ -1433,7 +1438,24 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         overlay.ft_stable = ft_win.stable_for_source(
             overlay.ft_p95_ms, overlay.ft_max_ms, 1000.0 / (std::max)(1.0, cfg.fps), hitch_ms);
         ft_win.chronological(overlay.ft_hist);
-        for (double& g : overlay.ft_hist) g = overlay_source_gap_ms(g, rate.period_ms);
+        // Mediana no vão curto: o HUD inteiro (fps, ft, avg) dizia 60. A média do ritmo vale
+        // para o número e para a linha.
+        double beat_ms = 0;
+        if (overlay_calm_frametime_graph(overlay.ft_hist, &beat_ms)) {
+          shown_ft = beat_ms;
+          shown_fps = 1000.0 / beat_ms;
+          fps_smooth = shown_fps;
+          overlay.ft_avg_ms = beat_ms;
+          overlay.ft_p95_ms = beat_ms;
+          double peak = beat_ms;
+          for (double g : overlay.ft_hist)
+            if (g > peak) peak = g;
+          overlay.ft_max_ms = peak;
+          overlay.ft_stable = ft_win.stable_for_source(
+              beat_ms, peak, 1000.0 / (std::max)(1.0, cfg.fps), hitch_ms);
+        } else {
+          for (double& g : overlay.ft_hist) g = overlay_source_gap_ms(g, rate.period_ms);
+        }
         overlay.ft_spark = ft_win.sparkline(56, 1000.0 / (std::max)(1.0, cfg.fps), rate.period_ms);
       }
     }
@@ -1917,6 +1939,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       (void)save_motor_hold_from_hwnd(hwnd);
       g_restart_notice.show(hi, session_restart_notice_title(),
                             session_restart_notice_detail(cfg_restart_kind));
+      if (g_restart_notice.has_hold_image()) renderer.release_flip_for_cover();
       std::printf("cfg restart: saindo para reiniciar na sessao\n");
       g_running = false;
       break;
@@ -1954,7 +1977,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
       if (hold_boot) {
         ShowWindow(hwnd, g_session_fullscreen ? SW_SHOW : SW_SHOWMAXIMIZED);
-        UpdateWindow(hwnd);
+        MSG reveal{};
+        while (PeekMessageW(&reveal, hwnd, 0, 0, PM_REMOVE)) {
+          TranslateMessage(&reveal);
+          DispatchMessageW(&reveal);
+        }
       }
       g_restart_notice.destroy();
       clear_motor_hold_files();

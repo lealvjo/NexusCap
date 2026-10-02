@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `6.5.6` |
+| **Versão** | `6.5.7` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
@@ -71,6 +71,12 @@ Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que a
 **Ctrl+M** na captura ou **F12** no lobby — a mesma lista. Um nome (até 50). Aplicar devolve o look inteiro: escala, FG, NR, cena, Pass, HUD.
 
 O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
+
+### Novidades 6.5.7
+
+- Quando a placa nao entrega video na resolucao e no Hz escolhidos, o aviso diz isso e que essa configuracao nao tem suporte.
+- Esse Hz fica no menu como sem suporte e nao pode ser clicado. Iniciar processamento fica desligado enquanto essa configuracao estiver selecionada.
+- A frase de placa em uso continua so quando o USB esta ocupado.
 
 ### Novidades 6.5.6
 

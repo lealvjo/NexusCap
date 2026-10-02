@@ -1179,6 +1179,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
   };
   refresh_fourccs();
 
+  std::vector<CaptureModeKey> unsupported_modes;
   auto restart_preview = [&]() -> bool {
     if (cfg.simulate_hdmi_busy) {
       preview.stop();
@@ -1204,7 +1205,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       return preview.ensure_window(settings.window_title, wopt);
     }
     settings.device_name = current_device();
-    return preview.ensure(settings.device_name, opt);
+    if (preview.ensure(settings.device_name, opt)) {
+      capture_clear_mode_unsupported(unsupported_modes, settings.width, settings.height, settings.fps);
+      return true;
+    }
+    if (!hdmi_open_err_is_busy(preview.err)) {
+      capture_note_mode_unsupported(unsupported_modes, settings.width, settings.height, settings.fps);
+    }
+    return false;
   };
   if (!restart_preview()) {
     Sleep(static_cast<DWORD>(capture_device_settle_ms()));
@@ -1669,29 +1677,47 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         settings.width = res_w[static_cast<size_t>(res_idx)];
         settings.height = res_h[static_cast<size_t>(res_idx)];
         capture_hz_for_resolution(modes, settings.width, settings.height, hz);
-        hz_idx = capture_hz_index_for_fps(hz, settings.fps);
+        hz_idx = capture_hz_index_enabled(hz, settings.fps, settings.width, settings.height, unsupported_modes);
         if (!hz.empty()) settings.fps = hz[static_cast<size_t>(hz_idx)];
         sync_mode_idx();
         apply_capture_mode();
       }
 
-      std::vector<std::string> hz_store;
-      std::vector<const char*> hz_labels;
-      hz_store.reserve(hz.size());
-      for (double f : hz) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%.0f Hz", f);
-        hz_store.emplace_back(buf);
-      }
-      for (auto& s : hz_store) hz_labels.push_back(s.c_str());
       ImGui::TextDisabled("HZ");
       ImGui::SetNextItemWidth(-1);
-      if (hz_labels.empty()) {
+      if (hz.empty()) {
         ImGui::TextDisabled("(sem Hz)");
-      } else if (ImGui::Combo("##hz", &hz_idx, hz_labels.data(), static_cast<int>(hz_labels.size()))) {
-        settings.fps = hz[static_cast<size_t>(hz_idx)];
-        sync_mode_idx();
-        apply_capture_mode();
+      } else {
+        const bool current_bad = capture_mode_key_unsupported(unsupported_modes, settings.width, settings.height,
+                                                              hz[static_cast<size_t>(hz_idx)]);
+        char preview[48];
+        if (current_bad) {
+          std::snprintf(preview, sizeof(preview), "%.0f Hz  sem suporte", hz[static_cast<size_t>(hz_idx)]);
+        } else {
+          std::snprintf(preview, sizeof(preview), "%.0f Hz", hz[static_cast<size_t>(hz_idx)]);
+        }
+        if (ImGui::BeginCombo("##hz", preview)) {
+          for (int i = 0; i < static_cast<int>(hz.size()); ++i) {
+            const bool bad = capture_mode_key_unsupported(unsupported_modes, settings.width, settings.height,
+                                                          hz[static_cast<size_t>(i)]);
+            char item[48];
+            if (bad) {
+              std::snprintf(item, sizeof(item), "%.0f Hz  sem suporte", hz[static_cast<size_t>(i)]);
+            } else {
+              std::snprintf(item, sizeof(item), "%.0f Hz", hz[static_cast<size_t>(i)]);
+            }
+            if (bad) ImGui::BeginDisabled();
+            const bool picked = ImGui::Selectable(item, i == hz_idx);
+            if (bad) ImGui::EndDisabled();
+            if (picked && !bad) {
+              hz_idx = i;
+              settings.fps = hz[static_cast<size_t>(i)];
+              sync_mode_idx();
+              apply_capture_mode();
+            }
+          }
+          ImGui::EndCombo();
+        }
       }
     }
 
@@ -2081,6 +2107,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         g_lobby_running = false;
       }
       ImGui::SameLine();
+      const bool iniciar_sem_suporte = lobby_iniciar_blocked_by_unsupported(
+          capture_source_is_window(settings.capture_source), settings.width, settings.height, settings.fps,
+          unsupported_modes);
+      if (iniciar_sem_suporte) ImGui::BeginDisabled();
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.95f, 1.f));
       if (ImGui::Button("Iniciar processamento", ImVec2(280, row_h))) {
         if (lobby_iniciar_blocked_by_hdmi_busy_sim(cfg.simulate_hdmi_busy,
@@ -2148,6 +2178,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
       }
       ImGui::PopStyleColor();
+      if (iniciar_sem_suporte) ImGui::EndDisabled();
     }
     ImGui::EndChild();
 

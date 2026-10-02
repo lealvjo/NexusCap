@@ -484,16 +484,23 @@ inline bool hdmi_hresult_is_device_busy(unsigned long hr) {
   }
 }
 
+inline const char* hdmi_mode_unsupported_text() {
+  return "A placa nao entregou video nessa configuracao. Ela nao tem suporte.";
+}
+
 inline std::string hdmi_mode_refused_text(int width, int height, double fps) {
-  char buf[80];
-  std::snprintf(buf, sizeof(buf), "%dx%d @ %.0f nao abriu.", (std::max)(0, width), (std::max)(0, height),
-                fps > 1.0 ? fps : 0.0);
+  char buf[160];
+  std::snprintf(buf, sizeof(buf),
+                "A placa nao entregou video em %dx%d @ %.0f. Essa configuracao nao tem suporte.",
+                (std::max)(0, width), (std::max)(0, height), fps > 1.0 ? fps : 0.0);
   return buf;
 }
 
 inline bool hdmi_open_err_is_busy(const std::string& e) {
   if (e.empty()) return false;
-  if (e.find("nao abriu") != std::string::npos) return false;
+  if (e.find("nao tem suporte") != std::string::npos || e.find("nao entregou video") != std::string::npos) {
+    return false;
+  }
   return e.find("placa ocupada") != std::string::npos || e.find("em uso") != std::string::npos ||
          e.find("0x80070020") != std::string::npos || e.find("0x800700AA") != std::string::npos ||
          e.find("0x80070005") != std::string::npos || e.find("0x800704CB") != std::string::npos;
@@ -505,16 +512,16 @@ inline std::string hdmi_open_error_user(const std::string& raw) {
     return "Placa reabriu em NV12.";
   }
   if (hdmi_open_err_is_busy(raw)) return hdmi_open_busy_hint();
-  const auto named = raw.find("nao abriu");
+  const auto named = raw.find("nao tem suporte");
   if (named != std::string::npos) {
-    size_t end = named + 9;
+    size_t end = named + 15;
     if (end < raw.size() && raw[end] == '.') ++end;
     return raw.substr(0, end);
   }
   if (raw.find("RenderStream") != std::string::npos || raw.find("MediaControl") != std::string::npos ||
       raw.find("SetFormat") != std::string::npos || raw.find("0x") != std::string::npos ||
-      raw.find("A placa nao abriu") != std::string::npos) {
-    return "Esse modo nao abriu.";
+      raw.find("A placa nao abriu") != std::string::npos || raw.find("nao abriu") != std::string::npos) {
+    return hdmi_mode_unsupported_text();
   }
   return raw;
 }
@@ -530,7 +537,7 @@ inline bool lobby_iniciar_blocked_by_hdmi_busy_sim(bool simulate, bool window_so
   return session_hdmi_open_blocked_by_busy_sim(simulate, true, false, window_source);
 }
 
-inline const char* session_capture_fail_title() { return "A captura nao abriu"; }
+inline const char* session_capture_fail_title() { return "A placa nao entregou video"; }
 
 inline std::string session_capture_fail_detail(const std::string& raw) {
   const std::string u = hdmi_open_error_user(raw);
@@ -754,6 +761,60 @@ inline int capture_hz_index_for_fps(const std::vector<double>& hz, double want) 
     }
   }
   return best;
+}
+
+// Modo que a placa publicou e depois nao entregou video. Fica no menu, sem clique.
+struct CaptureModeKey {
+  int width = 0;
+  int height = 0;
+  double fps = 0;
+};
+
+inline bool capture_mode_key_unsupported(const std::vector<CaptureModeKey>& blocked, int width, int height,
+                                        double fps) {
+  for (const CaptureModeKey& b : blocked) {
+    if (b.width == width && b.height == height && std::abs(b.fps - fps) < 1.0) return true;
+  }
+  return false;
+}
+
+inline void capture_note_mode_unsupported(std::vector<CaptureModeKey>& blocked, int width, int height, double fps) {
+  if (width <= 0 || height <= 0 || !(fps >= 1.0)) return;
+  if (capture_mode_key_unsupported(blocked, width, height, fps)) return;
+  blocked.push_back(CaptureModeKey{width, height, fps});
+}
+
+inline void capture_clear_mode_unsupported(std::vector<CaptureModeKey>& blocked, int width, int height, double fps) {
+  blocked.erase(std::remove_if(blocked.begin(), blocked.end(),
+                               [&](const CaptureModeKey& b) {
+                                 return b.width == width && b.height == height && std::abs(b.fps - fps) < 1.0;
+                               }),
+                blocked.end());
+}
+
+// Mesmo vizinho de capture_hz_index_for_fps, pulando o que ja nao entregou video nessa resolucao.
+inline int capture_hz_index_enabled(const std::vector<double>& hz, double want, int width, int height,
+                                   const std::vector<CaptureModeKey>& blocked) {
+  if (hz.empty()) return 0;
+  int best = -1;
+  double best_d = 1e9;
+  for (int i = 0; i < static_cast<int>(hz.size()); ++i) {
+    if (capture_mode_key_unsupported(blocked, width, height, hz[static_cast<size_t>(i)])) continue;
+    const double d = std::abs(hz[static_cast<size_t>(i)] - want);
+    if (d < 0.5) return i;
+    if (d < best_d) {
+      best_d = d;
+      best = i;
+    }
+  }
+  return best >= 0 ? best : 0;
+}
+
+// Iniciar so entra com video. Configuracao que a placa ja recusou fica sem clique.
+inline bool lobby_iniciar_blocked_by_unsupported(bool window_source, int width, int height, double fps,
+                                                const std::vector<CaptureModeKey>& blocked) {
+  if (window_source) return false;
+  return capture_mode_key_unsupported(blocked, width, height, fps);
 }
 
 // Hz gravado que essa resolucao publicou. Fora da lista, o mais perto. Lista vazia mantem o gravado.

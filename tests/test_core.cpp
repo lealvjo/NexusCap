@@ -61,7 +61,7 @@ TEST_CASE("capture reopen settle helpers") {
   CHECK(capture_device_settle_ms() >= 100);
   CHECK(dshow_hresult_hex(0x80004005ul) == "0x80004005");
   CHECK_FALSE(hdmi_open_err_is_busy("RenderStream falhou 0x80004005"));
-  CHECK(hdmi_open_error_user("RenderStream falhou 0x80004005") == "Esse modo nao abriu.");
+  CHECK(hdmi_open_error_user("RenderStream falhou 0x80004005") == hdmi_mode_unsupported_text());
   CHECK(hdmi_open_error_user("placa recusou o grafo; reabriu NV12") == "Placa reabriu em NV12.");
   {
     const std::string shown = hdmi_open_error_user(
@@ -75,7 +75,13 @@ TEST_CASE("capture reopen settle helpers") {
     CHECK(refused != hdmi_open_busy_hint());
     CHECK(refused.find("0x") == std::string::npos);
     CHECK(refused.find("em uso") == std::string::npos);
-    CHECK(hdmi_open_error_user(hdmi_mode_refused_text(3840, 2160, 60.0)) == "3840x2160 @ 60 nao abriu.");
+    const std::string mode = hdmi_mode_refused_text(3840, 2160, 60.0);
+    CHECK(mode.find("3840x2160") != std::string::npos);
+    CHECK(mode.find("60") != std::string::npos);
+    CHECK(mode.find("nao entregou video") != std::string::npos);
+    CHECK(mode.find("nao tem suporte") != std::string::npos);
+    CHECK(hdmi_open_error_user(mode) == mode);
+    CHECK_FALSE(hdmi_open_err_is_busy(mode));
     CHECK(hdmi_open_err_is_busy("0x80070020"));
     CHECK_FALSE(hdmi_hresult_is_device_busy(0x80040217ul));
     CHECK(hdmi_hresult_is_device_busy(0x80070020ul));
@@ -164,6 +170,22 @@ TEST_CASE("capture fps follows the driver interval not a card table") {
   uhd.push_back(CaptureMode{3840, 2160, 30.0, "4k30"});
   CHECK(capture_fps_saved_on_card(uhd, 3840, 2160, 60.0) == doctest::Approx(30.0));
   CHECK(capture_fps_saved_on_card({}, 3840, 2160, 60.0) == doctest::Approx(60.0));
+
+  std::vector<double> menu_hz = {25.0, 30.0, 60.0};
+  std::vector<CaptureModeKey> blocked;
+  capture_note_mode_unsupported(blocked, 3840, 2160, 60.0);
+  CHECK(capture_mode_key_unsupported(blocked, 3840, 2160, 60.0));
+  CHECK_FALSE(capture_mode_key_unsupported(blocked, 3840, 2160, 30.0));
+  CHECK_FALSE(capture_mode_key_unsupported(blocked, 1920, 1080, 60.0));
+  CHECK(lobby_iniciar_blocked_by_unsupported(false, 3840, 2160, 60.0, blocked));
+  CHECK_FALSE(lobby_iniciar_blocked_by_unsupported(false, 3840, 2160, 30.0, blocked));
+  CHECK_FALSE(lobby_iniciar_blocked_by_unsupported(true, 3840, 2160, 60.0, blocked));
+  CHECK(menu_hz[static_cast<size_t>(capture_hz_index_enabled(menu_hz, 60.0, 3840, 2160, blocked))] ==
+        doctest::Approx(30.0));
+  capture_clear_mode_unsupported(blocked, 3840, 2160, 60.0);
+  CHECK_FALSE(capture_mode_key_unsupported(blocked, 3840, 2160, 60.0));
+  CHECK(menu_hz[static_cast<size_t>(capture_hz_index_enabled(menu_hz, 60.0, 3840, 2160, blocked))] ==
+        doctest::Approx(60.0));
 }
 
 TEST_CASE("capture menus split resolution from the hz that resolution accepts") {
@@ -799,27 +821,28 @@ TEST_CASE("parse --simulate-hdmi-busy seeds the lobby placa-em-uso preview") {
   CHECK(c.simulate_hdmi_busy);
   CHECK(c.show_lobby);
   CHECK(c.lobby_boot_toast.empty());
-  CHECK(hdmi_open_error_user("RenderStream falhou 0x80004005") == "Esse modo nao abriu.");
+  CHECK(hdmi_open_error_user("RenderStream falhou 0x80004005") == hdmi_mode_unsupported_text());
   CHECK(std::string(hdmi_open_busy_hint()).find("0x") == std::string::npos);
   CHECK(hdmi_open_error_user(hdmi_open_busy_hint()) == hdmi_open_busy_hint());
 }
 
 TEST_CASE("session capture fail notice is friendly and has no HRESULT") {
-  CHECK(std::string(session_capture_fail_title()).find("captura") != std::string::npos);
+  CHECK(std::string(session_capture_fail_title()).find("video") != std::string::npos);
   const auto d = session_capture_fail_detail("RenderStream falhou 0x80004005");
-  CHECK(d == "Esse modo nao abriu.");
+  CHECK(d == hdmi_mode_unsupported_text());
   CHECK(d.find("0x") == std::string::npos);
   CHECK(d.find("em uso") == std::string::npos);
   const auto n = session_capture_fail_notice(hdmi_mode_refused_text(3840, 2160, 60.0));
   CHECK(n.find(session_capture_fail_title()) != std::string::npos);
-  CHECK(n.find("3840x2160 @ 60 nao abriu.") != std::string::npos);
+  CHECK(n.find("3840x2160") != std::string::npos);
+  CHECK(n.find("nao tem suporte") != std::string::npos);
   CHECK(n.find(hdmi_open_busy_hint()) == std::string::npos);
   CHECK(n.find("8004") == std::string::npos);
   CHECK(n.find("em uso") == std::string::npos);
   std::string t, det;
   session_notice_split(n, t, det);
   CHECK(t == session_capture_fail_title());
-  CHECK(det == "3840x2160 @ 60 nao abriu.");
+  CHECK(det == hdmi_mode_refused_text(3840, 2160, 60.0));
   CHECK(session_hdmi_open_blocked_by_busy_sim(true, true, false, false));
   CHECK_FALSE(session_hdmi_open_blocked_by_busy_sim(true, false, false, false));
   CHECK_FALSE(session_hdmi_open_blocked_by_busy_sim(false, true, false, false));
@@ -4423,19 +4446,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 5, 6));
+  CHECK(app_version_is(6, 5, 7));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.5.6");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.5.6") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.6");
+  CHECK(std::string(kAppVersion) == "6.5.7");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.5.7") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.7");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.5.6") != std::string::npos);
+  CHECK(lobby_t.find("6.5.7") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.5.6") != std::string::npos);
+  CHECK(sess_t.find("6.5.7") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.5.6 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.5.7 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {

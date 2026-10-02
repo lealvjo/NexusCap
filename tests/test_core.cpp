@@ -1515,8 +1515,8 @@ TEST_CASE("mini overlay two-line packs ADV fps fg nr sync ft last600 and hw") {
   CHECK(std::strstr(b, "st2/cl1") == nullptr);
   CHECK(std::strstr(b, "stalls 2") != nullptr);
   CHECK(std::strstr(b, "clusters 1") != nullptr);
-  CHECK(std::strstr(b, "frm 900") != nullptr);
-  CHECK(std::strstr(b, "drop 5") != nullptr);
+  CHECK(std::strstr(b, "frm ") == nullptr);
+  CHECK(std::strstr(b, "drop ") == nullptr);
   CHECK(std::strstr(b, "ft 16.70") != nullptr);
   CHECK(std::strstr(b, "avg 16.60") != nullptr);
   CHECK(std::strstr(b, "p95 17.00") != nullptr);
@@ -2152,12 +2152,12 @@ TEST_CASE("session notices for FG enable/up and NR on/off") {
   CHECK(session_notice_band_px("", 3) == 0);
   {
     int x = 0, y = 0;
-    overlay_notice_center(720, 144, 1920, 1080, x, y);
-    CHECK(x == 600);
-    CHECK(y == 468);
-    overlay_notice_center(1920, 200, 1920, 1080, x, y);
+    overlay_notice_place(720, 144, 1920, 1080, x, y);
+    CHECK(x == 40);
+    CHECK(y == 896);
+    overlay_notice_place(1920, 200, 1920, 1080, x, y);
     CHECK(x == 0);
-    CHECK(y == 440);
+    CHECK(y == 840);
   }
 
   SessionNotice n;
@@ -3934,6 +3934,7 @@ TEST_CASE("make_lobby_hud_preview_lines reflects gear adjustments live") {
   CHECK(lobby_hud_contains(hud, "Default"));
   CHECK(lobby_hud_contains(hud, "fullscreen"));
   CHECK(lobby_hud_contains(hud, "SYNC TEAR"));
+  CHECK(lobby_hud_contains(hud, "2560x1440 @ 60  NV12"));
 
   s.scale_percent = 50;
   s.fg_enabled = true;
@@ -3969,10 +3970,35 @@ TEST_CASE("make_lobby_hud_preview_lines reflects gear adjustments live") {
   CHECK(lobby_hud_contains(hud, "Cinematic"));
   CHECK(lobby_hud_contains(hud, "75%"));
   CHECK(lobby_hud_contains(hud, "work"));
+  CHECK(lobby_hud_contains(hud, "NV12"));
+  s.video_fourcc = static_cast<int>(VideoFourcc::Mjpeg);
+  hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "MJPEG"));
+  s.capture_source = 1;
+  hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "NV12"));
+  CHECK_FALSE(lobby_hud_contains(hud, "MJPEG"));
 
   s.ui.show_fps = false;
   hud = make_lobby_hud_preview_lines(s, 60.0);
   CHECK(hud.count == 0);
+}
+
+TEST_CASE("capture format shows on compact mini and advanced overlays") {
+  CHECK(std::string(hud_capture_format_name(static_cast<int>(VideoFourcc::Mjpeg), 0)) == "MJPEG");
+  CHECK(std::string(hud_capture_format_name(static_cast<int>(VideoFourcc::Mjpeg), 1)) == "NV12");
+  PersistedSettings s = default_settings();
+  s.ui.show_fps = true;
+  s.ui.mini_overlay = true;
+  s.video_fourcc = static_cast<int>(VideoFourcc::Yuy2);
+  auto hud = make_lobby_hud_preview_lines(s, 60.0);
+  CHECK(lobby_hud_contains(hud, "YUY2"));
+  CHECK(lobby_hud_contains(hud, "2560x1440>2560x1440@100%>out 1:1 YUY2"));
+  LiveStripLines strip{};
+  fill_live_strip_lines(strip, false, LiveConsole::Ps5, true, 1, false, 1, 60.0);
+  CHECK(std::strstr(strip.dlss, "YUY2") == nullptr);
+  CHECK(std::strstr(strip.fg, "YUY2") == nullptr);
+  CHECK(std::strstr(strip.fps_cap.text, "YUY2") == nullptr);
 }
 
 TEST_CASE("full gear contract: CFG fields reach session + preview HUD + RenoDX files") {
@@ -4267,19 +4293,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 5, 1));
+  CHECK(app_version_is(6, 5, 2));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.5.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.5.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.1");
+  CHECK(std::string(kAppVersion) == "6.5.2");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.5.2") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.2");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.5.1") != std::string::npos);
+  CHECK(lobby_t.find("6.5.2") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.5.1") != std::string::npos);
+  CHECK(sess_t.find("6.5.2") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.5.1 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.5.2 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
@@ -6020,6 +6046,9 @@ TEST_CASE("session CFG hotkey default is Ctrl+M and never collides with the HUD"
   CHECK(hud_hotkey_fired(0x20, true, h.vk_hud, h.hud_ctrl));
   CHECK(h.vk_cfg != h.vk_hud);
   CHECK(std::string(vk_display_name(0x4D)) == "M");
+  CHECK(lobby_notice_cfg_after_start(h.vk_cfg, h.cfg_ctrl) ==
+        "Apos Iniciar, Ctrl+M abre o menu de configuracoes");
+  CHECK(lobby_notice_cfg_after_start(0x7B, false) == "Apos Iniciar, F12 abre o menu de configuracoes");
 }
 
 TEST_CASE("pipeline worker dir sits next to the host exe") {

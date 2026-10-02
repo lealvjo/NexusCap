@@ -5,7 +5,7 @@
 ; Instala em %LOCALAPPDATA%\NexusCap (gravável) — RenoDX precisa escrever ini/cfg/cache.
 
 #ifndef MyAppVersion
-  #define MyAppVersion "6.5.1"
+  #define MyAppVersion "6.5.2"
 #endif
 #ifndef StageDir
   #define StageDir "..\dist\stage"

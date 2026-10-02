@@ -79,6 +79,12 @@ inline const char* video_fourcc_name(int v) {
   }
 }
 
+// Janela publica NV12 no FrameSlot. HDMI mostra o fourcc negociado (0 = HDMI).
+inline const char* hud_capture_format_name(int fourcc, int capture_source) {
+  if (capture_source == 1) return video_fourcc_name(static_cast<int>(VideoFourcc::Nv12));
+  return video_fourcc_name(fourcc);
+}
+
 // OBS dropdown order for Espaco de cores (values are ColorSpace enum ints).
 inline constexpr int kObsColorSpaceUiOrder[] = {
     static_cast<int>(ColorSpace::Default),     // Padrao

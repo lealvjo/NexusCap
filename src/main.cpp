@@ -728,6 +728,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
   overlay.device = info.device;
   overlay.capture_w = info.width;
   overlay.capture_h = info.height;
+  overlay.capture_fmt = info.fourcc;
   overlay.output_w = bw;
   overlay.output_h = bh;
   overlay.target_fps = cfg.fps;

@@ -52,6 +52,7 @@ struct OverlayState {
   std::string device;
   int capture_w = 0;
   int capture_h = 0;
+  std::string capture_fmt;  // NV12 / MJPEG / … — vazio no overlay live
   int output_w = 0;
   int output_h = 0;
   int scale_percent = 100;

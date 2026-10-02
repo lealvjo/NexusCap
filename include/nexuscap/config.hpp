@@ -379,6 +379,7 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     const LiveConsole cons = parse_live_console(s.ui.live_console);
     unsigned char cr = 0, cg = 55, cb = 145;
     live_console_rgb(cons, cr, cg, cb);
+    const char* cap_fmt = hud_capture_format_name(s.video_fourcc, s.capture_source);
     format_mini_overlay_lines(
         out.line[0], 384, out.line[1], 384, fps, fps * static_cast<double>((std::max)(fgx, 1)), false, fgx,
         dlss5, s.ui.sync_image, ft, ft, ft, ft, true, ft, /*present=*/ft * 0.15f, 0, 0, 0, s.width, s.height,
@@ -386,7 +387,7 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
         0, 0, renodx_visual_preset_name(s.renodx_preset, s.nr_pass_count), hw_compact, /*dlss_ms=*/0, /*frames=*/0,
         /*s600_max=*/0, /*fg_backend=*/nullptr, s.fps, s.nr_pass_count,
         overlay_console_label_or_null(s.ui.overlay_console, cons), false, cr, cg, cb, s.fg_queue,
-        s.fg_adaptive, s.fg_target_fps);
+        s.fg_adaptive, s.fg_target_fps, -1, cap_fmt);
     out.count = out.line[1][0] ? 2 : 1;
     return out;
   }
@@ -402,10 +403,13 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     std::snprintf(out.line[n++], 128, "%s", s.device_name.empty() ? "auto" : s.device_name.c_str());
     const int ww = scaled_extent(s.width, scale);
     const int wh = scaled_extent(s.height, scale);
+    const char* cap_fmt = hud_capture_format_name(s.video_fourcc, s.capture_source);
     if (scale < 100) {
-      std::snprintf(out.line[n++], 128, "signal %dx%d → work %dx%d (%d%%)", s.width, s.height, ww, wh, scale);
+      std::snprintf(out.line[n++], 128, "signal %dx%d → work %dx%d (%d%%)  %s", s.width, s.height, ww, wh,
+                    scale, cap_fmt);
     } else {
-      std::snprintf(out.line[n++], 128, "signal  %dx%d @ %.0f  work 100%%", s.width, s.height, s.fps);
+      std::snprintf(out.line[n++], 128, "signal  %dx%d @ %.0f  work 100%%  %s", s.width, s.height, s.fps,
+                    cap_fmt);
     }
     if (s.fg_enabled) {
       format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx, s.fg_adaptive, s.fg_target_fps,
@@ -453,7 +457,8 @@ inline LobbyHudPreviewLines make_lobby_hud_preview_lines(const PersistedSettings
     } else {
       std::snprintf(out.line[n++], 128, "NexusCap  [LIVE]");
     }
-    std::snprintf(out.line[n++], 128, "%dx%d @ %.0f", s.width, s.height, s.fps);
+    std::snprintf(out.line[n++], 128, "%dx%d @ %.0f  %s", s.width, s.height, s.fps,
+                  hud_capture_format_name(s.video_fourcc, s.capture_source));
     if (s.fg_enabled) {
       format_lobby_hud_fps_line(out.line[n++], 128, fps, true, fgx, s.fg_adaptive, s.fg_target_fps,
                                 s.fg_flow_scale);
@@ -789,6 +794,12 @@ inline std::string session_notice_cfg_open(int vk_cfg, bool cfg_ctrl) {
 inline std::string session_notice_cfg_closed() {
   return "CFG fechado — ajustes mantidos";
 }
+// Lobby: a pessoa ainda não está na captura. O atalho do CFG só vale depois do Iniciar.
+inline std::string lobby_notice_cfg_after_start(int vk_cfg, bool cfg_ctrl) {
+  std::string key = cfg_ctrl ? std::string("Ctrl+") : std::string();
+  key += vk_display_name(vk_cfg);
+  return "Apos Iniciar, " + key + " abre o menu de configuracoes";
+}
 inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
   return std::string("Aplicando escala do Feed: ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +
          std::to_string(clamp_scale_percent(to_pct)) + "%";
@@ -875,12 +886,14 @@ inline int session_notice_band_px(const std::string& msg, int scale) {
   return extra * scale + 12 * scale;
 }
 
-// Toast no centro, fora do overlay (live/mini/compacto/ADV).
-inline void overlay_notice_center(int bar_w, int bar_h, int back_w, int back_h, int& x, int& y) {
-  x = 0;
-  y = 0;
-  if (back_w > bar_w) x = (back_w - bar_w) / 2;
-  if (back_h > bar_h) y = (back_h - bar_h) / 2;
+// Toast no canto inferior esquerdo, fora do overlay (live/mini/compacto/ADV).
+inline void overlay_notice_place(int bar_w, int bar_h, int back_w, int back_h, int& x, int& y) {
+  constexpr int kMargin = 40;
+  x = kMargin;
+  y = back_h - bar_h - kMargin;
+  if (back_w > 0 && x + bar_w > back_w) x = back_w - bar_w;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
 }
 
 // Warn when enabling FG; when cycling, only if multiplier went up (2→3→4).

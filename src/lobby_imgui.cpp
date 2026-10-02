@@ -834,7 +834,8 @@ void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPrev
         renodx_visual_preset_name(settings.renodx_preset, settings.nr_pass_count), hw_compact[0] ? hw_compact : nullptr, 0, 0, 0,
         nullptr, settings.fps, settings.nr_pass_count,
         overlay_console_label_or_null(settings.ui.overlay_console, cons), false, cr, cg, cb, settings.fg_queue,
-        settings.fg_adaptive, settings.fg_target_fps);
+        settings.fg_adaptive, settings.fg_target_fps, -1,
+        hud_capture_format_name(settings.video_fourcc, settings.capture_source));
 
     const float font_sz = static_cast<float>(hud_mini_overlay_font_px());
     const float line_gap = 2.f;
@@ -1548,7 +1549,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     // (ImGui inserts ItemSpacing between the body row and the footer child — do NOT add Dummy).
     const float item_sp_y = ImGui::GetStyle().ItemSpacing.y;
     const bool motor_warn = motor_probe.wanted();
-    const float footer_h = motor_warn ? 118.f : 72.f;
+    const float footer_h = motor_warn ? 150.f : 108.f;
     const float avail_y = ImGui::GetContentRegionAvail().y;
     const float body_h = (std::max)(200.f, avail_y - footer_h - item_sp_y);
     const float body_w = ImGui::GetContentRegionAvail().x;
@@ -2079,6 +2080,13 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       } else {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.5f, 1.f), "* Pronto — Esc na captura volta ao menu");
+      }
+      {
+        const std::string cfg_hint =
+            lobby_notice_cfg_after_start(settings.hotkeys.vk_cfg, settings.hotkeys.cfg_ctrl);
+        ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 440.f);
+        ImGui::TextDisabled("%s", cfg_hint.c_str());
+        ImGui::PopTextWrapPos();
       }
       if (motor_warn) {
         ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 430.f);
@@ -3228,8 +3236,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     // Soft tip: FG on / FG up / NR on-off — mirrors session HUD notices.
     if (!lobby_toast.empty() && ImGui::GetTime() < lobby_toast_until) {
       const ImGuiViewport* tv = ImGui::GetMainViewport();
-      ImGui::SetNextWindowPos(ImVec2(tv->WorkPos.x + tv->WorkSize.x * 0.5f, tv->WorkPos.y + tv->WorkSize.y - 56.f),
-                              ImGuiCond_Always, ImVec2(0.5f, 1.f));
+      ImGui::SetNextWindowPos(ImVec2(tv->WorkPos.x + 24.f, tv->WorkPos.y + tv->WorkSize.y - 24.f),
+                              ImGuiCond_Always, ImVec2(0.f, 1.f));
       ImGui::SetNextWindowBgAlpha(0.92f);
       ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.10f, 0.14f, 0.20f, 0.95f));
       ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.65f, 0.95f, 0.8f));
@@ -3258,8 +3266,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     // Hold screen while the Pass Count relaunch runs so restart does not look like a crash.
     if (motor_swap_pending && !motor_swap_silent) {
       const ImGuiViewport* tv = ImGui::GetMainViewport();
-      ImGui::SetNextWindowPos(ImVec2(tv->WorkPos.x + tv->WorkSize.x * 0.5f, tv->WorkPos.y + tv->WorkSize.y * 0.45f),
-                              ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+      ImGui::SetNextWindowPos(ImVec2(tv->WorkPos.x + 24.f, tv->WorkPos.y + tv->WorkSize.y - 24.f),
+                              ImGuiCond_Always, ImVec2(0.f, 1.f));
       ImGui::SetNextWindowBgAlpha(0.96f);
       ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.10f, 0.16f, 0.98f));
       ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.95f, 0.70f, 0.25f, 0.95f));

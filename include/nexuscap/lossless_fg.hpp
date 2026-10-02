@@ -537,7 +537,8 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                                         bool console_flag = true, unsigned char cons_r = 0,
                                         unsigned char cons_g = 55, unsigned char cons_b = 145,
                                         int fg_queue = 0, bool fg_adaptive = false,
-                                        int fg_target = kFgAdaptiveTargetDefault, int fg_flow_scale = -1) {
+                                        int fg_target = kFgAdaptiveTargetDefault, int fg_flow_scale = -1,
+                                        const char* capture_fmt = nullptr) {
   if (line0 && n0) line0[0] = '\0';
   if (line1 && n1) line1[0] = '\0';
   int n = 0;
@@ -610,6 +611,11 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
                     oh);
     }
   }
+  if (capture_fmt && capture_fmt[0]) {
+    char with_fmt[128]{};
+    std::snprintf(with_fmt, sizeof(with_fmt), "%s %s", res_part[0] ? res_part : "-", capture_fmt);
+    std::snprintf(res_part, sizeof(res_part), "%s", with_fmt);
+  }
   push_sep();
   push(res_part[0] ? res_part : "-", 120, 220, 255);
 
@@ -633,9 +639,10 @@ inline int format_mini_overlay_segments(MiniOverlaySeg* segs, int max_segs, char
 
   push_sep();
   char cnt[96]{};
-  std::snprintf(cnt, sizeof(cnt), "stalls %llu  clusters %llu · frm %llu drop %llu",
-                static_cast<unsigned long long>(stalls), static_cast<unsigned long long>(clusters),
-                static_cast<unsigned long long>(frames), static_cast<unsigned long long>(dropped));
+  (void)dropped;
+  (void)frames;
+  std::snprintf(cnt, sizeof(cnt), "stalls %llu  clusters %llu",
+                static_cast<unsigned long long>(stalls), static_cast<unsigned long long>(clusters));
   push(cnt, 255, 180, 120);
 
   push_sep();
@@ -735,7 +742,8 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                       bool console_flag = true, unsigned char cons_r = 0,
                                       unsigned char cons_g = 55, unsigned char cons_b = 145,
                                       int fg_queue = 0, bool fg_adaptive = false,
-                                      int fg_target = kFgAdaptiveTargetDefault, int fg_flow_scale = -1) {
+                                      int fg_target = kFgAdaptiveTargetDefault, int fg_flow_scale = -1,
+                                      const char* capture_fmt = nullptr) {
   MiniOverlaySeg segs[kMiniOverlayMaxSegs]{};
   format_mini_overlay_segments(segs, kMiniOverlayMaxSegs, line0, n0, line1, n1, fps_cap, fps_fg_est, fg_on,
                                fg_mult, dlss5_on, sync_image, frame_ms, ft_avg_ms, ft_p95_ms, ft_max_ms,
@@ -744,7 +752,7 @@ inline void format_mini_overlay_lines(char* line0, size_t n0, char* line1, size_
                                s600_p95_e2e, s600_p95_present, s600_stalls, renodx_preset, hw_compact, dlss_ms,
                                frames, s600_max_interval, fg_backend, target_fps, nr_pass_count, console_label,
                                console_flag, cons_r, cons_g, cons_b, fg_queue, fg_adaptive, fg_target,
-                               fg_flow_scale);
+                               fg_flow_scale, capture_fmt);
 }
 
 // Back-compat one-liner.

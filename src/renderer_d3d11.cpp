@@ -957,7 +957,8 @@ void paint_mini_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
       o.s600_p95_present, o.s600_stalls, o.renodx_preset.c_str(), hw_compact[0] ? hw_compact : nullptr,
       o.dlss_ms, o.frames, o.s600_max_interval, o.fg_backend.c_str(), o.target_fps, o.nr_pass_count,
       overlay_console_label_or_null(o.overlay_console, clamp_live_console(o.live_console)), false, cr, cg, cb,
-      o.fg_queue, o.fg_adaptive, o.fg_target_fps, o.fg_flow_scale);
+      o.fg_queue, o.fg_adaptive, o.fg_target_fps, o.fg_flow_scale,
+      o.capture_fmt.empty() ? nullptr : o.capture_fmt.c_str());
   (void)line0;
   (void)line1;
 
@@ -1596,7 +1597,7 @@ void RendererD3D11::burn_session_notice(const OverlayState& overlay) {
   }
   int nx = 0;
   int ny = 0;
-  overlay_notice_center(bar_w, bar_h, back_w_, back_h_, nx, ny);
+  overlay_notice_place(bar_w, bar_h, back_w_, back_h_, nx, ny);
   blit_overlay_srv(impl_->toastSrv.Get(), nx, ny, bar_w, bar_h);
 }
 
@@ -1687,8 +1688,11 @@ void RendererD3D11::burn_hdmi_hold_notice(const OverlayState& overlay) {
   D3D11_VIEWPORT vp{};
   vp.MinDepth = 0.f;
   vp.MaxDepth = 1.f;
-  vp.TopLeftX = static_cast<float>((std::max)(0, (back_w_ - nw) / 2));
-  vp.TopLeftY = static_cast<float>((std::max)(0, (back_h_ - nh) / 2));
+  int hx = 0;
+  int hy = 0;
+  overlay_notice_place(nw, nh, back_w_, back_h_, hx, hy);
+  vp.TopLeftX = static_cast<float>(hx);
+  vp.TopLeftY = static_cast<float>(hy);
   vp.Width = static_cast<float>(nw);
   vp.Height = static_cast<float>(nh);
   impl_->ctx->OMSetRenderTargets(1, impl_->rtv.GetAddressOf(), nullptr);
@@ -1810,7 +1814,12 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     wchar_t lines[16][180];
     int n = 0;
     swprintf(lines[n++], 180, L"NexusCap  [%s]  ", mode);
-    swprintf(lines[n++], 180, L"%dx%d @ %.0f", o.capture_w, o.capture_h, o.target_fps);
+    if (!o.capture_fmt.empty()) {
+      swprintf(lines[n++], 180, L"%dx%d @ %.0f  %s", o.capture_w, o.capture_h, o.target_fps,
+               utf8_to_wide_hud(o.capture_fmt).c_str());
+    } else {
+      swprintf(lines[n++], 180, L"%dx%d @ %.0f", o.capture_w, o.capture_h, o.target_fps);
+    }
     const double show_fps = o.fps_smooth > 0 ? o.fps_smooth : o.fps;
     HudFpsParts fps_parts{};
     {
@@ -1908,6 +1917,11 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
     swprintf(lines[2], 180, L"signal  %dx%d @ %.0f   work %dx%d (100%%)   out %dx%d", o.capture_w,
              o.capture_h, o.target_fps, o.work_w, o.work_h, o.output_w, o.output_h);
   }
+  if (!o.capture_fmt.empty()) {
+    wchar_t sig[180]{};
+    swprintf(sig, 180, L"%s  %s", lines[2], utf8_to_wide_hud(o.capture_fmt).c_str());
+    swprintf(lines[2], 180, L"%s", sig);
+  }
   HudFpsParts fps_parts{};
   fill_session_hud_fps_parts(fps_parts, o.fps_smooth, o.fps_fg_est, o.fg_on, o.fg_multiplier, false,
                             o.ft_stable, o.fg_adaptive, o.fg_target_fps, o.fg_flow_scale);
@@ -1954,8 +1968,7 @@ void paint_panel_overlay_hdc(HDC hdc, const RECT& rc, const OverlayState& o) {
   const int hw_start = idx;
   if (o.hw_info) idx = append_hw_metric_lines(lines, idx, 19, o);
   const int hw_end = idx;
-  swprintf(lines[idx++], 180, L"frames  %llu   dropped %llu   stalls %llu   clusters %llu",
-           static_cast<unsigned long long>(o.frames), static_cast<unsigned long long>(o.dropped),
+  swprintf(lines[idx++], 180, L"stalls %llu   clusters %llu",
            static_cast<unsigned long long>(o.stalls_window),
            static_cast<unsigned long long>(o.clusters));
   if (o.has_stats600) {
@@ -2242,8 +2255,11 @@ void RestartNotice::paint(HDC hdc) const {
 
   const int card_w = kRestartNoticeCardW;
   const int card_h = kRestartNoticeCardH;
-  const int x = (std::max)(0, static_cast<int>(rc.right - card_w) / 2);
-  const int y = (std::max)(0, static_cast<int>(rc.bottom - card_h) / 2);
+  int x = 40;
+  int y = static_cast<int>(rc.bottom) - card_h - 40;
+  if (x + card_w > rc.right) x = static_cast<int>(rc.right) - card_w;
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
   RECT card{x, y, x + card_w, y + card_h};
   HBRUSH card_bg = CreateSolidBrush(RGB(14, 18, 26));
   FillRect(hdc, &card, card_bg);

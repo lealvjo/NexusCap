@@ -30,6 +30,10 @@ struct HotkeyConfig {
   bool pass_next_ctrl = true;
   int vk_pass_prev = 0xBD;  // VK_OEM_MINUS — with pass_prev_ctrl → Ctrl+-
   bool pass_prev_ctrl = true;
+  int vk_look_next = 0xBB;  // VK_OEM_PLUS — with look_next_shift → Shift++
+  bool look_next_shift = true;
+  int vk_look_prev = 0xBD;  // VK_OEM_MINUS — with look_prev_shift → Shift+-
+  bool look_prev_shift = true;
 };
 
 struct SessionUiFlags {
@@ -527,13 +531,35 @@ inline bool pass_hotkey_vk_match(int vk, int bound) {
   return false;
 }
 
+// Default, Natural, Cinematic. delta +1 avanca, -1 volta.
+inline int step_renodx_visual_preset(int preset, int delta) {
+  const int n = 3;
+  int step = delta % n;
+  if (step < 0) step += n;
+  return (clamp_renodx_visual_preset(preset) + step) % n;
+}
+
+// Shift++ / Shift+- trocam a cena. Ctrl no mesmo + ou - continua no Pass Count.
+inline int look_cycle_hotkey_step(int vk, bool ctrl_down, bool shift_down, const HotkeyConfig& hk) {
+  auto fires = [&](int bound, bool need_shift) {
+    if (ctrl_down) return false;
+    if (!pass_hotkey_vk_match(vk, bound)) return false;
+    if (need_shift != shift_down) return false;
+    return true;
+  };
+  if (fires(hk.vk_look_next, hk.look_next_shift)) return 1;
+  if (fires(hk.vk_look_prev, hk.look_prev_shift)) return -1;
+  return 0;
+}
+
 // Atalho configuravel do ciclo de Pass Count. +1 avanca, -1 volta.
-inline int pass_cycle_hotkey_step(int vk, bool ctrl_down, const HotkeyConfig& hk) {
+inline int pass_cycle_hotkey_step(int vk, bool ctrl_down, const HotkeyConfig& hk, bool shift_down = false) {
   auto fires = [&](int bound, bool need_ctrl) {
     if (!pass_hotkey_vk_match(vk, bound)) return false;
     if (need_ctrl && !ctrl_down) return false;
     return true;
   };
+  if (shift_down && look_cycle_hotkey_step(vk, false, shift_down, hk) != 0) return 0;
   if (fires(hk.vk_pass_next, hk.pass_next_ctrl)) return 1;
   if (fires(hk.vk_pass_prev, hk.pass_prev_ctrl)) return -1;
   return 0;

@@ -4069,6 +4069,27 @@ TEST_CASE("system metrics formatters and cpu percent math") {
   CHECK(cpu_percent_from_idle_deltas(100, 100, 0) == doctest::Approx(0.0));
   CHECK(cpu_percent_from_idle_deltas(0, 0, 0) == doctest::Approx(0.0));
 
+  const QuickInfoColor low = quick_info_bar_color(0.0);
+  CHECK(low.g > low.r);
+  CHECK(low.g > low.b);
+  const QuickInfoColor mid = quick_info_bar_color(50.0);
+  CHECK(mid.r > 0.7f);
+  CHECK(mid.g > 0.6f);
+  CHECK(mid.b < 0.3f);
+  CHECK(mid.g > quick_info_bar_color(100.0).g);
+  const QuickInfoColor high = quick_info_bar_color(100.0);
+  CHECK(high.r > high.g);
+  CHECK(high.r > high.b);
+  CHECK(high.g < 0.4f);
+  const QuickInfoColor over = quick_info_bar_color(140.0);
+  CHECK(over.r == doctest::Approx(high.r));
+  CHECK(over.g == doctest::Approx(high.g));
+  const QuickInfoColor unknown = quick_info_bar_color_unknown();
+  CHECK(unknown.r == doctest::Approx(unknown.g));
+  CHECK(unknown.g == doctest::Approx(unknown.b));
+  CHECK(quick_info_usage_percent(180.0, 250.0) == doctest::Approx(72.0));
+  CHECK(quick_info_usage_percent(6.0, 0.0) == doctest::Approx(0.0));
+
   SystemMetricsSample s;
   char buf[220];
   format_sys_cpu_line(buf, sizeof(buf), s);
@@ -4520,19 +4541,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 5, 8));
+  CHECK(app_version_is(6, 6, 0));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.5.8");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.5.8") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.5.8");
+  CHECK(std::string(kAppVersion) == "6.6.0");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.6.0") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.6.0");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.5.8") != std::string::npos);
+  CHECK(lobby_t.find("6.6.0") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.5.8") != std::string::npos);
+  CHECK(sess_t.find("6.6.0") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.5.8 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.6.0 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
@@ -6278,6 +6299,61 @@ TEST_CASE("Ctrl plus and minus cycle Pass Count and wrap") {
   CHECK(std::string(vk_display_name(0x6D)) == "Num -");
 }
 
+TEST_CASE("Shift plus and minus cycle the visual scene without stealing Pass Count") {
+  CHECK(step_renodx_visual_preset(0, 1) == 1);
+  CHECK(step_renodx_visual_preset(1, 1) == 2);
+  CHECK(step_renodx_visual_preset(2, 1) == 0);
+  CHECK(step_renodx_visual_preset(0, -1) == 2);
+  CHECK(step_renodx_visual_preset(2, -1) == 1);
+  CHECK(std::string(renodx_visual_preset_name(step_renodx_visual_preset(0, 1))) == "Natural");
+  CHECK(std::string(renodx_visual_preset_name(step_renodx_visual_preset(1, 1))) == "Cinematic");
+  CHECK(std::string(renodx_visual_preset_name(step_renodx_visual_preset(2, 1))) == "Default");
+  CHECK(step_renodx_visual_preset(9, 1) == 0);  // 9 fecha em Cinematic, o proximo e Default
+
+  const HotkeyConfig hk = default_hotkeys();
+  CHECK(hk.vk_look_next == 0xBB);
+  CHECK(hk.vk_look_prev == 0xBD);
+  CHECK(hk.look_next_shift);
+  CHECK(hk.look_prev_shift);
+  CHECK(look_cycle_hotkey_step(0xBB, false, true, hk) == 1);
+  CHECK(look_cycle_hotkey_step(0x6B, false, true, hk) == 1);
+  CHECK(look_cycle_hotkey_step(0xBD, false, true, hk) == -1);
+  CHECK(look_cycle_hotkey_step(0x6D, false, true, hk) == -1);
+  CHECK(look_cycle_hotkey_step(0xBB, false, false, hk) == 0);
+  CHECK(look_cycle_hotkey_step(0xBB, true, true, hk) == 0);
+  CHECK(pass_cycle_hotkey_step(0xBB, true, hk, false) == 1);
+  CHECK(pass_cycle_hotkey_step(0xBB, true, hk, true) == 0);
+  CHECK(pass_cycle_hotkey_step(0xBD, true, hk, true) == 0);
+  CHECK_FALSE(session_cfg_preset_applies_live(true));
+  CHECK(plan_session_cfg_preset_apply(true) == SessionCfgApply::RecycleWorker);
+
+  HotkeyConfig rebound = hk;
+  rebound.vk_look_next = 0x75;
+  rebound.look_next_shift = false;
+  rebound.vk_look_prev = 0x76;
+  rebound.look_prev_shift = true;
+  CHECK(look_cycle_hotkey_step(0x75, false, false, rebound) == 1);
+  CHECK(look_cycle_hotkey_step(0x75, false, true, rebound) == 0);
+  CHECK(look_cycle_hotkey_step(0x76, false, true, rebound) == -1);
+  CHECK(look_cycle_hotkey_step(0x76, true, true, rebound) == 0);
+
+  PersistedSettings s = default_settings();
+  s.hotkeys = rebound;
+  PersistedSettings out;
+  CHECK(parse_settings_ini(serialize_settings_ini(s), out));
+  CHECK(out.hotkeys.vk_look_next == 0x75);
+  CHECK_FALSE(out.hotkeys.look_next_shift);
+  CHECK(out.hotkeys.vk_look_prev == 0x76);
+  CHECK(out.hotkeys.look_prev_shift);
+
+  PersistedSettings old;
+  CHECK(parse_settings_ini("[hotkeys]\nhud=32\nhud_ctrl=1\n", old));
+  CHECK(old.hotkeys.vk_look_next == 0xBB);
+  CHECK(old.hotkeys.vk_look_prev == 0xBD);
+  CHECK(old.hotkeys.look_next_shift);
+  CHECK(old.hotkeys.look_prev_shift);
+}
+
 TEST_CASE("session CFG hotkey default is Ctrl+M and never collides with the HUD") {
   const HotkeyConfig h = default_hotkeys();
   CHECK(h.vk_cfg == 0x4D);
@@ -6290,9 +6366,10 @@ TEST_CASE("session CFG hotkey default is Ctrl+M and never collides with the HUD"
   CHECK(hud_hotkey_fired(0x20, true, h.vk_hud, h.hud_ctrl));
   CHECK(h.vk_cfg != h.vk_hud);
   CHECK(std::string(vk_display_name(0x4D)) == "M");
-  CHECK(lobby_notice_cfg_after_start(h.vk_cfg, h.cfg_ctrl) ==
-        "Apos Iniciar, Ctrl+M abre o menu de configuracoes");
-  CHECK(lobby_notice_cfg_after_start(0x7B, false) == "Apos Iniciar, F12 abre o menu de configuracoes");
+  CHECK(lobby_notice_cfg_after_start(h.vk_cfg, h.cfg_ctrl, h.vk_hud, h.hud_ctrl) ==
+        "Apos Iniciar, Ctrl+M abre o menu de configuracoes ao vivo. Ctrl+Espaco troca o overlay");
+  CHECK(lobby_notice_cfg_after_start(0x7B, false, h.vk_hud, h.hud_ctrl) ==
+        "Apos Iniciar, F12 abre o menu de configuracoes ao vivo. Ctrl+Espaco troca o overlay");
 }
 
 TEST_CASE("pipeline worker dir sits next to the host exe") {

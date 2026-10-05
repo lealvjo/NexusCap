@@ -379,6 +379,10 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "pass_next_ctrl=" << (s.hotkeys.pass_next_ctrl ? 1 : 0) << "\n";
   o << "pass_prev=" << s.hotkeys.vk_pass_prev << "\n";
   o << "pass_prev_ctrl=" << (s.hotkeys.pass_prev_ctrl ? 1 : 0) << "\n";
+  o << "look_next=" << s.hotkeys.vk_look_next << "\n";
+  o << "look_next_shift=" << (s.hotkeys.look_next_shift ? 1 : 0) << "\n";
+  o << "look_prev=" << s.hotkeys.vk_look_prev << "\n";
+  o << "look_prev_shift=" << (s.hotkeys.look_prev_shift ? 1 : 0) << "\n";
   return o.str();
 }
 
@@ -475,6 +479,10 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "pass_next_ctrl") s.hotkeys.pass_next_ctrl = (val == "1" || val == "true");
       else if (key == "pass_prev") s.hotkeys.vk_pass_prev = v;
       else if (key == "pass_prev_ctrl") s.hotkeys.pass_prev_ctrl = (val == "1" || val == "true");
+      else if (key == "look_next") s.hotkeys.vk_look_next = v;
+      else if (key == "look_next_shift") s.hotkeys.look_next_shift = (val == "1" || val == "true");
+      else if (key == "look_prev") s.hotkeys.vk_look_prev = v;
+      else if (key == "look_prev_shift") s.hotkeys.look_prev_shift = (val == "1" || val == "true");
     }
   }
   s.ui.hide_panel_on_capture = true;

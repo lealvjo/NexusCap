@@ -51,6 +51,7 @@ std::atomic<bool> g_toggle_dlss{false};
 std::atomic<bool> g_toggle_fg{false};
 std::atomic<bool> g_toggle_nr{false};
 std::atomic<int> g_pass_step{0};
+std::atomic<int> g_look_step{0};
 // RenoDX runtime NR — carry from lobby via cfg.nr_runtime_on (same process often keeps NR ON).
 bool g_nr_runtime_on = false;
 bool g_renodx_multipass = false;  // active stack (AddonPath) — multipass owns NR, no hotkey
@@ -162,6 +163,7 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // Bit 30 = auto-repeat KEYDOWN — one key = one overlay cycle.
       const bool is_repeat = (lp & (1u << 30)) != 0;
       const bool ctrl_down = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      const bool shift_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
       if (!is_repeat &&
           nexuscap::hud_hotkey_fired(vk, ctrl_down, g_hotkeys.vk_hud, g_hotkeys.hud_ctrl)) {
         g_cycle_overlay = true;
@@ -173,8 +175,10 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // Bit 30 = auto-repeat KEYDOWN — one Delete must be one Bridge pulse (else HUD/RenoDX desync).
       if (vk == g_hotkeys.vk_nr_toggle && (lp & (1u << 30)) == 0) g_toggle_nr = true;
       if (!is_repeat) {
-        const int pass_step = nexuscap::pass_cycle_hotkey_step(vk, ctrl_down, g_hotkeys);
+        const int pass_step = nexuscap::pass_cycle_hotkey_step(vk, ctrl_down, g_hotkeys, shift_down);
         if (pass_step != 0) g_pass_step.store(pass_step);
+        const int look_step = nexuscap::look_cycle_hotkey_step(vk, ctrl_down, shift_down, g_hotkeys);
+        if (look_step != 0) g_look_step.store(look_step);
       }
       if (vk == g_hotkeys.vk_fullscreen) g_toggle_fs = true;
       return 0;
@@ -1155,6 +1159,39 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
     }
 
+    if (const int step = g_look_step.exchange(0)) {
+      if (!cfg_restart_pending && !cfg.perf_test && cfg.enhance == EnhanceBackend::Renodx) {
+        const int before = clamp_renodx_visual_preset(cfg.renodx_preset);
+        const int after = step_renodx_visual_preset(before, step);
+        if (after != before) {
+          wchar_t exe_path[MAX_PATH]{};
+          GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+          const std::string exe_dir = fs::path(exe_path).parent_path().string();
+          if (!prepare_renodx_runtime_dirs(exe_dir)) {
+            session_notice.push(renodx_write_denied_notice(), clock.now_ms());
+          } else {
+            const int pass = clamp_nr_pass_count(cfg.nr_pass_count);
+            cfg.renodx_preset = after;
+            (void)sync_nr_pass_count_files(exe_dir, pass, after, &cfg.nr_advanced[pass]);
+            (void)sync_renodx_visual_preset_files(exe_dir, after, pass, &cfg.nr_advanced[pass]);
+            if (!cfg.perf_test) {
+              PersistedSettings ps = default_settings();
+              std::string serr;
+              load_settings(ps, settings_default_path(), serr);
+              ps.renodx_preset = after;
+              ps.nr_pass_count = pass;
+              save_settings(ps, settings_default_path(), serr);
+            }
+            cfg_restart_kind = plan_session_cfg_preset_apply(true);
+            cfg_restart_pending = true;
+            cfg_restart_until = clock.now_ms();
+            write_restart_toast(session_notice_preset_apply(before, after, pass));
+            overlay.renodx_preset = renodx_visual_preset_name(after, pass);
+          }
+        }
+      }
+    }
+
     // Finish async NR confirm without blocking Present.
     if (g_nr_confirm.active) {
       const auto polled = poll_nr_confirm_pending(g_nr_confirm, &g_nr_runtime_on, clock.now_ms());
@@ -1570,6 +1607,21 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         ui.cfg_ctrl = g_hotkeys.cfg_ctrl;
       }
       ui.status = overlay.session_notice;
+      if (cfg_ui.open()) {
+        SystemMetricsSample hw{};
+        hw_sampler.sample(renderer.device(), hw);
+        ui.cpu_ok = hw.cpu_ok;
+        ui.cpu_percent = hw.cpu_percent;
+        ui.gpu_ok = hw.gpu_ok;
+        ui.gpu_percent = hw.gpu_percent;
+        ui.vram_ok = hw.vram_ok;
+        ui.vram_used_mb = hw.vram_used_mb;
+        ui.vram_budget_mb = hw.vram_budget_mb;
+        ui.power_ok = hw.power_ok;
+        ui.power_w = hw.power_w;
+        ui.power_limit_ok = hw.power_limit_ok;
+        ui.power_limit_w = hw.power_limit_w;
+      }
       cfg_ui.fg_can_enable = lobby_fg_can_enable(cfg.fg_path);
       cfg_ui.presets_locked = cfg.perf_test;
     }

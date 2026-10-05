@@ -821,10 +821,13 @@ inline std::string session_notice_cfg_closed() {
   return "CFG fechado — ajustes mantidos";
 }
 // Lobby: a pessoa ainda não está na captura. O atalho do CFG só vale depois do Iniciar.
-inline std::string lobby_notice_cfg_after_start(int vk_cfg, bool cfg_ctrl) {
-  std::string key = cfg_ctrl ? std::string("Ctrl+") : std::string();
-  key += vk_display_name(vk_cfg);
-  return "Apos Iniciar, " + key + " abre o menu de configuracoes";
+inline std::string lobby_notice_cfg_after_start(int vk_cfg, bool cfg_ctrl, int vk_hud, bool hud_ctrl) {
+  std::string cfg_key = cfg_ctrl ? std::string("Ctrl+") : std::string();
+  cfg_key += vk_display_name(vk_cfg);
+  std::string hud_key = hud_ctrl ? std::string("Ctrl+") : std::string();
+  hud_key += vk_display_name(vk_hud);
+  return "Apos Iniciar, " + cfg_key + " abre o menu de configuracoes ao vivo. " + hud_key +
+         " troca o overlay";
 }
 inline std::string session_notice_feed_scale_apply(int from_pct, int to_pct) {
   return std::string("Aplicando escala do Feed: ") + std::to_string(clamp_scale_percent(from_pct)) + "% → " +

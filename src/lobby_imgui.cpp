@@ -70,6 +70,7 @@ PerfTestResult g_perf_result{};
 int* g_capture_vk_target = nullptr;
 int g_lobby_gear_vk = 0x7B;  // default F12 — atualizado do settings a cada frame
 std::atomic<int> g_lobby_pass_step{0};
+std::atomic<int> g_lobby_look_step{0};
 bool g_lobby_gear_ctrl = false;
 HotkeyConfig g_lobby_hotkeys = default_hotkeys();
 SystemMetricsSampler g_lobby_hw;
@@ -476,10 +477,16 @@ LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
       }
       if ((lp & (1u << 30)) == 0) {
-        const int pass_step =
-            pass_cycle_hotkey_step(static_cast<int>(wp), (GetKeyState(VK_CONTROL) & 0x8000) != 0, g_lobby_hotkeys);
+        const bool ctrl_down = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool shift_down = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        const int pass_step = pass_cycle_hotkey_step(static_cast<int>(wp), ctrl_down, g_lobby_hotkeys, shift_down);
         if (pass_step != 0) {
           g_lobby_pass_step.store(pass_step);
+          return 0;
+        }
+        const int look_step = look_cycle_hotkey_step(static_cast<int>(wp), ctrl_down, shift_down, g_lobby_hotkeys);
+        if (look_step != 0) {
+          g_lobby_look_step.store(look_step);
           return 0;
         }
       }
@@ -782,6 +789,24 @@ void draw_live_preview_strip(const PersistedSettings& settings, const LobbyPrevi
     const FgFtRgb rgb = overlay_ft_status_rgb(st);
     paint(strip.ft, IM_COL32(rgb.r, rgb.g, rgb.b, 255));
   }
+}
+
+void draw_window_preview_placeholder(const ImVec2& origin, const ImVec2& avail, const char* title,
+                                    const char* line) {
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), IM_COL32(28, 34, 44, 255));
+  const float margin = 28.f;
+  const float text_y = avail.y * 0.38f;
+  ImGui::PushTextWrapPos(origin.x + avail.x - margin);
+  ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, origin.y + text_y));
+  ImGui::TextColored(ImVec4(0.86f, 0.90f, 0.94f, 1.f), "%s", title ? title : "");
+  if (line && line[0]) {
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + margin, origin.y + text_y + ImGui::GetTextLineHeight() + 8.f));
+    ImGui::TextColored(ImVec4(0.62f, 0.68f, 0.76f, 1.f), "%s", line);
+  }
+  ImGui::PopTextWrapPos();
+  ImGui::SetCursorScreenPos(origin);
+  ImGui::Dummy(avail);
 }
 
 void draw_hud_preview_overlay(const PersistedSettings& settings, const LobbyPreview& preview,
@@ -1493,6 +1518,44 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
       }
     }
+    if (const int step = g_lobby_look_step.exchange(0)) {
+      if (!motor_swap_pending && settings.enhance_renodx) {
+        const int before = clamp_renodx_visual_preset(settings.renodx_preset);
+        const int after = step_renodx_visual_preset(before, step);
+        if (after != before) {
+          settings.renodx_preset = after;
+          wchar_t exe_path[MAX_PATH]{};
+          GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+          const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+          const int pass = clamp_nr_pass_count(settings.nr_pass_count);
+          const NrAdvancedLook* look = &settings.nr_advanced[pass];
+          if (!prepare_renodx_runtime_dirs(exe_dir)) {
+            push_lobby_toast(renodx_write_denied_notice());
+          } else if (lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)) {
+            std::string serr;
+            save_settings(settings, settings_default_path(), serr);
+            gear_snapshot = settings;
+            (void)sync_nr_pass_count_files(exe_dir, pass, after, look);
+            (void)sync_renodx_visual_preset_files(exe_dir, after, pass, look);
+            motor_swap_title = lobby_pipeline_hold_title();
+            motor_swap_line = std::string(renodx_visual_preset_name(before, pass)) + " -> " +
+                              renodx_visual_preset_name(after, pass);
+            motor_swap_args = lobby_cfg_relaunch_args();
+            motor_swap_pending = true;
+            motor_swap_silent = false;
+            motor_swap_enter_session = false;
+            motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+            write_restart_toast(session_notice_preset_apply(before, after, pass));
+          } else {
+            std::string serr;
+            save_settings(settings, settings_default_path(), serr);
+            gear_snapshot = settings;
+            (void)sync_renodx_visual_preset_files(exe_dir, after, pass, look);
+            push_lobby_toast(std::string("Preset: ") + renodx_visual_preset_name(after, pass));
+          }
+        }
+      }
+    }
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -1973,9 +2036,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           img_min = band_min;
           img_max = band_max;
           hud_has_img = false;
-          ImGui::SetCursorPos(ImVec2(16.f, avail.y * 0.35f));
-          ImGui::TextDisabled("Preview desligado");
-          ImGui::TextDisabled("Ative o preview para ver o sinal HDMI (o Iniciar nao muda).");
+          if (capture_source_is_window(settings.capture_source)) {
+            draw_window_preview_placeholder(origin, avail, "Preview desligado",
+                                            "Ative o preview para ver a janela (o Iniciar nao muda).");
+          } else {
+            ImGui::SetCursorPos(ImVec2(16.f, avail.y * 0.35f));
+            ImGui::TextDisabled("Preview desligado");
+            ImGui::TextDisabled("Ative o preview para ver o sinal HDMI (o Iniciar nao muda).");
+          }
         } else if (preview.srv && preview.tex_w > 0 && preview.tex_h > 0 && avail.x > 1.f && avail.y > 1.f) {
           // Fill center column — no letterbox black bars (side menus already own that space).
           const auto box =
@@ -1986,6 +2054,23 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           dl->AddImage(reinterpret_cast<ImTextureID>(preview.srv), img_min, img_max);
           ImGui::Dummy(avail);
           hud_has_img = true;
+        } else if (capture_source_is_window(settings.capture_source)) {
+          img_min = band_min;
+          img_max = band_max;
+          hud_has_img = false;
+          const bool waiting_pick = settings.window_title.empty() || preview.err == "escolha uma janela";
+          const char* title = "Aguardando a janela...";
+          const char* line = settings.window_title.c_str();
+          if (waiting_pick) {
+            title = "Escolha uma janela";
+            line = "O preview mostra a janela escolhida, nao a placa.";
+          } else if (!preview.err.empty()) {
+            title = "Sem imagem da janela";
+            line = preview.err.c_str();
+          } else if (!line[0]) {
+            line = "A imagem entra quando a janela gerar um quadro.";
+          }
+          draw_window_preview_placeholder(origin, avail, title, line);
         } else {
           img_min = band_min;
           img_max = band_max;
@@ -2122,7 +2207,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       }
       {
         const std::string cfg_hint =
-            lobby_notice_cfg_after_start(settings.hotkeys.vk_cfg, settings.hotkeys.cfg_ctrl);
+            lobby_notice_cfg_after_start(settings.hotkeys.vk_cfg, settings.hotkeys.cfg_ctrl,
+                                         settings.hotkeys.vk_hud, settings.hotkeys.hud_ctrl);
         ImGui::PushTextWrapPos(ImGui::GetWindowWidth() - 440.f);
         ImGui::TextDisabled("%s", cfg_hint.c_str());
         ImGui::PopTextWrapPos();
@@ -2645,6 +2731,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
                             renodx_nr_preset_index(settings.renodx_preset),
                             renodx_feed_model_preset(settings.renodx_preset, settings.nr_pass_count));
         ImGui::TextDisabled("  Default / Natural / Cinematic (o addon so le no boot)");
+        {
+          char look_hint[128];
+          std::snprintf(look_hint, sizeof(look_hint), "%s%s avanca  |  %s%s volta. Segura o quadro, sem pulso.",
+                        settings.hotkeys.look_next_shift ? "Shift+" : "",
+                        vk_display_name(settings.hotkeys.vk_look_next),
+                        settings.hotkeys.look_prev_shift ? "Shift+" : "",
+                        vk_display_name(settings.hotkeys.vk_look_prev));
+          ImGui::TextDisabled("%s", look_hint);
+        }
         ImGui::TextDisabled("Mesmo look no Iniciar — janela ou tela cheia.");
 
         ImGui::Spacing();

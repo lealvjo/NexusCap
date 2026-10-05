@@ -27,6 +27,9 @@ struct SystemMetricsSample {
   double ram_total_mb = 0;
   bool power_ok = false;
   double power_w = 0;
+  // Teto da placa (NVML), lido uma vez. A barra de watts usa power_w / power_limit_w.
+  bool power_limit_ok = false;
+  double power_limit_w = 0;
   // Short dynamic labels for HUD (e.g. "i5-11400F", "RTX 5070") — empty if unknown.
   std::string cpu_name;
   std::string gpu_name;
@@ -347,6 +350,9 @@ private:
   bool nvml_ready_ = false;
   bool nvml_tried_ = false;
   int nvml_device_index_ = 0;
+  bool power_limit_tried_ = false;
+  bool power_limit_ok_ = false;
+  double power_limit_w_ = 0;
 
   double last_sample_ms_ = 0;
 };

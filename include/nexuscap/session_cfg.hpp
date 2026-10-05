@@ -47,7 +47,55 @@ struct SessionCfgState {
   bool cfg_ctrl = true;
   HotkeyConfig hotkeys{};
   std::string status;  // último aviso da sessão (FG / NR / preset)
+  // Informacoes rapidas. main.cpp preenche só com o menu aberto.
+  bool cpu_ok = false;
+  double cpu_percent = 0;
+  bool gpu_ok = false;
+  double gpu_percent = 0;
+  bool vram_ok = false;
+  double vram_used_mb = 0;
+  double vram_budget_mb = 0;
+  bool power_ok = false;
+  double power_w = 0;
+  bool power_limit_ok = false;
+  double power_limit_w = 0;
 };
+
+// Cor da barra: verde no uso baixo, amarelo no meio, vermelho no uso alto.
+struct QuickInfoColor {
+  float r = 0.f;
+  float g = 0.f;
+  float b = 0.f;
+};
+
+inline QuickInfoColor quick_info_bar_color(double percent) {
+  double p = percent;
+  if (p < 0.0) p = 0.0;
+  if (p > 100.0) p = 100.0;
+  QuickInfoColor c{};
+  if (p <= 50.0) {
+    const double t = p / 50.0;
+    c.r = static_cast<float>(0.20 + (0.92 - 0.20) * t);
+    c.g = 0.78f;
+    c.b = static_cast<float>(0.28 + (0.12 - 0.28) * t);
+  } else {
+    const double t = (p - 50.0) / 50.0;
+    c.r = static_cast<float>(0.92 + (0.90 - 0.92) * t);
+    c.g = static_cast<float>(0.78 + (0.22 - 0.78) * t);
+    c.b = static_cast<float>(0.12 + (0.18 - 0.12) * t);
+  }
+  return c;
+}
+
+inline QuickInfoColor quick_info_bar_color_unknown() { return {0.45f, 0.45f, 0.45f}; }
+
+// used/cap em 0–100. Sem teto valido, 0 (a barra fica cinza).
+inline double quick_info_usage_percent(double used, double cap) {
+  if (!(cap > 0.0) || !(used >= 0.0)) return 0.0;
+  double p = 100.0 * used / cap;
+  if (p > 100.0) p = 100.0;
+  return p;
+}
 
 // Pedidos do usuário no frame. main.cpp decide o que é ao vivo e o que reinicia.
 struct SessionCfgActions {

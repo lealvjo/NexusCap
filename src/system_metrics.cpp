@@ -34,6 +34,7 @@ using NvmlShutdown_t = NvmlReturn_t (*)();
 using NvmlDeviceGetCount_t = NvmlReturn_t (*)(unsigned int*);
 using NvmlDeviceGetHandleByIndex_t = NvmlReturn_t (*)(unsigned int, NvmlDevice_t*);
 using NvmlDeviceGetPowerUsage_t = NvmlReturn_t (*)(NvmlDevice_t, unsigned int*);
+using NvmlDeviceGetPowerLimit_t = NvmlReturn_t (*)(NvmlDevice_t, unsigned int*);
 using NvmlDeviceGetUtilizationRates_t = NvmlReturn_t (*)(NvmlDevice_t, void*);
 using NvmlDeviceGetTemperature_t = NvmlReturn_t (*)(NvmlDevice_t, int /*sensor*/, unsigned int*);
 
@@ -438,6 +439,25 @@ bool SystemMetricsSampler::sample_nvml(SystemMetricsSample& out) {
   if (get_power(dev, &mw) == 0) {
     out.power_w = static_cast<double>(mw) / 1000.0;
     out.power_ok = true;
+  }
+
+  if (!power_limit_tried_) {
+    power_limit_tried_ = true;
+    auto get_limit = reinterpret_cast<NvmlDeviceGetPowerLimit_t>(
+        GetProcAddress(m, "nvmlDeviceGetEnforcedPowerLimit"));
+    if (!get_limit) {
+      get_limit = reinterpret_cast<NvmlDeviceGetPowerLimit_t>(
+          GetProcAddress(m, "nvmlDeviceGetPowerManagementLimit"));
+    }
+    unsigned int limit_mw = 0;
+    if (get_limit && get_limit(dev, &limit_mw) == 0 && limit_mw > 0) {
+      power_limit_w_ = static_cast<double>(limit_mw) / 1000.0;
+      power_limit_ok_ = true;
+    }
+  }
+  if (power_limit_ok_) {
+    out.power_limit_w = power_limit_w_;
+    out.power_limit_ok = true;
   }
 
   // NVML GPU util is often more reliable than PDH for a single discrete GPU.

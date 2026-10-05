@@ -36,6 +36,68 @@ namespace {
 const ImVec4 kAccent = nexuscap_accent_color();
 const ImVec4 kWarn = nexuscap_warn_color();
 
+void draw_quick_info_bar(const char* text, bool colored, double percent) {
+  const QuickInfoColor c = colored ? quick_info_bar_color(percent) : quick_info_bar_color_unknown();
+  const double clamped = quick_info_usage_percent(percent, 100.0);
+  const float frac = colored ? static_cast<float>(clamped / 100.0) : 1.f;
+  ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(c.r, c.g, c.b, 1.f));
+  const float text_w = ImGui::CalcTextSize(text).x;
+  const float bar_w = (std::max)(48.f, ImGui::GetContentRegionAvail().x - text_w - 12.f);
+  ImGui::ProgressBar(frac, ImVec2(bar_w, 0.f), "");
+  ImGui::SameLine();
+  ImGui::TextUnformatted(text);
+  ImGui::PopStyleColor();
+}
+
+void draw_quick_info(const SessionCfgState& state) {
+  ImGui::TextUnformatted("Informacoes rapidas");
+  char gpu[48]{};
+  if (state.gpu_ok) {
+    std::snprintf(gpu, sizeof(gpu), "GPU  %.0f%%", state.gpu_percent);
+  } else {
+    std::snprintf(gpu, sizeof(gpu), "GPU  --");
+  }
+  draw_quick_info_bar(gpu, state.gpu_ok, state.gpu_percent);
+
+  char cpu[48]{};
+  if (state.cpu_ok) {
+    std::snprintf(cpu, sizeof(cpu), "CPU  %.0f%%", state.cpu_percent);
+  } else {
+    std::snprintf(cpu, sizeof(cpu), "CPU  --");
+  }
+  draw_quick_info_bar(cpu, state.cpu_ok, state.cpu_percent);
+
+  char vram[64]{};
+  bool vram_colored = false;
+  double vram_pct = 0;
+  if (state.vram_ok && state.vram_budget_mb > 0.5) {
+    vram_colored = true;
+    vram_pct = quick_info_usage_percent(state.vram_used_mb, state.vram_budget_mb);
+    std::snprintf(vram, sizeof(vram), "VRAM  %.1f / %.1f GB", state.vram_used_mb / 1024.0,
+                  state.vram_budget_mb / 1024.0);
+  } else if (state.vram_ok) {
+    std::snprintf(vram, sizeof(vram), "VRAM  %.0f MB", state.vram_used_mb);
+  } else {
+    std::snprintf(vram, sizeof(vram), "VRAM  --");
+  }
+  draw_quick_info_bar(vram, vram_colored, vram_pct);
+
+  char pwr[48]{};
+  bool pwr_colored = false;
+  double pwr_pct = 0;
+  if (state.power_ok && state.power_limit_ok) {
+    pwr_colored = true;
+    pwr_pct = quick_info_usage_percent(state.power_w, state.power_limit_w);
+    std::snprintf(pwr, sizeof(pwr), "W  %.0f W", state.power_w);
+  } else if (state.power_ok) {
+    std::snprintf(pwr, sizeof(pwr), "W  %.0f W", state.power_w);
+  } else {
+    std::snprintf(pwr, sizeof(pwr), "W  --");
+  }
+  draw_quick_info_bar(pwr, pwr_colored, pwr_pct);
+  ImGui::Separator();
+}
+
 // A fonte embutida do ImGui só cobre Latin-1: travessão e reticências saem como "?".
 std::string ascii_dashes(const std::string& in) {
   std::string out;
@@ -286,6 +348,7 @@ void SessionCfgOverlay::draw_panel() {
     ImGui::TextDisabled("%s", state.status.empty() ? " " : ascii_dashes(state.status).c_str());
     ImGui::PushTextWrapPos(0.f);  // as notas longas não podem sair pela borda
     ImGui::Separator();
+    draw_quick_info(state);
 
     if (!ImGui::BeginTabBar("##sess_cfg_tabs")) {
       ImGui::PopTextWrapPos();
@@ -319,6 +382,15 @@ void SessionCfgOverlay::draw_panel() {
     if (ImGui::RadioButton(renodx_visual_preset_name(2, state.nr_pass_count), preset == 2)) preset = 2;
     state.renodx_preset = clamp_renodx_visual_preset(preset);
     if (state.renodx_preset != preset_before) actions_.preset_changed = true;
+    {
+      char look_hint[128];
+      std::snprintf(look_hint, sizeof(look_hint), "%s%s avanca  |  %s%s volta. Segura o quadro, sem pulso.",
+                    state.hotkeys.look_next_shift ? "Shift+" : "",
+                    vk_display_name(state.hotkeys.vk_look_next),
+                    state.hotkeys.look_prev_shift ? "Shift+" : "",
+                    vk_display_name(state.hotkeys.vk_look_prev));
+      ImGui::TextDisabled("%s", look_hint);
+    }
 
     ImGui::Separator();
     {
@@ -626,7 +698,7 @@ void SessionCfgOverlay::draw_panel() {
 void hotkey_table_column_widths(float& lab_w, float& key_w, float& mod_w) {
   lab_w = ImGui::CalcTextSize("Neural Rendering").x + 16.f;
   key_w = ImGui::CalcTextSize("Ctrl+Page Down").x + 36.f;
-  mod_w = ImGui::GetFrameHeight() + ImGui::CalcTextSize("Ctrl").x + 28.f;
+  mod_w = ImGui::GetFrameHeight() + ImGui::CalcTextSize("Shift").x + 28.f;
 }
 
 float hotkey_table_min_width() {
@@ -642,30 +714,30 @@ void draw_hotkey_config_table(HotkeyConfig& hk, bool in_session, int*& capture_v
   ImGui::PushTextWrapPos(FLT_MAX);
   float lab_w = 0.f, key_w = 0.f, mod_w = 0.f;
   hotkey_table_column_widths(lab_w, key_w, mod_w);
-  auto bind_key = [&](const char* id, int* vk, bool with_ctrl) {
+  auto bind_key = [&](const char* id, int* vk, const char* prefix) {
     char buf[80];
     if (capture_vk == vk) {
       std::snprintf(buf, sizeof(buf), "tecla...##%s", id);
-    } else if (with_ctrl) {
-      std::snprintf(buf, sizeof(buf), "Ctrl+%s##%s", vk_display_name(*vk), id);
+    } else if (prefix && prefix[0]) {
+      std::snprintf(buf, sizeof(buf), "%s+%s##%s", prefix, vk_display_name(*vk), id);
     } else {
       std::snprintf(buf, sizeof(buf), "%s##%s", vk_display_name(*vk), id);
     }
     if (ImGui::Button(buf, ImVec2(key_w, 0))) capture_vk = vk;
   };
-  auto hk_row = [&](const char* label, const char* id, int* vk, bool* ctrl) {
+  auto hk_row = [&](const char* label, const char* id, int* vk, bool* mod, const char* mod_label = "Ctrl") {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
     ImGui::TableNextColumn();
-    bind_key(id, vk, ctrl && *ctrl);
+    bind_key(id, vk, (mod && *mod) ? mod_label : "");
     ImGui::TableNextColumn();
-    if (ctrl) {
-      if (ImGui::Checkbox((std::string("##ctrl") + id).c_str(), ctrl) && changed) *changed = true;
+    if (mod) {
+      if (ImGui::Checkbox((std::string("##mod") + id).c_str(), mod) && changed) *changed = true;
       ImGui::SameLine(0.f, 6.f);
       ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted("Ctrl");
+      ImGui::TextUnformatted(mod_label);
     }
   };
   const ImGuiTableFlags hk_flags =
@@ -689,6 +761,8 @@ void draw_hotkey_config_table(HotkeyConfig& hk, bool in_session, int*& capture_v
     hk_row("Neural Rendering", "nr", &hk.vk_nr_toggle, nullptr);
     hk_row("Pass Count +", "passnext", &hk.vk_pass_next, &hk.pass_next_ctrl);
     hk_row("Pass Count -", "passprev", &hk.vk_pass_prev, &hk.pass_prev_ctrl);
+    hk_row("Cena +", "looknext", &hk.vk_look_next, &hk.look_next_shift, "Shift");
+    hk_row("Cena -", "lookprev", &hk.vk_look_prev, &hk.look_prev_shift, "Shift");
     hk_row("Tela cheia", "fs", &hk.vk_fullscreen, nullptr);
     hk_row("Analise", "analyze", &hk.vk_analyze, nullptr);
     hk_row("RenoDX", "renodx", &hk.vk_renodx, nullptr);

@@ -1,9 +1,10 @@
-﻿#include "nexuscap/session_cfg.hpp"
+#include "nexuscap/session_cfg.hpp"
 
 #include "nexuscap/audio.hpp"
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/imgui_theme.hpp"
 #include "nexuscap/live_mode.hpp"
+#include "nexuscap/max_perf.hpp"
 #include "nexuscap/nr_advanced_ui.hpp"
 #include "nexuscap/settings_store.hpp"
 #include "nexuscap/user_preset.hpp"
@@ -404,6 +405,7 @@ void SessionCfgOverlay::draw_panel() {
       const bool force_adv = adv_section_force_;
       adv_section_force_ = false;
       draw_nr_advanced_panel(adv_draft_, shown, adv_apply, adv_reset, force_adv);
+      if (draw_nr_detail_stability(adv_draft_)) adv_apply = true;
       if ((adv_apply || adv_reset) && !presets_locked) {
         state.nr_advanced[shown] = clamp_nr_advanced(adv_draft_);
         adv_draft_ = state.nr_advanced[shown];
@@ -471,6 +473,12 @@ void SessionCfgOverlay::draw_panel() {
     }
 
     if (ImGui::BeginTabItem(cfg_tab_hud())) {
+    if (ImGui::Checkbox("Desempenho maximo", &state.max_perf)) actions_.max_perf_changed = true;
+    ImGui::PushTextWrapPos(0.f);
+    ImGui::TextDisabled("%s", max_perf_hint());
+    ImGui::TextDisabled("%s", max_perf_note());
+    ImGui::PopTextWrapPos();
+    ImGui::Separator();
     ImGui::TextUnformatted("Volume da captura");
     if (ImGui::SliderInt("##capture_vol", &state.capture_volume, kMinCaptureVolumePercent,
                          kMaxCaptureVolumePercent, "%d%%")) {

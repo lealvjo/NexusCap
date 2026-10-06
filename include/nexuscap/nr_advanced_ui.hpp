@@ -43,13 +43,6 @@ inline void draw_nr_advanced_panel(NrAdvancedLook& draft, int pass, bool& apply,
   if (ui > 2) ui = 2;
   if (ImGui::Combo("Correcao de UI", &ui, ui_items, 3)) draft.ui_correction = ui;
 
-  ImGui::TextDisabled("Resultado = ao vivo, remodela a saida do NR");
-  const char* stab_items[] = {"Auto (recomendado)", "Desligado", "Sempre"};
-  int stab = draft.detail_stability;
-  if (stab < 0) stab = 0;
-  if (stab > 2) stab = 2;
-  if (ImGui::Combo("Estabilidade de detalhes", &stab, stab_items, 3)) draft.detail_stability = stab;
-
   bool look = draft.look_mode != 0;
   if (ImGui::Checkbox("Ajustar a aparencia do NR", &look)) draft.look_mode = look ? 1 : 0;
   ImGui::BeginDisabled(draft.look_mode == 0);
@@ -69,6 +62,28 @@ inline void draw_nr_advanced_panel(NrAdvancedLook& draft, int pass, bool& apply,
     draft = nr_advanced_default(p);
     reset = true;
   }
+}
+
+// Combo visivel junto do Pass Count. true = o valor mudou; quem chama grava
+// pelo mesmo caminho do botao Aplicar (o Krish le a chave na subida).
+inline bool draw_nr_detail_stability(NrAdvancedLook& draft) {
+  const char* stab_items[] = {"Auto", "Desligado", "Sempre"};
+  int stab = draft.detail_stability;
+  if (stab < 0) stab = 0;
+  if (stab > 2) stab = 2;
+  bool changed = false;
+  if (ImGui::Combo("Estabilidade de detalhes", &stab, stab_items, 3)) {
+    draft.detail_stability = stab;
+    changed = true;
+  }
+  ImGui::PushTextWrapPos(0.f);
+  ImGui::TextDisabled(
+      "Auto mistura o quadro novo com os anteriores para segurar detalhe. "
+      "No menu, a caixa antiga pode levar 150 a 250 ms para sumir. "
+      "Desligado corta no quadro da troca. Sempre segura o tempo todo. "
+      "Vale para o X atual.");
+  ImGui::PopTextWrapPos();
+  return changed;
 }
 
 }  // namespace nexuscap

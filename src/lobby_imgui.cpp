@@ -11,6 +11,7 @@
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/imgui_theme.hpp"
 #include "nexuscap/lossless_fg.hpp"
+#include "nexuscap/max_perf.hpp"
 #include "nexuscap/nr_advanced_ui.hpp"
 #include "nexuscap/perf_test.hpp"
 #include "nexuscap/pipeline.hpp"
@@ -2452,6 +2453,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         }
         ImGui::TextDisabled("Padrao plano  |  Gamer clareia  |  Graves realca o grave");
         ImGui::Separator();
+        if (ImGui::Checkbox("Desempenho maximo", &settings.max_perf)) {
+          max_perf_sync(settings.max_perf);
+          std::string serr;
+          save_settings(settings, settings_default_path(), serr);
+          gear_snapshot.max_perf = settings.max_perf;
+        }
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextDisabled("%s", max_perf_hint());
+        ImGui::TextDisabled("%s", max_perf_note());
+        ImGui::PopTextWrapPos();
+        ImGui::Separator();
         ImGui::Checkbox("Overlay HUD", &settings.ui.show_fps);
         ImGui::Checkbox("Overlay sem fundo", &settings.ui.overlay_no_bg);
         ImGui::TextDisabled(settings.ui.overlay_no_bg ? "so texto, sem placa preta" : "placa preta atras do texto");
@@ -2754,6 +2766,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           const bool force_adv = force_nr_advanced;
           force_nr_advanced = false;
           draw_nr_advanced_panel(adv_draft, shown, adv_apply, adv_reset, force_adv);
+          if (draw_nr_detail_stability(adv_draft)) adv_apply = true;
           if (adv_apply || adv_reset) (void)commit_advanced(adv_reset);
         }
         ImGui::TextUnformatted("Pass Count");

@@ -341,6 +341,7 @@ std::string serialize_settings_ini(const PersistedSettings& s) {
   o << "capture_buffering=" << clamp_capture_buffering(s.capture_buffering) << "\n";
   o << "capture_volume=" << clamp_capture_volume_percent(s.capture_volume) << "\n";
   o << "capture_tone=" << clamp_capture_tone(s.capture_tone) << "\n";
+  o << "max_perf=" << (s.max_perf ? 1 : 0) << "\n";
   o << "capture_source=" << (s.capture_source == 1 ? 1 : 0) << "\n";
   o << "window_title=" << s.window_title << "\n";
   o << "window_hwnd=" << s.window_hwnd << "\n";
@@ -439,6 +440,7 @@ bool parse_settings_ini(const std::string& text, PersistedSettings& s) {
       else if (key == "capture_buffering") s.capture_buffering = clamp_capture_buffering(std::atoi(val.c_str()));
       else if (key == "capture_volume") s.capture_volume = clamp_capture_volume_percent(std::atoi(val.c_str()));
       else if (key == "capture_tone") s.capture_tone = clamp_capture_tone(std::atoi(val.c_str()));
+      else if (key == "max_perf") s.max_perf = (val == "1" || val == "true");
       else if (key == "capture_source") s.capture_source = (val == "1" || val == "window" || val == "janela") ? 1 : 0;
       else if (key == "window_title") s.window_title = val;
       else if (key == "window_hwnd") s.window_hwnd = static_cast<uint64_t>(std::strtoull(val.c_str(), nullptr, 10));

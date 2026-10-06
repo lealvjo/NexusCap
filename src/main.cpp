@@ -14,6 +14,7 @@
 #include "nexuscap/live_mode.hpp"
 #include "nexuscap/lobby.hpp"
 #include "nexuscap/lossless_fg.hpp"
+#include "nexuscap/max_perf.hpp"
 #include "nexuscap/perf_test.hpp"
 #include "nexuscap/pipeline.hpp"
 #include "nexuscap/renderer.hpp"
@@ -1597,6 +1598,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.overlay_no_bg = cfg.overlay_no_bg;
       ui.capture_volume = clamp_capture_volume_percent(cfg.capture_volume);
       ui.capture_tone = clamp_capture_tone(cfg.capture_tone);
+      ui.max_perf = max_perf_is_on();
       ui.live_console = cfg.live_console;
       ui.overlay_console = cfg.overlay_console;
       ui.signal_w = overlay.capture_w > 0 ? overlay.capture_w : cap_w;
@@ -1746,6 +1748,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         std::string serr;
         load_settings(ps, settings_default_path(), serr);
         ps.capture_tone = cfg.capture_tone;
+        save_settings(ps, settings_default_path(), serr);
+      }
+      if (act.max_perf_changed) {
+        max_perf_sync(ui.max_perf);
+        PersistedSettings ps = default_settings();
+        std::string serr;
+        load_settings(ps, settings_default_path(), serr);
+        ps.max_perf = ui.max_perf;
         save_settings(ps, settings_default_path(), serr);
       }
       if (act.console_changed) {
@@ -2530,6 +2540,7 @@ int main(int argc, char** argv) {
     std::string err;
     nexuscap::load_settings(settings, nexuscap::settings_default_path(), err);
   }
+  nexuscap::max_perf_boot(settings.max_perf);
   if (cfg.perf_test) {
     nexuscap::PerfTestPlan plan;
     if (!cfg.perf_cli_override &&

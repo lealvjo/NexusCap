@@ -39,6 +39,7 @@ struct SessionCfgState {
   bool overlay_no_bg = false;
   int capture_volume = 100;  // HDMI WASAPI 0–100; not a preset
   int capture_tone = 0;      // 0 padrao, 1 gamer, 2 graves; not a preset
+  bool max_perf = true;      // desempenho maximo deste processo; not a preset
   bool overlay_console = false;
   int live_console = 0;
   int signal_w = 2560;
@@ -113,6 +114,7 @@ struct SessionCfgActions {
   bool overlay_no_bg_changed = false;
   bool volume_changed = false;
   bool tone_changed = false;
+  bool max_perf_changed = false;
   bool console_changed = false;
   bool scale_apply = false;
   int scale_before = 100;

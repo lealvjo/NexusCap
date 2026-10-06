@@ -1847,6 +1847,27 @@ TEST_CASE("overlay sem fundo is a free toggle for every HUD style") {
   CHECK(back.ui.overlay_no_bg);
 }
 
+TEST_CASE("max_perf defaults on and roundtrips in settings ini") {
+  CHECK(default_settings().max_perf);
+  const std::string on = serialize_settings_ini(default_settings());
+  CHECK(on.find("max_perf=1\n") != std::string::npos);
+
+  PersistedSettings s = default_settings();
+  s.max_perf = false;
+  PersistedSettings back;
+  REQUIRE(parse_settings_ini(serialize_settings_ini(s), back));
+  CHECK_FALSE(back.max_perf);
+
+  REQUIRE(parse_settings_ini("max_perf=0\n", back));
+  CHECK_FALSE(back.max_perf);
+  REQUIRE(parse_settings_ini("max_perf=true\n", back));
+  CHECK(back.max_perf);
+
+  PersistedSettings missing;
+  REQUIRE(parse_settings_ini("fg_enabled=1\n", missing));
+  CHECK(missing.max_perf);
+}
+
 TEST_CASE("default FG off but multiplier stays armed for PageDn") {
   CHECK_FALSE(default_settings().fg_enabled);
   CHECK(default_settings().fg_multiplier == 2);
@@ -4541,19 +4562,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 6, 0));
+  CHECK(app_version_is(6, 6, 1));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.6.0");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.6.0") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.6.0");
+  CHECK(std::string(kAppVersion) == "6.6.1");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.6.1") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.6.1");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.6.0") != std::string::npos);
+  CHECK(lobby_t.find("6.6.1") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.6.0") != std::string::npos);
+  CHECK(sess_t.find("6.6.1") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.6.0 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.6.1 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {

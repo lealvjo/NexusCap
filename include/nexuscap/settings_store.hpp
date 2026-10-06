@@ -287,6 +287,8 @@ struct PersistedSettings {
   // HDMI WASAPI monitor gain (CFG). App setting — never a user preset field.
   int capture_volume = 100;
   int capture_tone = 0;  // 0 padrao, 1 gamer, 2 graves. App setting, not a preset.
+  // Desempenho maximo: EcoQoS off + timer 1 ms + P-state so deste exe. Default ON.
+  bool max_perf = true;
   // 0=HDMI (default no boot). 1=Janela. Lobby sempre abre em HDMI; Iniciar Janela grava 1 para --autostart.
   int capture_source = 0;
   std::string window_title;  // ultimo titulo do picker Janela

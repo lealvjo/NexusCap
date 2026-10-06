@@ -48,6 +48,7 @@ add_library(nexuscap_core STATIC
   src/mvec_optical_flow.cpp
   src/lossless_fg.cpp
   src/settings_store.cpp
+  src/max_perf.cpp
   src/session_report.cpp
   src/dlss5_bridge.cpp
   src/lobby_imgui.cpp

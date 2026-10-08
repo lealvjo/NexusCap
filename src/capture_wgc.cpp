@@ -308,6 +308,15 @@ struct WindowCapture::Impl {
   UINT gpu_w = 0;
   UINT gpu_h = 0;
   bool video_ok = false;
+  // Dois BGRA compartilhados. A Janela publica o handle. O Present abre no outro device.
+  struct SharedBgra {
+    winrt::com_ptr<ID3D11Texture2D> tex;
+    winrt::com_ptr<IDXGIKeyedMutex> mtx;
+    HANDLE handle = nullptr;
+    UINT w = 0;
+    UINT h = 0;
+  };
+  SharedBgra shared_bgra_[2]{};
   IDirect3DDevice winrt_d3d{nullptr};
   GraphicsCaptureItem item{nullptr};
   Direct3D11CaptureFramePool pool{nullptr};
@@ -382,6 +391,7 @@ struct WindowCapture::Impl {
     copies_[0] = {};
     copies_[1] = {};
     copy_seq_ = 0;
+    reset_shared_bgra();
     maps_logged = 0;
     copy_logged = false;
     reset_video();
@@ -532,6 +542,65 @@ struct WindowCapture::Impl {
     return true;
   }
 
+  void reset_shared_bgra() {
+    for (SharedBgra& s : shared_bgra_) {
+      s.mtx = nullptr;
+      s.tex = nullptr;
+      s.handle = nullptr;
+      s.w = 0;
+      s.h = 0;
+    }
+  }
+
+  bool ensure_shared_bgra(SharedBgra& s, UINT w, UINT h) {
+    if (s.tex && s.mtx && s.handle && s.w == w && s.h == h) return true;
+    s.mtx = nullptr;
+    s.tex = nullptr;
+    s.handle = nullptr;
+    s.w = 0;
+    s.h = 0;
+    if (!d3d || w < 2 || h < 2) return false;
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w;
+    td.Height = h;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    td.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    if (FAILED(d3d->CreateTexture2D(&td, nullptr, s.tex.put()))) return false;
+    if (FAILED(s.tex->QueryInterface(IID_PPV_ARGS(s.mtx.put()))) || !s.mtx) {
+      s.tex = nullptr;
+      return false;
+    }
+    winrt::com_ptr<IDXGIResource> res;
+    HANDLE handle = nullptr;
+    if (FAILED(s.tex->QueryInterface(IID_PPV_ARGS(res.put()))) || !res ||
+        FAILED(res->GetSharedHandle(&handle)) || !handle) {
+      s.mtx = nullptr;
+      s.tex = nullptr;
+      return false;
+    }
+    s.handle = handle;
+    s.w = w;
+    s.h = h;
+    return true;
+  }
+
+  void publish_bgra(HANDLE handle, int w, int h, double arrived_ms) {
+    FramePayload p;
+    p.bgra_shared = reinterpret_cast<std::uintptr_t>(handle);
+    p.width = w;
+    p.height = h;
+    p.cap_qpc_ms = arrived_ms > 0.0 ? arrived_ms : (clock ? clock->now_ms() : 0);
+    p.frame_index = frames->fetch_add(1, std::memory_order_relaxed);
+    out_w->store(w, std::memory_order_relaxed);
+    out_h->store(h, std::memory_order_relaxed);
+    if (slot) slot->publish(std::move(p));
+  }
+
   void publish_nv12(int w, int h, double arrived_ms) {
     FramePayload p;
     p.nv12.swap(nv12);
@@ -629,8 +698,6 @@ struct WindowCapture::Impl {
       copies_[picked].state = 2;
     }
     HeldCopy& src = copies_[picked];
-    const int w = src.w;
-    const int h = src.h;
     const UINT src_w = src.src_w;
     const UINT src_h = src.src_h;
     const double arrived = src.arrived_ms;
@@ -638,31 +705,38 @@ struct WindowCapture::Impl {
       std::lock_guard<std::mutex> lock(copy_mu);
       src.state = 0;
     };
-    if (w < 2 || h < 2) {
+    if (src_w < 2 || src_h < 2 || !src.tex) {
       release_slot();
       return;
     }
-    const size_t need = static_cast<size_t>(w) * static_cast<size_t>(h) * 3u / 2u;
-    if (nv12.size() != need) {
-      if (this->slot) this->slot->take_recycle_nv12(nv12);
-      if (nv12.size() != need) nv12.resize(need);
+    int buf = -1;
+    for (int i = 0; i < 2; ++i) {
+      if (!ensure_shared_bgra(shared_bgra_[i], src_w, src_h) || !shared_bgra_[i].mtx) continue;
+      if (SUCCEEDED(shared_bgra_[i].mtx->AcquireSync(0, 0))) {
+        buf = i;
+        break;
+      }
     }
-    const DWORD map_t0 = GetTickCount();
-    bool ok = false;
-    if (video_ok && src_w == static_cast<UINT>(w) && src_h == static_cast<UINT>(h)) {
-      ok = gpu_to_nv12(src.tex.get(), static_cast<UINT>(w), static_cast<UINT>(h), nv12.data());
+    if (buf < 0) {
+      for (int i = 0; i < 2; ++i) {
+        if (!shared_bgra_[i].mtx || shared_bgra_[i].w != src_w || shared_bgra_[i].h != src_h) continue;
+        if (SUCCEEDED(shared_bgra_[i].mtx->AcquireSync(1, 0))) {
+          buf = i;
+          break;
+        }
+      }
     }
-    if (!ok) ok = cpu_to_nv12(src.tex.get(), src_w, src_h, w, h, nv12.data());
-    const DWORD map_ms = GetTickCount() - map_t0;
-    if (boot_log && maps_logged < 6) {
-      char line[80];
-      std::snprintf(line, sizeof(line), "map %ums ok=%d", static_cast<unsigned>(map_ms), ok ? 1 : 0);
-      boot_line(line);
-      ++maps_logged;
+    if (buf < 0) {
+      release_slot();
+      return;
     }
+    SharedBgra& dst = shared_bgra_[buf];
+    ctx->CopyResource(dst.tex.get(), src.tex.get());
+    ctx->Flush();
+    dst.mtx->ReleaseSync(1);
+    const HANDLE handle = dst.handle;
     release_slot();
-    if (!ok) return;
-    publish_nv12(w, h, arrived);
+    publish_bgra(handle, static_cast<int>(src_w), static_cast<int>(src_h), arrived);
   }
 
   void signal_start(std::string err) {

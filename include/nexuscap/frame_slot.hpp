@@ -7,6 +7,9 @@ namespace nexuscap {
 
 struct FramePayload {
   std::vector<uint8_t> nv12;
+  // Janela: handle de textura BGRA compartilhada. 0 = quadro NV12 (HDMI).
+  // O handle pertence à captura. Não fechar com CloseHandle.
+  std::uintptr_t bgra_shared = 0;
   int width = 0;
   int height = 0;
   double cap_qpc_ms = 0;

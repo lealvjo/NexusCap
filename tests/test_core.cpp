@@ -4245,8 +4245,9 @@ TEST_CASE("make_lobby_hud_preview_lines reflects gear adjustments live") {
   CHECK(lobby_hud_contains(hud, "MJPEG"));
   s.capture_source = 1;
   hud = make_lobby_hud_preview_lines(s, 60.0);
-  CHECK(lobby_hud_contains(hud, "NV12"));
+  CHECK(lobby_hud_contains(hud, "BGRA"));
   CHECK_FALSE(lobby_hud_contains(hud, "MJPEG"));
+  CHECK_FALSE(lobby_hud_contains(hud, "NV12"));
 
   s.ui.show_fps = false;
   hud = make_lobby_hud_preview_lines(s, 60.0);
@@ -4255,7 +4256,7 @@ TEST_CASE("make_lobby_hud_preview_lines reflects gear adjustments live") {
 
 TEST_CASE("capture format shows on compact mini and advanced overlays") {
   CHECK(std::string(hud_capture_format_name(static_cast<int>(VideoFourcc::Mjpeg), 0)) == "MJPEG");
-  CHECK(std::string(hud_capture_format_name(static_cast<int>(VideoFourcc::Mjpeg), 1)) == "NV12");
+  CHECK(std::string(hud_capture_format_name(static_cast<int>(VideoFourcc::Mjpeg), 1)) == "BGRA");
   PersistedSettings s = default_settings();
   s.ui.show_fps = true;
   s.ui.mini_overlay = true;
@@ -4562,19 +4563,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 6, 1));
+  CHECK(app_version_is(6, 6, 2));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.6.1");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.6.1") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.6.1");
+  CHECK(std::string(kAppVersion) == "6.6.2");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.6.2") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.6.2");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.6.1") != std::string::npos);
+  CHECK(lobby_t.find("6.6.2") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.6.1") != std::string::npos);
+  CHECK(sess_t.find("6.6.2") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.6.1 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.6.2 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {

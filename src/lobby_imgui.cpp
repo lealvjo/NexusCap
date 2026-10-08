@@ -1230,10 +1230,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     opt.color_range = settings.color_range;
     opt.capture_buffering = settings.capture_buffering;
     if (capture_source_is_window(settings.capture_source)) {
-      CaptureStartOptions wopt = opt;
-      wopt.hwnd = settings.window_hwnd;
-      wopt.wait_first_frame = false;
-      return preview.ensure_window(settings.window_title, wopt);
+      preview.stop();
+      preview.err.clear();
+      return true;
     }
     settings.device_name = current_device();
     if (preview.ensure(settings.device_name, opt)) {
@@ -2017,6 +2016,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             ImGui::TextColored(ImVec4(0.3f, 0.95f, 0.45f, 1.f), "AO VIVO");
           } else if (preview.live) {
             ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.f), "AGUARDANDO");
+          } else if (capture_source_is_window(settings.capture_source)) {
+            ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.f), "SEM PREVIEW");
           } else {
             ImGui::TextColored(ImVec4(0.9f, 0.35f, 0.35f, 1.f), "OFF");
           }
@@ -2060,16 +2061,14 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           img_max = band_max;
           hud_has_img = false;
           const bool waiting_pick = settings.window_title.empty() || preview.err == "escolha uma janela";
-          const char* title = "Aguardando a janela...";
-          const char* line = settings.window_title.c_str();
+          const char* title = "Preview da janela";
+          const char* line = "A imagem entra ao iniciar.";
           if (waiting_pick) {
             title = "Escolha uma janela";
             line = "O preview mostra a janela escolhida, nao a placa.";
           } else if (!preview.err.empty()) {
             title = "Sem imagem da janela";
             line = preview.err.c_str();
-          } else if (!line[0]) {
-            line = "A imagem entra quando a janela gerar um quadro.";
           }
           draw_window_preview_placeholder(origin, avail, title, line);
         } else {

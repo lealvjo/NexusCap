@@ -329,6 +329,13 @@ struct RendererD3D11::Impl {
   int color_space = static_cast<int>(kDefaultColorSpace);
   int color_range = static_cast<int>(kDefaultColorRange);
   bool yuv_dirty = true;
+  struct SharedBgraIn {
+    HANDLE handle = nullptr;
+    ComPtr<ID3D11Texture2D> tex;
+    ComPtr<IDXGIKeyedMutex> mtx;
+    ComPtr<ID3D11ShaderResourceView> srv;
+  };
+  SharedBgraIn shared_bgra[2]{};
 };
 
 RendererD3D11::~RendererD3D11() { shutdown(); }
@@ -586,6 +593,82 @@ bool RendererD3D11::create_color_rt(int w, int h, std::string& err) {
   return true;
 }
 
+bool RendererD3D11::fill_color_from_shared_bgra(const FramePayload& frame, int work_w, int work_h,
+                                                std::string& err) {
+  if (!impl_ || !impl_->device || !impl_->ctx || !impl_->blitPs || !impl_->colorRtv || frame.bgra_shared == 0 ||
+      work_w < 2 || work_h < 2) {
+    err = "bgra frame invalid";
+    return false;
+  }
+  const HANDLE handle = reinterpret_cast<HANDLE>(frame.bgra_shared);
+  Impl::SharedBgraIn* slot = nullptr;
+  for (Impl::SharedBgraIn& s : impl_->shared_bgra) {
+    if (s.handle == handle && s.tex && s.mtx && s.srv) {
+      slot = &s;
+      break;
+    }
+  }
+  if (!slot) {
+    for (Impl::SharedBgraIn& s : impl_->shared_bgra) {
+      if (!s.tex) {
+        slot = &s;
+        break;
+      }
+    }
+    if (!slot) slot = &impl_->shared_bgra[0];
+    slot->srv.Reset();
+    slot->mtx.Reset();
+    slot->tex.Reset();
+    slot->handle = nullptr;
+    ID3D11Texture2D* raw = nullptr;
+    const HRESULT opened = impl_->device->OpenSharedResource(handle, IID_PPV_ARGS(&raw));
+    if (FAILED(opened) || !raw) {
+      err = "bgra open failed";
+      return false;
+    }
+    slot->tex.Attach(raw);
+    if (FAILED(slot->tex->QueryInterface(IID_PPV_ARGS(slot->mtx.GetAddressOf()))) || !slot->mtx) {
+      slot->tex.Reset();
+      err = "bgra mutex failed";
+      return false;
+    }
+    if (FAILED(impl_->device->CreateShaderResourceView(slot->tex.Get(), nullptr, slot->srv.GetAddressOf())) ||
+        !slot->srv) {
+      slot->mtx.Reset();
+      slot->tex.Reset();
+      err = "bgra srv failed";
+      return false;
+    }
+    slot->handle = handle;
+  }
+  if (FAILED(slot->mtx->AcquireSync(1, 8))) {
+    err = "bgra sync";
+    return false;
+  }
+  D3D11_VIEWPORT vp{};
+  vp.Width = static_cast<float>(work_w);
+  vp.Height = static_cast<float>(work_h);
+  vp.MaxDepth = 1.f;
+  const float clear[4] = {0, 0, 0, 1};
+  impl_->ctx->OMSetRenderTargets(1, impl_->colorRtv.GetAddressOf(), nullptr);
+  impl_->ctx->ClearRenderTargetView(impl_->colorRtv.Get(), clear);
+  impl_->ctx->RSSetViewports(1, &vp);
+  impl_->ctx->VSSetShader(impl_->blitVs.Get(), nullptr, 0);
+  impl_->ctx->PSSetShader(impl_->blitPs.Get(), nullptr, 0);
+  ID3D11ShaderResourceView* srvs[] = {slot->srv.Get()};
+  impl_->ctx->PSSetShaderResources(0, 1, srvs);
+  ID3D11SamplerState* samp =
+      (scale_percent_ < 100 && impl_->samplerLinear) ? impl_->samplerLinear.Get() : impl_->sampler.Get();
+  impl_->ctx->PSSetSamplers(0, 1, &samp);
+  impl_->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  impl_->ctx->Draw(3, 0);
+  ID3D11ShaderResourceView* nulls[] = {nullptr};
+  impl_->ctx->PSSetShaderResources(0, 1, nulls);
+  impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+  slot->mtx->ReleaseSync(0);
+  return true;
+}
+
 bool RendererD3D11::create_nv12_textures(int w, int h, std::string& err) {
   if (w == tex_w_ && h == tex_h_ && impl_->texY) return true;
   impl_->texY.Reset();
@@ -633,11 +716,23 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   }
   QpcClock clk;
   const double t0 = clk.now_ms();
+  int work_w = 0;
+  int work_h = 0;
+  if (frame.bgra_shared != 0) {
+    work_w = scaled_extent(frame.width, scale_percent_);
+    work_h = scaled_extent(frame.height, scale_percent_);
+    if (!create_color_rt(work_w, work_h, err)) return false;
+    const int hud_scale = hud_work_scale_percent_ > 0 ? clamp_scale_percent(hud_work_scale_percent_) : scale_percent_;
+    overlay.scale_percent = hud_scale;
+    overlay.work_w = scaled_extent(frame.width, hud_scale);
+    overlay.work_h = scaled_extent(frame.height, hud_scale);
+    if (!fill_color_from_shared_bgra(frame, work_w, work_h, err)) return false;
+  } else {
   if (!create_nv12_textures(frame.width, frame.height, err)) return false;
 
   // Work RT at scale% — 50% ≈ 1/4 RGB pixels (decode/NR cheaper); blit upscales soft.
-  const int work_w = scaled_extent(frame.width, scale_percent_);
-  const int work_h = scaled_extent(frame.height, scale_percent_);
+  work_w = scaled_extent(frame.width, scale_percent_);
+  work_h = scaled_extent(frame.height, scale_percent_);
   if (!create_color_rt(work_w, work_h, err)) return false;
   // HUD reports the DLSS5 work resolution (Feed) when it owns the scale, not this RT.
   const int hud_scale = hud_work_scale_percent_ > 0 ? clamp_scale_percent(hud_work_scale_percent_) : scale_percent_;
@@ -727,6 +822,7 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   impl_->ctx->Draw(3, 0);
     ID3D11ShaderResourceView* nulls[] = {nullptr, nullptr};
     impl_->ctx->PSSetShaderResources(0, 2, nulls);
+  }
   }
 
   // 2) Optional DLSS enhance at work resolution

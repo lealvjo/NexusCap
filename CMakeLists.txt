@@ -63,6 +63,10 @@ target_link_libraries(nexuscap_core PUBLIC
   d3d11 dxgi d3dcompiler strmiids ole32 oleaut32 user32 gdi32 winmm uuid avrt advapi32 pdh comdlg32 shell32 windowscodecs
   mfplat mfreadwrite mfuuid dwmapi windowsapp CoreMessaging
 )
+# C++/WinRT coroutines. MSVC accepts them in C++17 via <experimental/coroutine>;
+# Clang's STL only provides <coroutine>, which requires C++20. The flag is
+# appended so it wins over the target's -std:c++17 when both are present.
+set_source_files_properties(src/capture_wgc.cpp PROPERTIES COMPILE_OPTIONS "/std:c++20")
 
 if(NEXUSCAP_HAVE_STREAMLINE)
   target_include_directories(nexuscap_core PRIVATE "${NEXUSCAP_STREAMLINE_DIR}/include")
@@ -72,6 +76,8 @@ endif()
 
 add_executable(NexusCap src/main.cpp resources/nexuscap.rc)
 target_link_libraries(NexusCap PRIVATE nexuscap_core)
+# llvm-rc resolves ICON paths from the preprocessed file, not the .rc directory.
+target_compile_definitions(NexusCap PRIVATE "NEXUSCAP_LOGO_ICO=\"${CMAKE_SOURCE_DIR}/assets/logo.ico\"")
 target_compile_definitions(NexusCap PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 target_include_directories(NexusCap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/resources)
 

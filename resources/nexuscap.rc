@@ -1,6 +1,10 @@
 #include "resource.h"
 
+#ifdef NEXUSCAP_LOGO_ICO
+IDI_NEXUSCAP ICON NEXUSCAP_LOGO_ICO
+#else
 IDI_NEXUSCAP ICON "..\\assets\\logo.ico"
+#endif
 
 1 VERSIONINFO
 FILEVERSION 6,6,1,0

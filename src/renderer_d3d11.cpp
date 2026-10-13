@@ -336,6 +336,8 @@ struct RendererD3D11::Impl {
     ComPtr<ID3D11ShaderResourceView> srv;
   };
   SharedBgraIn shared_bgra[2]{};
+  std::uint32_t bgra_gen = 0;  // Change 4: last seen generation
+  int last_bgra_slot = -1;     // Change 4: last used slot (0 or 1)
 };
 
 RendererD3D11::~RendererD3D11() { shutdown(); }
@@ -600,6 +602,19 @@ bool RendererD3D11::fill_color_from_shared_bgra(const FramePayload& frame, int w
     err = "bgra frame invalid";
     return false;
   }
+  
+  // Change 4: clear cache when generation changes
+  if (frame.bgra_gen != impl_->bgra_gen) {
+    for (Impl::SharedBgraIn& s : impl_->shared_bgra) {
+      s.srv.Reset();
+      s.mtx.Reset();
+      s.tex.Reset();
+      s.handle = nullptr;
+    }
+    impl_->bgra_gen = frame.bgra_gen;
+    impl_->last_bgra_slot = -1;
+  }
+  
   const HANDLE handle = reinterpret_cast<HANDLE>(frame.bgra_shared);
   Impl::SharedBgraIn* slot = nullptr;
   for (Impl::SharedBgraIn& s : impl_->shared_bgra) {
@@ -609,13 +624,21 @@ bool RendererD3D11::fill_color_from_shared_bgra(const FramePayload& frame, int w
     }
   }
   if (!slot) {
-    for (Impl::SharedBgraIn& s : impl_->shared_bgra) {
-      if (!s.tex) {
-        slot = &s;
+    // Change 4: pick the entry NOT used last frame
+    int pick_idx = 0;
+    for (int i = 0; i < 2; ++i) {
+      if (!impl_->shared_bgra[i].tex) {
+        pick_idx = i;
         break;
       }
     }
-    if (!slot) slot = &impl_->shared_bgra[0];
+    if (impl_->shared_bgra[0].tex && impl_->shared_bgra[1].tex) {
+      // Both slots occupied, replace the one not used last frame
+      pick_idx = (impl_->last_bgra_slot == 0) ? 1 : 0;
+    }
+    slot = &impl_->shared_bgra[pick_idx];
+    impl_->last_bgra_slot = pick_idx;
+    
     slot->srv.Reset();
     slot->mtx.Reset();
     slot->tex.Reset();
@@ -623,7 +646,8 @@ bool RendererD3D11::fill_color_from_shared_bgra(const FramePayload& frame, int w
     ID3D11Texture2D* raw = nullptr;
     const HRESULT opened = impl_->device->OpenSharedResource(handle, IID_PPV_ARGS(&raw));
     if (FAILED(opened) || !raw) {
-      err = "bgra open failed";
+      // Change 4: treat stale handle open failure as skip-frame (no error/bug_exc)
+      err = "";
       return false;
     }
     slot->tex.Attach(raw);
@@ -640,6 +664,14 @@ bool RendererD3D11::fill_color_from_shared_bgra(const FramePayload& frame, int w
       return false;
     }
     slot->handle = handle;
+  } else {
+    // Update last used slot when reusing cached entry
+    for (int i = 0; i < 2; ++i) {
+      if (&impl_->shared_bgra[i] == slot) {
+        impl_->last_bgra_slot = i;
+        break;
+      }
+    }
   }
   if (FAILED(slot->mtx->AcquireSync(1, 8))) {
     err = "bgra sync";

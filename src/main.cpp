@@ -91,6 +91,17 @@ nexuscap::HotkeyConfig g_hotkeys = nexuscap::default_hotkeys();
 nexuscap::SessionQuitGate g_quit_gate{};
 nexuscap::QpcClock* g_quit_clock = nullptr;  // set for duration of run_app
 
+// Cache for display_refresh_hz (Change 1)
+int g_cached_monitor_hz = 0;
+HMONITOR g_cached_monitor = nullptr;
+bool g_monitor_hz_dirty = true;
+
+// Cache for lobby_fg_can_enable (Change 2)
+bool g_cached_lobby_fg_can = false;
+std::string g_cached_fg_path;
+double g_last_fg_check_ms = 0;
+bool g_fg_check_dirty = true;
+
 constexpr int kExitBackToLobby = nexuscap::kSessionExitBackToLobby;
 
 void write_perf_test_session_result(const nexuscap::AppConfig& cfg, const nexuscap::PerfScoreAcc* acc,
@@ -121,6 +132,11 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       FillRect(hdc, &rc, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
       return 1;
     }
+    case WM_DISPLAYCHANGE:
+    case WM_DPICHANGED:
+    case WM_EXITSIZEMOVE:
+      g_monitor_hz_dirty = true;
+      return 0;
     case WM_KEYUP:
     case WM_SYSKEYUP: {
       const int vk = static_cast<int>(wp);
@@ -1591,7 +1607,14 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       ui.fg_flow_scale = clamp_fg_flow_scale(fg.state().flow_scale);
       ui.fg_adaptive = fg.state().adaptive;
       ui.fg_target_fps = fg.state().target_fps;
-      ui.monitor_hz = display_refresh_hz(hwnd);
+      // Cache display_refresh_hz (Change 1)
+      const HMONITOR current_mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      if (g_monitor_hz_dirty || current_mon != g_cached_monitor) {
+        g_cached_monitor_hz = display_refresh_hz(hwnd);
+        g_cached_monitor = current_mon;
+        g_monitor_hz_dirty = false;
+      }
+      ui.monitor_hz = g_cached_monitor_hz;
       ui.capture_fps = overlay.fps_smooth > 1.0 ? overlay.fps_smooth : overlay.fps;
       ui.fg_busy = fg.busy();
       ui.hud_visible = g_overlay.load();
@@ -1609,6 +1632,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         ui.cfg_ctrl = g_hotkeys.cfg_ctrl;
       }
       ui.status = overlay.session_notice;
+      const bool cfg_was_closed = !cfg_ui.open();
       if (cfg_ui.open()) {
         SystemMetricsSample hw{};
         hw_sampler.sample(renderer.device(), hw);
@@ -1624,7 +1648,18 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         ui.power_limit_ok = hw.power_limit_ok;
         ui.power_limit_w = hw.power_limit_w;
       }
-      cfg_ui.fg_can_enable = lobby_fg_can_enable(cfg.fg_path);
+      // Cache lobby_fg_can_enable (Change 2)
+      const bool fg_path_changed = (cfg.fg_path != g_cached_fg_path);
+      const bool cfg_just_opened = (cfg_ui.open() && cfg_was_closed);
+      const double time_since_check = clock.now_ms() - g_last_fg_check_ms;
+      const bool periodic_recheck = (cfg_ui.open() && time_since_check >= 2000.0);
+      if (g_fg_check_dirty || fg_path_changed || cfg_just_opened || periodic_recheck) {
+        g_cached_lobby_fg_can = lobby_fg_can_enable(cfg.fg_path);
+        g_cached_fg_path = cfg.fg_path;
+        g_last_fg_check_ms = clock.now_ms();
+        g_fg_check_dirty = false;
+      }
+      cfg_ui.fg_can_enable = g_cached_lobby_fg_can;
       cfg_ui.presets_locked = cfg.perf_test;
     }
 

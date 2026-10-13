@@ -2992,7 +2992,6 @@ void LiveOverlay::present() const {
   layout_h_ = hh;
 
   // Ensure cached DC and DIB exist with correct size
-  HDC screen = GetDC(nullptr);
   void* bits = nullptr;
   
   if (!hdc_mem_ || cache_w_ != ww || cache_h_ != hh) {

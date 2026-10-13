@@ -246,6 +246,7 @@ public:
   bool recycle_swapchain();
   uint32_t swapchain_flags() const { return swap_flags_; }
   bool waitable() const { return swap_waitable_; }
+  HANDLE frame_latency_waitable_object() const;
 
 private:
   bool create_nv12_textures(int w, int h, std::string& err);

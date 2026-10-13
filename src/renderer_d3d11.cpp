@@ -2034,6 +2034,17 @@ bool MetricsHud::create(HWND owner, HINSTANCE hi) {
 }
 
 void MetricsHud::destroy() {
+  if (hbmp_) {
+    if (hdc_mem_ && hbmp_old_) SelectObject(hdc_mem_, hbmp_old_);
+    DeleteObject(hbmp_);
+    hbmp_ = nullptr;
+    hbmp_old_ = nullptr;
+  }
+  if (hdc_mem_) {
+    DeleteDC(hdc_mem_);
+    hdc_mem_ = nullptr;
+  }
+  cache_w_ = cache_h_ = 0;
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
@@ -2351,7 +2362,45 @@ LRESULT CALLBACK MetricsHud::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
   if (msg == WM_PAINT && self) {
     PAINTSTRUCT ps;
     HDC hdc = BeginPaint(hwnd, &ps);
-    self->paint(hdc);
+    
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    const int w = rc.right - rc.left;
+    const int h = rc.bottom - rc.top;
+    
+    // Ensure cached DC and DIB exist with correct size
+    if (!self->hdc_mem_ || self->cache_w_ != w || self->cache_h_ != h) {
+      // Clean up old cache
+      if (self->hbmp_) {
+        if (self->hdc_mem_ && self->hbmp_old_) SelectObject(self->hdc_mem_, self->hbmp_old_);
+        DeleteObject(self->hbmp_);
+        self->hbmp_ = nullptr;
+        self->hbmp_old_ = nullptr;
+      }
+      if (self->hdc_mem_) {
+        DeleteDC(self->hdc_mem_);
+        self->hdc_mem_ = nullptr;
+      }
+      
+      // Create new cache
+      if (w > 0 && h > 0) {
+        self->hdc_mem_ = CreateCompatibleDC(hdc);
+        self->hbmp_ = CreateCompatibleBitmap(hdc, w, h);
+        self->hbmp_old_ = static_cast<HBITMAP>(SelectObject(self->hdc_mem_, self->hbmp_));
+        self->cache_w_ = w;
+        self->cache_h_ = h;
+      }
+    }
+    
+    // Paint to memory DC, then blit to screen
+    if (self->hdc_mem_) {
+      self->paint(self->hdc_mem_);
+      BitBlt(hdc, 0, 0, w, h, self->hdc_mem_, 0, 0, SRCCOPY);
+    } else {
+      // Fallback if cache creation failed
+      self->paint(hdc);
+    }
+    
     EndPaint(hwnd, &ps);
     return 0;
   }
@@ -2826,6 +2875,17 @@ bool LiveOverlay::create(HWND owner, HINSTANCE hi) {
 }
 
 void LiveOverlay::destroy() {
+  if (hbmp_) {
+    if (hdc_mem_ && hbmp_old_) SelectObject(hdc_mem_, hbmp_old_);
+    DeleteObject(hbmp_);
+    hbmp_ = nullptr;
+    hbmp_old_ = nullptr;
+  }
+  if (hdc_mem_) {
+    DeleteDC(hdc_mem_);
+    hdc_mem_ = nullptr;
+  }
+  cache_w_ = cache_h_ = 0;
   if (hwnd_) {
     DestroyWindow(hwnd_);
     hwnd_ = nullptr;
@@ -2940,25 +3000,60 @@ void LiveOverlay::present() const {
   layout_w_ = ww;
   layout_h_ = hh;
 
-  BITMAPINFO bmi{};
-  bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-  bmi.bmiHeader.biWidth = ww;
-  bmi.bmiHeader.biHeight = -hh;
-  bmi.bmiHeader.biPlanes = 1;
-  bmi.bmiHeader.biBitCount = 32;
-  bmi.bmiHeader.biCompression = BI_RGB;
-
+  // Ensure cached DC and DIB exist with correct size
+  HDC screen = GetDC(nullptr);
   void* bits = nullptr;
-  HDC mem = CreateCompatibleDC(screen);
-  HBITMAP dib = CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-  if (!dib || !bits) {
-    if (dib) DeleteObject(dib);
+  
+  if (!hdc_mem_ || cache_w_ != ww || cache_h_ != hh) {
+    // Clean up old cache
+    if (hbmp_) {
+      if (hdc_mem_ && hbmp_old_) SelectObject(hdc_mem_, hbmp_old_);
+      DeleteObject(hbmp_);
+      hbmp_ = nullptr;
+      hbmp_old_ = nullptr;
+    }
+    if (hdc_mem_) {
+      DeleteDC(hdc_mem_);
+      hdc_mem_ = nullptr;
+    }
+    
+    // Create new cache
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = ww;
+    bmi.bmiHeader.biHeight = -hh;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    
+    hdc_mem_ = CreateCompatibleDC(screen);
+    hbmp_ = CreateDIBSection(hdc_mem_, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!hbmp_ || !bits) {
+      if (hbmp_) DeleteObject(hbmp_);
+      if (hdc_mem_) DeleteDC(hdc_mem_);
+      hdc_mem_ = nullptr;
+      hbmp_ = nullptr;
+      DeleteObject(font);
+      ReleaseDC(nullptr, screen);
+      return;
+    }
+    hbmp_old_ = static_cast<HBITMAP>(SelectObject(hdc_mem_, hbmp_));
+    cache_w_ = ww;
+    cache_h_ = hh;
+  } else {
+    // Reuse cached DIB, just get bits pointer
+    DIBSECTION ds{};
+    GetObjectW(hbmp_, sizeof(ds), &ds);
+    bits = ds.dsBm.bmBits;
+  }
+  
+  if (!hdc_mem_ || !bits) {
     DeleteObject(font);
-    DeleteDC(mem);
     ReleaseDC(nullptr, screen);
     return;
   }
-  HGDIOBJ old_bmp = SelectObject(mem, dib);
+  
+  HDC mem = hdc_mem_;
   std::memset(bits, 0, static_cast<size_t>(ww) * static_cast<size_t>(hh) * 4);
   if (overlay_draws_plate(state_.overlay_no_bg)) {
     RECT plate{0, 0, ww, hh};
@@ -3032,9 +3127,7 @@ void LiveOverlay::present() const {
   blend.AlphaFormat = AC_SRC_ALPHA;
   UpdateLayeredWindow(hwnd_, screen, &pt, &sz, mem, &src, 0, &blend, ULW_ALPHA);
 
-  SelectObject(mem, old_bmp);
-  DeleteObject(dib);
-  DeleteDC(mem);
+  // Don't delete mem or dib - they are cached
   ReleaseDC(nullptr, screen);
 }
 

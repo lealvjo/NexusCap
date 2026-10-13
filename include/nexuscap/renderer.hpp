@@ -121,6 +121,12 @@ private:
   HWND owner_ = nullptr;
   OverlayState state_{};
   bool visible_ = true;
+  // Cached DC and DIB for double buffering
+  HDC hdc_mem_ = nullptr;
+  HBITMAP hbmp_ = nullptr;
+  HBITMAP hbmp_old_ = nullptr;
+  int cache_w_ = 0;
+  int cache_h_ = 0;
 };
 
 // "A aplicar o motor" — janela sem owner que segura o ultimo frame (GDI) enquanto
@@ -191,6 +197,12 @@ private:
   bool visible_ = false;
   mutable int layout_w_ = 420;
   mutable int layout_h_ = 26;
+  // Cached DC and DIB for double buffering
+  HDC hdc_mem_ = nullptr;
+  HBITMAP hbmp_ = nullptr;
+  HBITMAP hbmp_old_ = nullptr;
+  int cache_w_ = 0;
+  int cache_h_ = 0;
 };
 
 class RendererD3D11 {

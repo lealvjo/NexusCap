@@ -101,6 +101,7 @@ bool g_cached_lobby_fg_can = false;
 std::string g_cached_fg_path;
 double g_last_fg_check_ms = 0;
 bool g_fg_check_dirty = true;
+bool g_prev_cfg_open = false;  // Track CFG state for closed->open transition
 
 constexpr int kExitBackToLobby = nexuscap::kSessionExitBackToLobby;
 
@@ -136,7 +137,7 @@ LRESULT CALLBACK HookWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DPICHANGED:
     case WM_EXITSIZEMOVE:
       g_monitor_hz_dirty = true;
-      return 0;
+      break;  // fall through to DefWindowProc
     case WM_KEYUP:
     case WM_SYSKEYUP: {
       const int vk = static_cast<int>(wp);
@@ -1632,7 +1633,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         ui.cfg_ctrl = g_hotkeys.cfg_ctrl;
       }
       ui.status = overlay.session_notice;
-      const bool cfg_was_closed = !cfg_ui.open();
       if (cfg_ui.open()) {
         SystemMetricsSample hw{};
         hw_sampler.sample(renderer.device(), hw);
@@ -1650,7 +1650,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
       }
       // Cache lobby_fg_can_enable (Change 2)
       const bool fg_path_changed = (cfg.fg_path != g_cached_fg_path);
-      const bool cfg_just_opened = (cfg_ui.open() && cfg_was_closed);
+      const bool cfg_just_opened = (cfg_ui.open() && !g_prev_cfg_open);
       const double time_since_check = clock.now_ms() - g_last_fg_check_ms;
       const bool periodic_recheck = (cfg_ui.open() && time_since_check >= 2000.0);
       if (g_fg_check_dirty || fg_path_changed || cfg_just_opened || periodic_recheck) {
@@ -1660,6 +1660,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         g_fg_check_dirty = false;
       }
       cfg_ui.fg_can_enable = g_cached_lobby_fg_can;
+      g_prev_cfg_open = cfg_ui.open();  // Update for next frame
       cfg_ui.presets_locked = cfg.perf_test;
     }
 
@@ -1673,8 +1674,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
     if (!cfg_restart_pending || renderer.hold_snapshot_armed()) {
       if (!renderer.present_frame(present_src, overlay, present_ms, err)) {
-        bug_exc("present", err);
-        if (perf_rep.active()) perf_rep.note_event(now, "present_error", err.c_str());
+        // Change 4: stale handle returns false with empty err - skip frame without error
+        if (!err.empty()) {
+          bug_exc("present", err);
+          if (perf_rep.active()) perf_rep.note_event(now, "present_error", err.c_str());
+        }
       }
     }
     if (g_hdmi_notice.visible()) g_hdmi_notice.destroy();

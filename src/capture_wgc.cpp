@@ -318,6 +318,8 @@ struct WindowCapture::Impl {
   };
   SharedBgra shared_bgra_[2]{};
   std::uint32_t bgra_gen_ = 0;  // Change 4: incremented when shared BGRA recreated
+  UINT last_bgra_w_ = 0;        // Change 4/5: track last size for generation increment
+  UINT last_bgra_h_ = 0;
   IDirect3DDevice winrt_d3d{nullptr};
   GraphicsCaptureItem item{nullptr};
   Direct3D11CaptureFramePool pool{nullptr};
@@ -556,8 +558,12 @@ struct WindowCapture::Impl {
 
   bool ensure_shared_bgra(SharedBgra& s, UINT w, UINT h) {
     if (s.tex && s.mtx && s.handle && s.w == w && s.h == h) return true;
-    // Change 4: increment generation when recreating
-    ++bgra_gen_;
+    // Change 4/5: increment generation once per size change, not per texture
+    if (w != last_bgra_w_ || h != last_bgra_h_) {
+      ++bgra_gen_;
+      last_bgra_w_ = w;
+      last_bgra_h_ = h;
+    }
     s.mtx = nullptr;
     s.tex = nullptr;
     s.handle = nullptr;
@@ -646,60 +652,10 @@ struct WindowCapture::Impl {
     auto frame = pool.TryGetNextFrame();
     if (!frame) return;
     
-    // Change 3: Recreate pool if ContentSize changed
+    // Change 3: check if pool needs Recreate after processing this frame
     const auto cs = frame.ContentSize();
-    if ((cs.Width >= 2 && cs.Height >= 2) && 
-        (cs.Width != pool_size_.Width || cs.Height != pool_size_.Height)) {
-      // Process this frame first, then recreate pool
-      auto surface = frame.Surface();
-      auto tex = texture_from_surface(surface);
-      D3D11_TEXTURE2D_DESC desc{};
-      tex->GetDesc(&desc);
-      if (desc.Width >= 2 && desc.Height >= 2) {
-        int slot = -1;
-        {
-          std::lock_guard<std::mutex> lock(copy_mu);
-          for (int i = 0; i < 2; ++i) {
-            if (copies_[i].state == 0) {
-              slot = i;
-              copies_[i].state = 2;
-              break;
-            }
-          }
-        }
-        if (slot >= 0) {
-          HeldCopy& dst = copies_[slot];
-          if (ensure_copy_tex(dst, desc.Width, desc.Height)) {
-            ctx->CopyResource(dst.tex.get(), tex.get());
-            {
-              std::lock_guard<std::mutex> lock(copy_mu);
-              dst.src_w = desc.Width;
-              dst.src_h = desc.Height;
-              dst.w = even_capture_dim(static_cast<int>(desc.Width));
-              dst.h = even_capture_dim(static_cast<int>(desc.Height));
-              dst.arrived_ms = clock ? clock->now_ms() : 0;
-              dst.seq = ++copy_seq_;
-              dst.state = 1;
-            }
-            if (!copy_logged) {
-              copy_logged = true;
-              boot_line("primeira copia");
-            }
-          } else {
-            std::lock_guard<std::mutex> lock(copy_mu);
-            dst.state = 0;
-          }
-        }
-      }
-      // Now close frame and recreate pool
-      frame.Close();
-      try {
-        pool.Recreate(winrt_d3d, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, cs);
-        pool_size_ = cs;
-      } catch (...) {
-      }
-      return;
-    }
+    const bool needs_recreate = (cs.Width >= 2 && cs.Height >= 2) && 
+                                (cs.Width != pool_size_.Width || cs.Height != pool_size_.Height);
     
     auto surface = frame.Surface();
     auto tex = texture_from_surface(surface);
@@ -738,6 +694,16 @@ struct WindowCapture::Impl {
     if (!copy_logged) {
       copy_logged = true;
       boot_line("primeira copia");
+    }
+    
+    // Change 3: Recreate pool after processing frame if ContentSize changed
+    if (needs_recreate) {
+      frame.Close();
+      try {
+        pool.Recreate(winrt_d3d, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, cs);
+        pool_size_ = cs;
+      } catch (...) {
+      }
     }
   }
 

@@ -851,7 +851,9 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   const UINT interval = (overlay.fg_on || vsync_) ? present_interval_ : 0u;
   silence_reshade_home_splash();
   impl_->swap->Present(interval, 0);
-  if (presented) (void)retain_presented_frame(presented.Get());
+  // Only retain the presented frame if a hold may be needed (menu open or armed).
+  // This avoids a full backbuffer copy every frame when the feature isn't being used.
+  if (want_hold && presented) (void)retain_presented_frame(presented.Get());
   present_ms = clk.now_ms() - t0;
   (void)err;
   return true;

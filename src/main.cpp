@@ -1319,12 +1319,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
     }
     analyze_was = analyze_on;
 
-    // Wait on frame latency waitable object if available to reduce pipeline latency
-    if (renderer.waitable()) {
-      HANDLE waitable = renderer.frame_latency_waitable_object();
-      if (waitable) WaitForSingleObject(waitable, 50);
-    }
-
     FramePayload frame;
     const double now_idle = clock.now_ms();
     bool have_new = slot.consume(frame);

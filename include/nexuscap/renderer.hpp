@@ -198,11 +198,11 @@ private:
   mutable int layout_w_ = 420;
   mutable int layout_h_ = 26;
   // Cached DC and DIB for double buffering
-  HDC hdc_mem_ = nullptr;
-  HBITMAP hbmp_ = nullptr;
-  HBITMAP hbmp_old_ = nullptr;
-  int cache_w_ = 0;
-  int cache_h_ = 0;
+  mutable HDC hdc_mem_ = nullptr;
+  mutable HBITMAP hbmp_ = nullptr;
+  mutable HBITMAP hbmp_old_ = nullptr;
+  mutable int cache_w_ = 0;
+  mutable int cache_h_ = 0;
 };
 
 class RendererD3D11 {
@@ -258,7 +258,6 @@ public:
   bool recycle_swapchain();
   uint32_t swapchain_flags() const { return swap_flags_; }
   bool waitable() const { return swap_waitable_; }
-  HANDLE frame_latency_waitable_object() const;
 
 private:
   bool create_nv12_textures(int w, int h, std::string& err);

@@ -172,137 +172,6 @@ bool PipelineHost::ensure_staging(void* device, int w, int h) {
   return true;
 }
 
-bool PipelineHost::ensure_gpu(void* device, int w, int h) {
-  auto* dev = static_cast<ID3D11Device*>(device);
-  if (!dev || w < 1 || h < 1) return false;
-  if (gpu_ok_ && in_gpu_ && out_gpu_ && hold_gpu_ && gpu_w_ == w && gpu_h_ == h) return true;
-  
-  release_gpu();
-  
-  // Create shared input texture (host writes, worker reads)
-  D3D11_TEXTURE2D_DESC td{};
-  td.Width = static_cast<UINT>(w);
-  td.Height = static_cast<UINT>(h);
-  td.MipLevels = 1;
-  td.ArraySize = 1;
-  td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  td.SampleDesc.Count = 1;
-  td.Usage = D3D11_USAGE_DEFAULT;
-  td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
-  td.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-  
-  ID3D11Texture2D* in_tex = nullptr;
-  if (FAILED(dev->CreateTexture2D(&td, nullptr, &in_tex)) || !in_tex) {
-    return false;
-  }
-  
-  // Get keyed mutex for input
-  IDXGIKeyedMutex* km_in = nullptr;
-  if (FAILED(in_tex->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&km_in))) || !km_in) {
-    in_tex->Release();
-    return false;
-  }
-  
-  // Get shared handle for input
-  std::uint64_t in_handle = 0;
-  if (!shared_handle_of(in_tex, &in_handle)) {
-    km_in->Release();
-    in_tex->Release();
-    return false;
-  }
-  
-  // Create shared output texture (worker writes, host reads)
-  ID3D11Texture2D* out_tex = nullptr;
-  if (FAILED(dev->CreateTexture2D(&td, nullptr, &out_tex)) || !out_tex) {
-    km_in->Release();
-    in_tex->Release();
-    return false;
-  }
-  
-  // Get keyed mutex for output
-  IDXGIKeyedMutex* km_out = nullptr;
-  if (FAILED(out_tex->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&km_out))) || !km_out) {
-    out_tex->Release();
-    km_in->Release();
-    in_tex->Release();
-    return false;
-  }
-  
-  // Get shared handle for output
-  std::uint64_t out_handle = 0;
-  if (!shared_handle_of(out_tex, &out_handle)) {
-    km_out->Release();
-    out_tex->Release();
-    km_in->Release();
-    in_tex->Release();
-    return false;
-  }
-  
-  // Create hold texture (for fallback when worker is dead)
-  ID3D11Texture2D* hold_tex = nullptr;
-  td.MiscFlags = 0;  // No shared flags for internal hold texture
-  if (FAILED(dev->CreateTexture2D(&td, nullptr, &hold_tex)) || !hold_tex) {
-    km_out->Release();
-    out_tex->Release();
-    km_in->Release();
-    in_tex->Release();
-    return false;
-  }
-  
-  in_gpu_ = in_tex;
-  out_gpu_ = out_tex;
-  hold_gpu_ = hold_tex;
-  km_in_ = km_in;
-  km_out_ = km_out;
-  in_shared_h_ = in_handle;
-  out_shared_h_ = out_handle;
-  gpu_w_ = w;
-  gpu_h_ = h;
-  gpu_ok_ = true;
-  
-  // Write handles to shared memory for worker to open
-  if (in_) {
-    in_->in_shared = in_handle;
-    in_->out_shared = out_handle;
-    in_->gpu = 1;  // Signal GPU path is available
-  }
-  
-  return true;
-}
-
-void PipelineHost::release_gpu() {
-  if (km_out_) {
-    static_cast<IDXGIKeyedMutex*>(km_out_)->Release();
-    km_out_ = nullptr;
-  }
-  if (km_in_) {
-    static_cast<IDXGIKeyedMutex*>(km_in_)->Release();
-    km_in_ = nullptr;
-  }
-  if (hold_gpu_) {
-    static_cast<ID3D11Texture2D*>(hold_gpu_)->Release();
-    hold_gpu_ = nullptr;
-  }
-  if (out_gpu_) {
-    static_cast<ID3D11Texture2D*>(out_gpu_)->Release();
-    out_gpu_ = nullptr;
-  }
-  if (in_gpu_) {
-    static_cast<ID3D11Texture2D*>(in_gpu_)->Release();
-    in_gpu_ = nullptr;
-  }
-  in_shared_h_ = 0;
-  out_shared_h_ = 0;
-  gpu_w_ = 0;
-  gpu_h_ = 0;
-  gpu_ok_ = false;
-  if (in_) {
-    in_->in_shared = 0;
-    in_->out_shared = 0;
-    in_->gpu = 0;
-  }
-}
-
 bool PipelineHost::spawn() {
   const std::string wdir = pipeline_worker_dir(exe_dir_);
   const std::string exe = wdir + "\\" + kPipelineWorkerExe;
@@ -396,7 +265,6 @@ void PipelineHost::stop() {
   kill_process(static_cast<HANDLE>(process_));
   process_ = nullptr;
   pid_ = 0;
-  release_gpu();
   if (staging_) {
     static_cast<ID3D11Texture2D*>(staging_)->Release();
     staging_ = nullptr;
@@ -410,102 +278,13 @@ bool PipelineHost::process_color(void* device, void* ctx, void* tex, int w, int 
   auto* rt = static_cast<ID3D11Texture2D*>(tex);
   if (!dev || !context || !rt) return false;
   if (w < 1 || h < 1 || w > kPipelineFbMaxW || h > kPipelineFbMaxH) return false;
-  if (!ensure_maps() || !in_) return false;
+  if (!ensure_maps() || !ensure_staging(device, w, h) || !in_) return false;
 
   if (!running() && awaiting_live_ && !exe_dir_.empty()) (void)spawn();
 
-  const bool try_gpu = ensure_gpu(device, w, h);
-  const bool worker_alive = running();
-  
-  // Try GPU path if available and worker is alive
-  if (try_gpu && gpu_ok_ && worker_alive) {
-    auto* in_tex = static_cast<ID3D11Texture2D*>(in_gpu_);
-    auto* out_tex = static_cast<ID3D11Texture2D*>(out_gpu_);
-    auto* hold_tex = static_cast<ID3D11Texture2D*>(hold_gpu_);
-    auto* km_in = static_cast<IDXGIKeyedMutex*>(km_in_);
-    auto* km_out = static_cast<IDXGIKeyedMutex*>(km_out_);
-    
-    // Acquire input mutex briefly, worker should release it quickly
-    if (acquire_km(km_in, 5)) {
-      copy_to_shared(context, in_tex, rt);
-      
-      // Update header for worker
-      in_->magic = kPipelineFbMagic;
-      in_->width = static_cast<std::uint32_t>(w);
-      in_->height = static_cast<std::uint32_t>(h);
-      in_->pass = 0;
-      in_->frame = frame;
-      in_->pid = static_cast<std::uint32_t>(pid_);
-      in_->gpu = 1;
-      
-      release_km(km_in);
-      
-      // Try to acquire output mutex briefly
-      if (acquire_km(km_out, 5)) {
-        const bool live = out_ && out_->magic == kPipelineFbMagic && out_->pid == pid_ &&
-                          out_->frame >= hold_min_frame_ && static_cast<int>(out_->width) == w &&
-                          static_cast<int>(out_->height) == h && out_->gpu == 1;
-        
-        if (live && out_->frame != last_out_frame_) {
-          // Save current output as last good frame
-          context->CopyResource(hold_tex, out_tex);
-          have_last_ = true;
-          last_w_ = w;
-          last_h_ = h;
-          
-          const double t = qpc_ms();
-          if (last_unique_t_ > 0.0 && t > last_unique_t_) {
-            const double dt = t - last_unique_t_;
-            if (dt > 0.5 && dt < 250.0) {
-              unique_interval_ms_ = dt;
-              unique_fps_ = 1000.0 / dt;
-              have_unique_ft_ = true;
-              took_new_out_ = true;
-            }
-          }
-          last_unique_t_ = t;
-          last_out_frame_ = out_->frame;
-        }
-        
-        // Copy output back to render target
-        if (live) {
-          context->CopyResource(rt, out_tex);
-          release_km(km_out);
-          finish_recycle_if_live();
-          return true;
-        } else if (have_last_ && last_w_ == w && last_h_ == h) {
-          // Use last good frame
-          context->CopyResource(rt, hold_tex);
-          release_km(km_out);
-          if (awaiting_live_) finish_recycle_if_live();
-          return true;
-        }
-        
-        release_km(km_out);
-      }
-      
-      // Keyed mutex timeout - use last good frame if available
-      if (have_last_ && last_w_ == w && last_h_ == h) {
-        context->CopyResource(rt, hold_tex);
-        return true;
-      }
-      return false;
-    }
-    
-    // Input mutex timeout - use last good frame if available
-    if (have_last_ && last_w_ == w && last_h_ == h) {
-      context->CopyResource(rt, hold_tex);
-      return true;
-    }
-  }
-  
-  // Fallback to CPU path if GPU not available or failed
-  if (!ensure_staging(device, w, h)) return have_last_;
-  
   auto* staging = static_cast<ID3D11Texture2D*>(staging_);
   D3D11_MAPPED_SUBRESOURCE map{};
-  
-  if (worker_alive) {
+  if (running()) {
     context->CopyResource(staging, rt);
     if (FAILED(context->Map(staging, 0, D3D11_MAP_READ, 0, &map))) return have_last_;
     copy_bgra(reinterpret_cast<std::uint8_t*>(pipeline_fb_pixels(in_)), w * 4,
@@ -517,10 +296,9 @@ bool PipelineHost::process_color(void* device, void* ctx, void* tex, int w, int 
     in_->pass = 0;
     in_->frame = frame;
     in_->pid = static_cast<std::uint32_t>(pid_);
-    in_->gpu = 0;  // CPU path
   }
 
-  const bool live = worker_alive && out_ && out_->magic == kPipelineFbMagic && out_->pid == pid_ &&
+  const bool live = running() && out_ && out_->magic == kPipelineFbMagic && out_->pid == pid_ &&
                     out_->frame >= hold_min_frame_ && static_cast<int>(out_->width) == w &&
                     static_cast<int>(out_->height) == h;
   if (live) {
@@ -548,7 +326,6 @@ bool PipelineHost::process_color(void* device, void* ctx, void* tex, int w, int 
   } else if (awaiting_live_) {
     finish_recycle_if_live();
   }
-  
   if (!have_last_ || last_w_ != w || last_h_ != h) return live;
 
   if (FAILED(context->Map(staging, 0, D3D11_MAP_WRITE, 0, &map))) return false;

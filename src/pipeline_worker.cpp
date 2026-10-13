@@ -58,11 +58,6 @@ ID3D11SamplerState* g_samp = nullptr;
 ID3D11VertexShader* g_vs = nullptr;
 ID3D11PixelShader* g_ps = nullptr;
 ID3D11Texture2D* g_staging = nullptr;
-ID3D11Texture2D* g_in_gpu = nullptr;   // Shared input texture from host
-ID3D11Texture2D* g_out_gpu = nullptr;  // Shared output texture to host
-IDXGIKeyedMutex* g_km_in = nullptr;
-IDXGIKeyedMutex* g_km_out = nullptr;
-bool g_gpu_ok = false;
 HANDLE g_in_map = nullptr;
 HANDLE g_out_map = nullptr;
 nexuscap::PipelineFbHeader* g_in = nullptr;
@@ -246,27 +241,6 @@ void upload_in() {
   g_ctx->Unmap(g_tex, 0);
 }
 
-bool upload_in_gpu() {
-  if (!g_in || g_in->magic != nexuscap::kPipelineFbMagic) return false;
-  if (!g_gpu_ok || !g_in_gpu || !g_km_in) return false;
-  
-  if (g_in->width >= 16 && g_in->height >= 16) {
-    g_in_w = static_cast<int>((std::min)(g_in->width, static_cast<std::uint32_t>(kFbW)));
-    g_in_h = static_cast<int>((std::min)(g_in->height, static_cast<std::uint32_t>(kFbH)));
-  }
-  if (!g_first_in) g_first_in = g_in->frame ? g_in->frame : 1;
-  
-  // Acquire input mutex briefly - host should have released it
-  if (FAILED(g_km_in->AcquireSync(0, 5))) return false;
-  
-  // Copy shared input texture to render texture
-  g_ctx->CopyResource(g_tex, g_in_gpu);
-  
-  // Release immediately so host can write next frame
-  g_km_in->ReleaseSync(0);
-  return true;
-}
-
 void publish_out() {
   if (!g_out || !g_swap) return;
   if (!g_in || g_in->magic != nexuscap::kPipelineFbMagic) return;
@@ -286,34 +260,6 @@ void publish_out() {
   g_ctx->Unmap(g_staging, 0);
   const std::uint32_t frame = g_in->frame;
   fb_touch(g_out, g_ini_pass, GetCurrentProcessId(), frame);
-  g_out->gpu = 0;  // CPU path output
-}
-
-bool publish_out_gpu() {
-  if (!g_out || !g_swap) return false;
-  if (!g_in || g_in->magic != nexuscap::kPipelineFbMagic) return false;
-  if (!g_first_in || g_in->frame < g_first_in + 2) return false;
-  if (!g_gpu_ok || !g_out_gpu || !g_km_out) return false;
-  
-  // Acquire output mutex briefly
-  if (FAILED(g_km_out->AcquireSync(0, 5))) return false;
-  
-  // Copy backbuffer to shared output texture
-  ID3D11Texture2D* bb = nullptr;
-  if (FAILED(g_swap->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&bb))) || !bb) {
-    g_km_out->ReleaseSync(0);
-    return false;
-  }
-  g_ctx->CopyResource(g_out_gpu, bb);
-  bb->Release();
-  
-  const std::uint32_t frame = g_in->frame;
-  fb_touch(g_out, g_ini_pass, GetCurrentProcessId(), frame);
-  g_out->gpu = 1;  // GPU path output
-  
-  // Release so host can read result
-  g_km_out->ReleaseSync(0);
-  return true;
 }
 
 void teardown() {
@@ -321,10 +267,6 @@ void teardown() {
   if (g_out) UnmapViewOfFile(g_out);
   if (g_in_map) CloseHandle(g_in_map);
   if (g_out_map) CloseHandle(g_out_map);
-  if (g_km_out) g_km_out->Release();
-  if (g_km_in) g_km_in->Release();
-  if (g_out_gpu) g_out_gpu->Release();
-  if (g_in_gpu) g_in_gpu->Release();
   if (g_staging) g_staging->Release();
   if (g_samp) g_samp->Release();
   if (g_srv) g_srv->Release();
@@ -335,84 +277,6 @@ void teardown() {
   if (g_swap) g_swap->Release();
   if (g_ctx) g_ctx->Release();
   if (g_dev) g_dev->Release();
-}
-
-bool open_shared_textures() {
-  if (!g_in || !g_dev) return false;
-  if (g_in->gpu == 0 || g_in->in_shared == 0 || g_in->out_shared == 0) return false;
-  
-  // Release old shared resources if any
-  if (g_km_out) {
-    g_km_out->Release();
-    g_km_out = nullptr;
-  }
-  if (g_km_in) {
-    g_km_in->Release();
-    g_km_in = nullptr;
-  }
-  if (g_out_gpu) {
-    g_out_gpu->Release();
-    g_out_gpu = nullptr;
-  }
-  if (g_in_gpu) {
-    g_in_gpu->Release();
-    g_in_gpu = nullptr;
-  }
-  g_gpu_ok = false;
-  
-  // Open shared input texture
-  HANDLE in_h = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(g_in->in_shared));
-  ID3D11Device1* dev1 = nullptr;
-  if (FAILED(g_dev->QueryInterface(__uuidof(ID3D11Device1), reinterpret_cast<void**>(&dev1))) || !dev1) {
-    return false;
-  }
-  
-  ID3D11Texture2D* in_tex = nullptr;
-  HRESULT hr = dev1->OpenSharedResource1(in_h, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&in_tex));
-  dev1->Release();
-  
-  if (FAILED(hr) || !in_tex) return false;
-  
-  // Get keyed mutex for input
-  IDXGIKeyedMutex* km_in = nullptr;
-  if (FAILED(in_tex->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&km_in))) || !km_in) {
-    in_tex->Release();
-    return false;
-  }
-  
-  // Open shared output texture
-  HANDLE out_h = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(g_in->out_shared));
-  if (FAILED(g_dev->QueryInterface(__uuidof(ID3D11Device1), reinterpret_cast<void**>(&dev1))) || !dev1) {
-    km_in->Release();
-    in_tex->Release();
-    return false;
-  }
-  
-  ID3D11Texture2D* out_tex = nullptr;
-  hr = dev1->OpenSharedResource1(out_h, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&out_tex));
-  dev1->Release();
-  
-  if (FAILED(hr) || !out_tex) {
-    km_in->Release();
-    in_tex->Release();
-    return false;
-  }
-  
-  // Get keyed mutex for output
-  IDXGIKeyedMutex* km_out = nullptr;
-  if (FAILED(out_tex->QueryInterface(__uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&km_out))) || !km_out) {
-    out_tex->Release();
-    km_in->Release();
-    in_tex->Release();
-    return false;
-  }
-  
-  g_in_gpu = in_tex;
-  g_out_gpu = out_tex;
-  g_km_in = km_in;
-  g_km_out = km_out;
-  g_gpu_ok = true;
-  return true;
 }
 
 }  // namespace
@@ -446,21 +310,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
       Sleep(1);
       continue;
     }
-    
-    // Try to open shared textures if GPU path is signaled
-    if (g_in->gpu == 1 && !g_gpu_ok) {
-      open_shared_textures();
-    }
-    
-    // Use GPU path if available, fallback to CPU
-    bool uploaded = false;
-    if (g_gpu_ok && g_in->gpu == 1) {
-      uploaded = upload_in_gpu();
-    }
-    if (!uploaded) {
-      upload_in();
-    }
-    
+    upload_in();
     vp.Width = static_cast<float>(kFbW);
     vp.Height = static_cast<float>(kFbH);
     g_ctx->OMSetRenderTargets(1, &g_rtv, nullptr);
@@ -472,16 +322,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     g_ctx->Draw(3, 0);
     g_swap->Present(0, 0);
-    
-    // Publish output via GPU or CPU
-    bool published = false;
-    if (g_gpu_ok && g_in->gpu == 1) {
-      published = publish_out_gpu();
-    }
-    if (!published) {
-      publish_out();
-    }
-    
+    publish_out();
     last_done = g_in->frame;
     have_done = true;
     if (!ready && g_out && g_out->pid == GetCurrentProcessId() && g_first_in &&

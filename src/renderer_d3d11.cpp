@@ -323,6 +323,9 @@ struct RendererD3D11::Impl {
   int notice_w = 0;
   int notice_h = 0;
   DWORD notice_last_tick = 0;
+  // Cache enhance output SRV to avoid creating it per frame
+  ID3D11Texture2D* last_enhance_tex = nullptr;
+  ComPtr<ID3D11ShaderResourceView> last_enhance_srv;
   int color_space = static_cast<int>(kDefaultColorSpace);
   int color_range = static_cast<int>(kDefaultColorRange);
   bool yuv_dirty = true;
@@ -765,7 +768,14 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
   if (show_tex == impl_->colorRt.Get()) {
     show_srv = impl_->colorSrv;
   } else {
-    impl_->device->CreateShaderResourceView(show_tex, nullptr, &show_srv);
+    // Cache the enhance output SRV to avoid creating it per frame
+    if (impl_->last_enhance_tex == show_tex && impl_->last_enhance_srv) {
+      show_srv = impl_->last_enhance_srv;
+    } else {
+      impl_->device->CreateShaderResourceView(show_tex, nullptr, &show_srv);
+      impl_->last_enhance_tex = show_tex;
+      impl_->last_enhance_srv = show_srv;
+    }
   }
 
   // Stretch fill — no letterbox bars in windowed or fullscreen (OBS-style).

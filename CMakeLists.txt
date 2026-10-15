@@ -64,6 +64,11 @@ target_link_libraries(nexuscap_core PUBLIC
   d3d11 dxgi d3dcompiler strmiids ole32 oleaut32 user32 gdi32 winmm uuid avrt advapi32 pdh comdlg32 shell32 windowscodecs
   mfplat mfreadwrite mfuuid dwmapi windowsapp CoreMessaging
 )
+# Clang's STL only provides <coroutine> (C++20). MSVC accepts C++/WinRT in C++17 via
+# <experimental/coroutine>. Needed so clang-cl can compile capture_wgc.cpp.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  set_source_files_properties(src/capture_wgc.cpp PROPERTIES COMPILE_OPTIONS "/std:c++20")
+endif()
 
 if(NEXUSCAP_HAVE_STREAMLINE)
   target_include_directories(nexuscap_core PRIVATE "${NEXUSCAP_STREAMLINE_DIR}/include")

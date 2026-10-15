@@ -13,6 +13,7 @@
 #include "nexuscap/frame_slot.hpp"
 #include "nexuscap/frametime.hpp"
 #include "nexuscap/hitch.hpp"
+#include "nexuscap/krish_live.hpp"
 #include "nexuscap/live_mode.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/perf_test.hpp"
@@ -4564,19 +4565,19 @@ TEST_CASE("lobby preview visual preset grade changes pixels") {
 }
 
 TEST_CASE("app version brand string") {
-  CHECK(app_version_is(6, 6, 2));
+  CHECK(app_version_is(6, 6, 3));
   CHECK_FALSE(app_version_is(2, 4, 1));
-  CHECK(std::string(kAppVersion) == "6.6.2");
-  CHECK(std::strstr(kAppNameWithVersion, "v6.6.2") != nullptr);
-  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.6.2");
+  CHECK(std::string(kAppVersion) == "6.6.3");
+  CHECK(std::strstr(kAppNameWithVersion, "v6.6.3") != nullptr);
+  CHECK(std::string(kAppAnalyzeBuild) == "NexusCap-6.6.3");
   const std::string lobby_t = app_window_title_lobby();
   const std::string sess_t = app_window_title_session();
-  CHECK(lobby_t.find("6.6.2") != std::string::npos);
+  CHECK(lobby_t.find("6.6.3") != std::string::npos);
   CHECK(lobby_t.find("Console de captura") != std::string::npos);
   CHECK(lobby_t.find("\xE2\x80\x94") == std::string::npos);  // no UTF-8 em-dash
-  CHECK(sess_t.find("6.6.2") != std::string::npos);
+  CHECK(sess_t.find("6.6.3") != std::string::npos);
   CHECK(sess_t.find("Nexus Cap v") != std::string::npos);
-  CHECK(sess_t.find("Nexus Cap v6.6.2 extra") == std::string::npos);
+  CHECK(sess_t.find("Nexus Cap v6.6.3 extra") == std::string::npos);
 }
 
 TEST_CASE("Esc back to lobby reflects session FG hotkey in settings") {
@@ -4933,10 +4934,19 @@ TEST_CASE("neural rendering Bridge plan: enable/disable cannot desync") {
   }
 
   const Dlss5BridgeCommand cmd = make_nr_pulse_command();
+  CHECK(cmd.size == kDlss5BridgeCommandSize);
+  CHECK(cmd.opcode == kDlss5BridgeOpcodeNrPulse);
+  CHECK(cmd.opcode == 6);
+  CHECK(reinterpret_cast<const uint8_t*>(&cmd)[0x48] == 1);
   CHECK(bridge_command_is_valid_nr_pulse(cmd));
   {
     Dlss5BridgeCommand bad = cmd;
     bad.size = 0;
+    CHECK_FALSE(bridge_command_is_valid_nr_pulse(bad));
+  }
+  {
+    Dlss5BridgeCommand bad = cmd;
+    bad.opcode = 5;
     CHECK_FALSE(bridge_command_is_valid_nr_pulse(bad));
   }
   {
@@ -5830,6 +5840,8 @@ TEST_CASE("lobby Iniciar relaunches only when Krish is missing or the Feed lock 
   CHECK_FALSE(lobby_iniciar_needs_session_relaunch(true, true, locked, 100));
   // PID born without ReShade: Krish can only attach in a new process.
   CHECK(lobby_iniciar_needs_session_relaunch(true, false, locked, 100));
+  // Feed lock 100 vs session 70: SwapChain already sampled work_resolution.
+  CHECK(lobby_iniciar_needs_session_relaunch(true, true, 100, 70));
   CHECK(lobby_hold_relaunch_starts_session("--autostart"));
   CHECK(lobby_hold_relaunch_starts_session("--perf-test"));
   CHECK_FALSE(lobby_hold_relaunch_starts_session("--lobby-cfg"));
@@ -6351,8 +6363,8 @@ TEST_CASE("Shift plus and minus cycle the visual scene without stealing Pass Cou
   CHECK(pass_cycle_hotkey_step(0xBB, true, hk, false) == 1);
   CHECK(pass_cycle_hotkey_step(0xBB, true, hk, true) == 0);
   CHECK(pass_cycle_hotkey_step(0xBD, true, hk, true) == 0);
-  CHECK_FALSE(session_cfg_preset_applies_live(true));
-  CHECK(plan_session_cfg_preset_apply(true) == SessionCfgApply::RecycleWorker);
+  CHECK(session_cfg_preset_applies_live(true));
+  CHECK(plan_session_cfg_preset_apply(true) == SessionCfgApply::Live);
 
   HotkeyConfig rebound = hk;
   rebound.vk_look_next = 0x75;
@@ -6418,24 +6430,23 @@ TEST_CASE("session hotkeys are blocked while the CFG has the keyboard") {
 }
 
 TEST_CASE("session CFG plan: motor swap and feed scale restart, the rest is live") {
-  // 1x tambem e multipass: sem troca de addon, so o PassCount/look (recicla o filho).
-  CHECK(plan_session_cfg_apply(true, 1, 4, 100, 100) == SessionCfgApply::RecycleWorker);
-  CHECK(plan_session_cfg_apply(true, 4, 1, 100, 100) == SessionCfgApply::RecycleWorker);
-  CHECK(plan_session_cfg_apply(true, 1, 2, 100, 100) == SessionCfgApply::RecycleWorker);
-  // 1,5x ↔ 2x ↔ 3x: mesmo motor, mas o multipass le o PassCount so no init — recicla o filho.
-  CHECK(plan_session_cfg_apply(true, 4, 2, 100, 100) == SessionCfgApply::RecycleWorker);
-  CHECK(plan_session_cfg_apply(true, 2, 3, 100, 100) == SessionCfgApply::RecycleWorker);
-  CHECK(plan_session_cfg_apply(true, 3, 4, 100, 100) == SessionCfgApply::RecycleWorker);
-  CHECK(plan_session_cfg_preset_apply(true) == SessionCfgApply::RecycleWorker);
-  CHECK(plan_session_cfg_preset_apply(false) == SessionCfgApply::RecycleWorker);
-  CHECK_FALSE(session_cfg_preset_applies_live(true));
-  CHECK_FALSE(session_cfg_preset_applies_live(false));
-  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::RecycleWorker);
-  CHECK(plan_session_cfg_nr_apply(true, true) == SessionCfgApply::RecycleWorker);
+  // Radios e cena: INI + pulse do Bridge no mesmo PID (Krish 8.5 relê NRPasses).
+  CHECK(plan_session_cfg_apply(true, 1, 4, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_apply(true, 4, 1, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_apply(true, 1, 2, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_apply(true, 4, 2, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_apply(true, 2, 3, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_apply(true, 3, 4, 100, 100) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_preset_apply(true) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_preset_apply(false) == SessionCfgApply::Live);
+  CHECK(session_cfg_preset_applies_live(true));
+  CHECK(session_cfg_preset_applies_live(false));
+  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_nr_apply(true, true) == SessionCfgApply::Live);
   CHECK(plan_session_cfg_nr_apply(false, false) == SessionCfgApply::Live);
-  CHECK_FALSE(nr_pass_count_change_applies_live(4, 2));
-  CHECK_FALSE(nr_pass_count_change_applies_live(2, 3));
-  CHECK(nr_pass_count_change_applies_live(2, 2));  // sem troca, nada a aplicar
+  CHECK(nr_pass_count_change_applies_live(4, 2));
+  CHECK(nr_pass_count_change_applies_live(2, 3));
+  CHECK(nr_pass_count_change_applies_live(2, 2));
   CHECK(nr_pass_count_change_applies_live(1, 1));
   // Preset / NR / FG nao mexem em pass count nem escala.
   CHECK(plan_session_cfg_apply(true, 4, 4, 50, 50) == SessionCfgApply::Live);
@@ -6445,7 +6456,7 @@ TEST_CASE("session CFG plan: motor swap and feed scale restart, the rest is live
   CHECK(plan_session_cfg_apply(true, 4, 4, 40, 33) == SessionCfgApply::Live);
   // Sem RenoDX o renderer escala o proprio RT.
   CHECK(plan_session_cfg_apply(false, 1, 1, 100, 50) == SessionCfgApply::Live);
-  // Pass Count tem prioridade quando as duas coisas mudam juntas.
+  // Escala do Feed ainda relança quando Pass Count e escala mudam juntos.
   CHECK(plan_session_cfg_apply(true, 1, 4, 100, 50) == SessionCfgApply::RecycleWorker);
 
   CHECK(session_cfg_apply_needs_relaunch(SessionCfgApply::RelaunchMotor));
@@ -6465,12 +6476,12 @@ TEST_CASE("session CFG restart resumes the session, never the lobby") {
   CHECK(c.autostart);
 }
 
-TEST_CASE("session CFG NR on/off restarts on every RenoDX motor") {
+TEST_CASE("session CFG NR on/off is live on every RenoDX motor") {
   CHECK(session_cfg_nr_toggle_allowed(/*renodx=*/true, /*multipass=*/false));
   CHECK(session_cfg_nr_toggle_allowed(true, true));
   CHECK_FALSE(session_cfg_nr_toggle_allowed(false, false));
-  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::RecycleWorker);
-  CHECK(plan_session_cfg_nr_apply(true, true) == SessionCfgApply::RecycleWorker);
+  CHECK(plan_session_cfg_nr_apply(true, false) == SessionCfgApply::Live);
+  CHECK(plan_session_cfg_nr_apply(true, true) == SessionCfgApply::Live);
   const std::string on = session_notice_nr_apply(true);
   const std::string off = session_notice_nr_apply(false);
   CHECK(on.find("ON") != std::string::npos);
@@ -7326,8 +7337,7 @@ TEST_CASE("session CFG preset persist then boot files match on every motor") {
       apply_persisted_to_config(s, back);
       CHECK(back.renodx_preset == v);
       CHECK(back.nr_pass_count == clamp_nr_pass_count(p));
-      CHECK(plan_session_cfg_preset_apply(nr_pass_count_uses_multipass_addon(p)) ==
-            SessionCfgApply::RecycleWorker);
+      CHECK(plan_session_cfg_preset_apply(nr_pass_count_uses_multipass_addon(p)) == SessionCfgApply::Live);
 
       std::string reshade =
           std::string("AddonPath=") + renodx_addon_stack_rel(back.nr_pass_count) +
@@ -7577,9 +7587,8 @@ TEST_CASE("lobby gear and Ctrl+M session CFG share motor names, disk, and scale"
         // Lobby: troca de preset sincroniza ficheiros (preview). Ctrl+M: sempre relaunch.
         const auto lobby = plan_lobby_renodx_preset_change(true, true, 0, v, true);
         CHECK(lobby.sync_preset_files == (v != 0));
-        CHECK_FALSE(session_cfg_preset_applies_live(nr_pass_count_uses_multipass_addon(p)));
-        CHECK(plan_session_cfg_preset_apply(nr_pass_count_uses_multipass_addon(p)) ==
-              SessionCfgApply::RecycleWorker);
+        CHECK(session_cfg_preset_applies_live(nr_pass_count_uses_multipass_addon(p)));
+        CHECK(plan_session_cfg_preset_apply(nr_pass_count_uses_multipass_addon(p)) == SessionCfgApply::Live);
 
         PersistedSettings gear = default_settings();
         gear.enhance_renodx = true;
@@ -8931,7 +8940,7 @@ TEST_CASE("user preset lobby snapshot and apply plan") {
   other.enhance_renodx = false;
   other.neural_rendering = false;
   const LobbyUserPresetPlan plan = plan_lobby_user_preset_apply(other, snap, true);
-  CHECK(plan.pass_relaunch);
+  CHECK_FALSE(plan.pass_relaunch);  // radios aplicam no mesmo PID (INI + pulse)
   CHECK_FALSE(plan.motor_relaunch);
   CHECK(plan.look_changed);
   CHECK_FALSE(plan.fg_missing);
@@ -9387,6 +9396,191 @@ TEST_CASE("parse_args window source") {
   auto c = parse_args(3, argv);
   CHECK(c.capture_source == 1);
   CHECK(c.window_title == "PCSX2");
+}
+
+TEST_CASE("runtime health requires nvngx_dlssnr and bridge (H1-H7)") {
+  namespace fs = std::filesystem;
+  CHECK_FALSE(check_runtime_health("").renodx_complete());
+  CHECK_FALSE(check_runtime_health("").has_nr_runtime);
+  CHECK_FALSE(check_runtime_health("").has_bridge);
+
+  const fs::path root = fs::temp_directory_path() / "nexuscap_health_h17";
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  fs::create_directories(root / "addons-multipass", ec);
+  auto touch = [](const fs::path& p) {
+    fs::create_directories(p.parent_path());
+    std::ofstream o(p, std::ios::binary);
+    o << 'x';
+  };
+  const fs::path stack = root / "addons-multipass";
+  touch(root / "dxgi.dll");
+  {
+    const auto h = check_runtime_health(root.string());
+    CHECK(h.has_dxgi);
+    CHECK_FALSE(h.has_renodx);
+    CHECK_FALSE(h.renodx_complete());
+  }
+  touch(stack / "renodx-dlss5.addon64");
+  touch(stack / "dlss5-feed.addon64");
+  {
+    const auto h = check_runtime_health(root.string());
+    CHECK(h.has_renodx);
+    CHECK(h.has_feed);
+    CHECK_FALSE(h.has_nr_runtime);
+    CHECK_FALSE(h.has_bridge);
+    CHECK_FALSE(h.renodx_complete());
+  }
+  touch(stack / "nvngx_dlssnr.dll");
+  {
+    const auto h = check_runtime_health(root.string());
+    CHECK(h.has_nr_runtime);
+    CHECK_FALSE(h.has_bridge);
+    CHECK_FALSE(h.renodx_complete());
+  }
+  touch(stack / "dlss5-bridge.addon64");
+  {
+    const auto h = check_runtime_health(root.string());
+    CHECK(h.has_bridge);
+    CHECK(h.renodx_complete());  // H7: placeholders count as present
+  }
+  fs::remove(stack / "renodx-dlss5.addon64", ec);
+  {
+    const auto h = check_runtime_health(root.string());
+    CHECK_FALSE(h.has_renodx);
+    CHECK_FALSE(h.renodx_complete());
+  }
+  touch(stack / "renodx-dlss5.addon64");
+  fs::remove(stack / "dlss5-feed.addon64", ec);
+  {
+    const auto h = check_runtime_health(root.string());
+    CHECK_FALSE(h.has_feed);
+    CHECK_FALSE(h.renodx_complete());
+  }
+  touch(stack / "dlss5-feed.addon64");
+  fs::remove(stack / "nvngx_dlssnr.dll", ec);
+  touch(root / "nvngx_dlssnr.dll");  // next to the exe also counts
+  {
+    const auto h = check_runtime_health(root.string());
+    CHECK(h.has_nr_runtime);
+    CHECK(h.renodx_complete());
+  }
+  fs::remove_all(root, ec);
+}
+
+TEST_CASE("INI radios and MGF chain (I1-I13)") {
+  CHECK(nr_reshade_pass_count(1) == 1);
+  CHECK(nr_reshade_pass_count(4) == 1);
+  CHECK(nr_reshade_pass_count(5) == 2);
+  CHECK(nr_reshade_pass_count(6) == 3);
+  CHECK(clamp_nr_pass_count(2) == 5);
+  CHECK(clamp_nr_pass_count(3) == 6);
+  CHECK(clamp_nr_pass_count(7) == 4);
+  const std::string p5 = apply_reshade_nr_pass_count(
+      "[RENODX-DLSS-preset1]\nDirectNeuralRenderingPassCount=1\nNRPasses=1\n"
+      "[RenoDX.DLSS5]\nDirectNeuralRenderingPassCount=1\nNRPasses=1\n",
+      5);
+  CHECK(every_keyed_int_is(p5, "NRPasses=", 2));
+  CHECK(every_keyed_int_is(p5, "DirectNeuralRenderingPassCount=", 2));
+  const std::string look1 = apply_reshade_multipass_look_defaults("EnableHooks=2\n", 1, 0);
+  const std::string look4 = apply_reshade_multipass_look_defaults("EnableHooks=2\n", 4, 0);
+  CHECK(parse_reshade_nr_pass_count(look1) == 1);
+  CHECK(parse_reshade_nr_pass_count(look4) == 1);
+  CHECK(look4.find("NRLookStrength=1.75") != std::string::npos);
+  CHECK_FALSE(nr_advanced_equal(nr_advanced_default(4), nr_advanced_default(1)));
+  CHECK(apply_feed_enabled("enabled=0\n", true).find("enabled=1") != std::string::npos);
+  CHECK(apply_feed_enabled("enabled=1\n", false).find("enabled=0") != std::string::npos);
+  CHECK(apply_reshade_neural_uplift("NeuralUplift=0\n", true).find("NeuralUplift=1") != std::string::npos);
+  CHECK(apply_reshade_neural_uplift("NeuralUplift=1\n", false).find("NeuralUplift=0") != std::string::npos);
+  CHECK(renodx_mgf_technique_chain_ok(kRenodxSessionTechniqueChain));
+  CHECK_FALSE(renodx_mgf_technique_chain_ok(
+      "DLSS5_Sharpen@DLSS5_Sharpen.fx,DLSS5_Feed@DLSS5_Feed.fx,Lumenite_Kernel@lumenite_Kernel.fx"));
+  const std::string idle = apply_mgf_techniques_for_phase("Techniques=x\nTechniqueSorting=x\n", false);
+  CHECK(idle.find("Techniques=\n") != std::string::npos);
+  const std::string sess = apply_mgf_techniques_for_phase(idle, true);
+  CHECK(sess.find(kRenodxSessionTechniqueChain) != std::string::npos);
+  CHECK(look1.find("DX11Source=") == std::string::npos);
+  CHECK(look4.find("DX11Source=") == std::string::npos);
+  CHECK(every_keyed_int_is(look1, "EnableHooks=", 2));
+  CHECK(every_keyed_int_is(look4, "EnableHooks=", 2));
+}
+
+TEST_CASE("Krish live plan never relaunches NR pass preset or look (R1-R6)") {
+  for (auto kind : {KrishLiveKind::Nr, KrishLiveKind::Pass, KrishLiveKind::Preset, KrishLiveKind::Look}) {
+    CHECK_FALSE(plan_krish_live(kind, true, true).relaunch);
+    CHECK_FALSE(plan_krish_live(kind, true, false).relaunch);
+    CHECK_FALSE(krish_live_needs_relaunch(kind));
+  }
+  CHECK(plan_krish_live(KrishLiveKind::Nr, true, false).pulse_toggle);
+  CHECK(plan_krish_live(KrishLiveKind::Pass, true, true).reload_cycle);
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 4));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(4, 5));
+  CHECK_FALSE(nr_pass_count_change_needs_relaunch(5, 6));
+  CHECK(nr_pass_count_change_applies_live(1, 5));
+  CHECK(nr_pass_count_change_applies_live(1, 4));
+  CHECK(nr_pass_count_change_applies_live(5, 6));
+  CHECK(nr_pass_count_change_applies_live(4, 6));
+  CHECK(nr_pass_count_change_applies_live(1, 1));
+  CHECK(session_boot_restores_reshade(true));
+  CHECK_FALSE(session_boot_restores_reshade(false));
+  CHECK_FALSE(boot_parks_reshade_dxgi(true));
+  CHECK(boot_parks_reshade_dxgi(false));
+}
+
+TEST_CASE("pulse helpers do not treat look-only as NR (P8-P16)") {
+  CHECK_FALSE(nr_runtime_may_flip_without_pulse(false));
+  CHECK(nr_runtime_may_flip_without_pulse(true));
+  CHECK(parse_reshade_nr_toggled_line("NR toggled ON via 0x7C") == 1);
+  CHECK(parse_reshade_nr_toggled_line("NR toggled OFF via 0x7C") == 0);
+  CHECK(parse_reshade_nr_toggled_line("garbage") == -1);
+  CHECK(parse_reshade_nr_eval_count("EvaluateFeature succeeded: evaluation=178\n"
+                                   "EvaluateFeature succeeded: evaluation=178\n") == 2);
+  CHECK(parse_reshade_nr_eval_count("backend=nr-look\nnr-look applied\n") == 0);
+  CHECK(renodx_stack_supports_nr_hotkey(true));
+  const auto cycle = plan_lobby_renodx_preset_change(true, true, 0, 2, true);
+  CHECK(cycle.need_preset_reload_cycle);
+  CHECK(want_neural_rendering(true, true));
+  CHECK_FALSE(want_neural_rendering(true, false));
+  CHECK_FALSE(want_neural_rendering(false, true));
+  CHECK_FALSE(settings_imply_runtime_on_at_boot(true, true));
+  CHECK(nr_boot_needs_enable_pulse(true));
+}
+
+TEST_CASE("Krish pin and look overlay (K1-K5)") {
+  CHECK_FALSE(krish_pin_image_ok(static_cast<std::uint64_t>(kKrishRvaCtxPtr) + 8));
+  CHECK(krish_pin_image_ok(static_cast<std::uint64_t>(kKrishRvaCtxPtr) + 9));
+  CHECK_FALSE(krish_preset_uses_txn(0));
+  CHECK(krish_preset_uses_txn(1));
+  CHECK(krish_preset_uses_txn(2));
+  const auto one = krish_look_overlay_values(1);
+  CHECK(one.encoding == 2);
+  CHECK(one.hook == 2);
+  CHECK(one.nits == 100);
+  for (int p : {4, 5, 6}) {
+    const auto v = krish_look_overlay_values(p);
+    CHECK(v.encoding == one.encoding);
+    CHECK(v.hook == one.hook);
+    CHECK(v.nits == one.nits);
+  }
+}
+
+TEST_CASE("forbidden Streamline 1004 and park-on-renodx (X1 X3)") {
+  CHECK_FALSE(boot_parks_reshade_dxgi(true));
+  CHECK(session_boot_restores_reshade(true));
+#ifdef NEXUSCAP_SOURCE_DIR
+  namespace fs = std::filesystem;
+  const fs::path src = fs::path(NEXUSCAP_SOURCE_DIR) / "src";
+  if (fs::exists(src)) {
+    for (const auto& ent : fs::directory_iterator(src)) {
+      if (ent.path().extension() != ".cpp") continue;
+      std::ifstream in(ent.path());
+      const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      CHECK(text.find("kFeatureDLSS_NR") == std::string::npos);
+      CHECK(text.find("create_nr_enhance") == std::string::npos);
+      CHECK(text.find("enhance_nr_native") == std::string::npos);
+    }
+  }
+#endif
 }
 
 

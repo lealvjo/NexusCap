@@ -385,7 +385,7 @@ void SessionCfgOverlay::draw_panel() {
     if (state.renodx_preset != preset_before) actions_.preset_changed = true;
     {
       char look_hint[128];
-      std::snprintf(look_hint, sizeof(look_hint), "%s%s avanca  |  %s%s volta. Segura o quadro, sem pulso.",
+      std::snprintf(look_hint, sizeof(look_hint), "%s%s avanca  |  %s%s volta. Mesmo PID, sem reinicio.",
                     state.hotkeys.look_next_shift ? "Shift+" : "",
                     vk_display_name(state.hotkeys.vk_look_next),
                     state.hotkeys.look_prev_shift ? "Shift+" : "",

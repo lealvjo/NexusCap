@@ -3231,9 +3231,10 @@ TEST_CASE("multipass nr_pass_count clamp serialize and ReShade sync") {
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 2));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(1, 4));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(4, 1));
-  CHECK_FALSE(nr_pass_count_change_applies_live(1, 4));
-  CHECK_FALSE(nr_pass_count_change_applies_live(4, 1));
-  CHECK_FALSE(nr_pass_count_change_applies_live(1, 2));
+  // Krish 8.5 relê NRPasses no ciclo OFF→ON do Bridge: troca de radio aplica no mesmo PID.
+  CHECK(nr_pass_count_change_applies_live(1, 4));
+  CHECK(nr_pass_count_change_applies_live(4, 1));
+  CHECK(nr_pass_count_change_applies_live(1, 2));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(4, 2));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 3));
   CHECK_FALSE(nr_pass_count_change_needs_relaunch(2, 5));
@@ -5820,11 +5821,15 @@ TEST_CASE("feed scale change needs relaunch only under RenoDX") {
   CHECK(msg.find("50%") != std::string::npos);
 }
 
-TEST_CASE("lobby Iniciar relaunches when RenoDX must reread NR at process start") {
-  CHECK(lobby_iniciar_needs_session_relaunch(true, false, true));
-  CHECK_FALSE(lobby_iniciar_needs_session_relaunch(true, true, false));
-  CHECK(lobby_iniciar_needs_session_relaunch(false, true, true));
-  CHECK(lobby_iniciar_needs_session_relaunch(true, true, true));
+TEST_CASE("lobby Iniciar relaunches only when Krish is missing or the Feed lock changes") {
+  const int locked = feed_work_resolution_for_lobby();
+  // RenoDX off: nothing to attach.
+  CHECK_FALSE(lobby_iniciar_needs_session_relaunch(false, false, locked, 100));
+  CHECK_FALSE(lobby_iniciar_needs_session_relaunch(false, true, locked, 50));
+  // RenoDX on, ReShade in the PID, same Feed resolution: same process.
+  CHECK_FALSE(lobby_iniciar_needs_session_relaunch(true, true, locked, 100));
+  // PID born without ReShade: Krish can only attach in a new process.
+  CHECK(lobby_iniciar_needs_session_relaunch(true, false, locked, 100));
   CHECK(lobby_hold_relaunch_starts_session("--autostart"));
   CHECK(lobby_hold_relaunch_starts_session("--perf-test"));
   CHECK_FALSE(lobby_hold_relaunch_starts_session("--lobby-cfg"));
@@ -5876,13 +5881,13 @@ TEST_CASE("lobby Iniciar relaunches when RenoDX must reread NR at process start"
   CHECK(parse_feed_work_resolution(feed) == 50);
 }
 
-// Measured: multipass RenoDX ignores NRToggleKey, so Delete must not fake an "off" HUD.
-TEST_CASE("NR hotkey never claimed: every Pass Count runs on multipass") {
+// Krish 8.5 (multipass) imports GetAsyncKeyState; the Bridge patches it, so the pulse toggles NR.
+TEST_CASE("NR hotkey supported on every Pass Count (Krish 8.5 + Bridge)") {
   CHECK(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/false));
-  CHECK_FALSE(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/true));
-  CHECK_FALSE(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(2)));
-  CHECK_FALSE(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(4)));
-  CHECK_FALSE(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(1)));
+  CHECK(renodx_stack_supports_nr_hotkey(/*multipass_stack=*/true));
+  CHECK(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(2)));
+  CHECK(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(4)));
+  CHECK(renodx_stack_supports_nr_hotkey(nr_pass_count_uses_multipass_addon(1)));
   const std::string msg15 = session_notice_nr_hotkey_unavailable(4);
   CHECK(msg15.find("1,5x") != std::string::npos);
   CHECK(msg15.find("Home") != std::string::npos);

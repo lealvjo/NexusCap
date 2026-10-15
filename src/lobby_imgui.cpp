@@ -10,6 +10,7 @@
 #include "nexuscap/dlss_options.hpp"
 #include "nexuscap/dlss5_bridge.hpp"
 #include "nexuscap/imgui_theme.hpp"
+#include "nexuscap/krish_live.hpp"
 #include "nexuscap/lossless_fg.hpp"
 #include "nexuscap/max_perf.hpp"
 #include "nexuscap/nr_advanced_ui.hpp"
@@ -1078,9 +1079,9 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     const bool strip_same_process = !cfg_live && nr_runtime_on;
     sync_lobby_preview_pipeline_files(exe_dir.string(), settings);
     if (cfg_live && session_want) {
-      // Fresh attach lê NeuralUplift=1. Não pulsar — o enable-pulse inverte o runtime.
-      nr_runtime_on = true;
-      cfg.nr_runtime_on = true;
+      // Krish 8.5 anexa enabled=OFF: o loop abaixo pulsa o Bridge quando ele sobe e só marca
+      // ON com "NR toggled ON" no ReShade.log.
+      if (!nr_runtime_on) nr_boot_retries = 600;
     } else {
       nr_runtime_on = false;
       cfg.nr_runtime_on = false;
@@ -1334,38 +1335,19 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     fg_tgt_draft = fg_tgt_committed;
     const bool live = lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
     const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
-    if ((plan.pass_relaunch || plan.advanced_changed) && live) {
-      (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset, adv_now());
-      (void)sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count, adv_now());
-      (void)sync_feed_work_resolution_in_dir(
-          exe_dir, feed_work_resolution_for_session(settings.scale_percent, settings.nr_pass_count,
-                                                   settings.width, settings.height),
-          settings.nr_pass_count);
-      motor_swap_title = lobby_pipeline_hold_title();
-      motor_swap_line = std::string(nr_pass_count_label(plan.pass_before)) + "  \xE2\x86\x92  " +
-                        nr_pass_count_label(plan.pass_after);
-      motor_swap_args = g_open_gear ? lobby_cfg_relaunch_args() : "";
-      motor_swap_pending = true;
-      motor_swap_silent = false;
-      motor_swap_enter_session = false;
-      motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
-      write_restart_toast(session_notice_named_preset_apply(p.name));
-    } else if (live) {
+    if (live) {
       preview.set_visual_preview(settings.renodx_preset, want);
-      if (plan.look_changed) {
-        apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on,
-                                       settings.nr_pass_count, adv_now());
-      } else {
+      sync_lobby_preview_pipeline_files(exe_dir, settings);
+      const bool nr_look_changed =
+          plan.look_changed || plan.advanced_changed || plan.pass_before != plan.pass_after;
+      if (!nr_look_changed) {
         (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset, adv_now());
         (void)sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count,
                                               adv_now());
       }
-      sync_lobby_preview_pipeline_files(exe_dir, settings);
-      if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
-                                        feed_pipeline_on_for_renodx(settings.enhance_renodx)) &&
-          want && !dlss5_bridge_ready_for_nr()) {
-        nr_boot_retries = 120;
-      }
+      (void)apply_krish_session(exe_dir, nr_look_changed ? KrishLiveKind::Look : KrishLiveKind::Nr, want,
+                                settings.renodx_preset, settings.nr_pass_count, adv_now(), &nr_runtime_on);
+      if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) nr_boot_retries = 120;
       cfg.nr_runtime_on = nr_runtime_on;
     } else {
       sync_lobby_preview_pipeline_files(exe_dir, settings);
@@ -1374,7 +1356,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     }
     if (plan.fg_missing) {
       push_lobby_toast(session_notice_fg_missing());
-    } else if (!((plan.pass_relaunch || plan.advanced_changed) && live)) {
+    } else {
       push_lobby_toast(session_notice_named_preset_apply(p.name));
     }
     adv_draft = settings.nr_advanced[clamp_nr_pass_count(settings.nr_pass_count)];
@@ -1389,7 +1371,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
     if (!health.writable) {
       push_lobby_toast(renodx_write_denied_notice());
     } else if (!health.renodx_complete()) {
-      push_lobby_toast("RenoDX incompleto (dxgi/addon/feed). Reinstale o Nexus Cap ou use Abrir logs.");
+      push_lobby_toast("RenoDX incompleto (falta " + runtime_health_missing_list(health) +
+                       "). Reinstale o Nexus Cap ou use Abrir logs.");
     }
   }
   if (auto t = take_restart_toast(); !t.empty()) {
@@ -1462,9 +1445,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         {
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
-          if (apply_neural_rendering_state(exe_dir, want, &nr_runtime_on)) {
-            nr_boot_retries = 0;
-            cfg.nr_runtime_on = nr_runtime_on;
+          // One attempt once the Bridge is up: a repeated edge would toggle Krish back.
+          nr_boot_retries = 0;
+          const bool applied = apply_neural_rendering_state(exe_dir, want, &nr_runtime_on);
+          cfg.nr_runtime_on = nr_runtime_on;
+          if (applied) {
             if (!want) {
               sync_neural_rendering_enabled_files(
                   exe_dir, want_neural_rendering(settings.enhance_renodx, settings.neural_rendering),
@@ -1496,19 +1481,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           std::string serr;
           save_settings(settings, settings_default_path(), serr);
           gear_snapshot = settings;
-          (void)sync_nr_pass_count_files(exe_dir, pass, settings.renodx_preset, look);
-          (void)sync_feed_work_resolution_in_dir(
-              exe_dir, feed_work_resolution_for_session(settings.scale_percent, pass, settings.width, settings.height),
-              pass);
-          motor_swap_title = lobby_pipeline_hold_title();
-          motor_swap_line = std::string(nr_pass_count_label(before)) + "  \xE2\x86\x92  " +
-                            nr_pass_count_label(after);
-          motor_swap_args = lobby_cfg_relaunch_args();
-          motor_swap_pending = true;
-          motor_swap_silent = false;
-          motor_swap_enter_session = false;
-          motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
-          write_restart_toast(session_notice_nr_pass_count_apply(before, after));
+          (void)apply_krish_session(exe_dir, KrishLiveKind::Pass,
+                                    want_neural_rendering(settings.enhance_renodx, settings.neural_rendering),
+                                    settings.renodx_preset, pass, look, &nr_runtime_on);
+          cfg.nr_runtime_on = nr_runtime_on;
+          push_lobby_toast(std::string("Pass Count: ") + nr_pass_count_label(after));
         } else {
           std::string serr;
           save_settings(settings, settings_default_path(), serr);
@@ -1535,17 +1512,11 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             std::string serr;
             save_settings(settings, settings_default_path(), serr);
             gear_snapshot = settings;
-            (void)sync_nr_pass_count_files(exe_dir, pass, after, look);
-            (void)sync_renodx_visual_preset_files(exe_dir, after, pass, look);
-            motor_swap_title = lobby_pipeline_hold_title();
-            motor_swap_line = std::string(renodx_visual_preset_name(before, pass)) + " -> " +
-                              renodx_visual_preset_name(after, pass);
-            motor_swap_args = lobby_cfg_relaunch_args();
-            motor_swap_pending = true;
-            motor_swap_silent = false;
-            motor_swap_enter_session = false;
-            motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
-            write_restart_toast(session_notice_preset_apply(before, after, pass));
+            (void)apply_krish_session(exe_dir, KrishLiveKind::Preset,
+                                      want_neural_rendering(settings.enhance_renodx, settings.neural_rendering),
+                                      after, pass, look, &nr_runtime_on);
+            cfg.nr_runtime_on = nr_runtime_on;
+            push_lobby_toast(session_notice_preset_apply(before, after, pass));
           } else {
             std::string serr;
             save_settings(settings, settings_default_path(), serr);
@@ -2226,6 +2197,15 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         g_lobby_running = false;
       }
       ImGui::SameLine();
+      // Same PID unless Krish is not attached yet or the Feed must lock another work_resolution.
+      auto iniciar_needs_relaunch = [&]() {
+        wchar_t exe_path[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+        const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
+        return lobby_iniciar_needs_session_relaunch(settings.enhance_renodx, reshade_dxgi_loaded_in_process(exe_dir),
+                                                    feed_loaded_scale, settings.scale_percent,
+                                                    settings.nr_pass_count, settings.width, settings.height);
+      };
       const bool iniciar_sem_suporte =
           lobby_iniciar_blocked_by_unsupported(capture_source_is_window(settings.capture_source), settings.width,
                                               settings.height, settings.fps, unsupported_modes) ||
@@ -2256,8 +2236,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
             motor_swap_silent = !lobby_iniciar_shows_pipeline_card(true);
             motor_swap_sync_session_files = true;
             motor_swap_until = ImGui::GetTime();
-            if (lobby_iniciar_needs_session_relaunch(settings.ui.preview_enabled, settings.ui.preview_cfg_live,
-                                                     settings.enhance_renodx)) {
+            if (iniciar_needs_relaunch()) {
               motor_swap_args = "--autostart";
               motor_swap_enter_session = false;
             } else {
@@ -2288,8 +2267,7 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         motor_swap_silent = !lobby_iniciar_shows_pipeline_card(false);
         motor_swap_sync_session_files = true;
         motor_swap_until = ImGui::GetTime();
-        if (lobby_iniciar_needs_session_relaunch(settings.ui.preview_enabled, settings.ui.preview_cfg_live,
-                                                 settings.enhance_renodx)) {
+        if (iniciar_needs_relaunch()) {
           motor_swap_args = "--autostart";
           motor_swap_enter_session = false;
         } else {
@@ -2371,21 +2349,17 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
       std::string serr;
       save_settings(settings, settings_default_path(), serr);
       gear_snapshot = settings;
-      (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset, adv_now());
-      (void)sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count, adv_now());
       if (live) {
-        motor_swap_title = lobby_pipeline_hold_title();
-        motor_swap_line = std::string(nr_pass_count_label(shown)) +
-                          (as_reset ? "  default" : "  configs avancadas");
-        motor_swap_args = lobby_cfg_relaunch_args_with_advanced();
-        motor_swap_refresh_lobby = true;
-        motor_swap_pending = true;
-        motor_swap_silent = false;
-        motor_swap_enter_session = false;
-        motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
-        write_restart_toast(std::string(as_reset ? "Default do " : "Configs avancadas: ") +
-                            nr_pass_count_label(shown));
+        (void)apply_krish_session(exe_dir, KrishLiveKind::Look,
+                                  want_neural_rendering(settings.enhance_renodx, settings.neural_rendering),
+                                  settings.renodx_preset, settings.nr_pass_count, adv_now(), &nr_runtime_on);
+        cfg.nr_runtime_on = nr_runtime_on;
+        push_lobby_toast(std::string(as_reset ? "Default do " : "Configs avancadas: ") +
+                         nr_pass_count_label(shown));
       } else {
+        (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset, adv_now());
+        (void)sync_renodx_visual_preset_files(exe_dir, settings.renodx_preset, settings.nr_pass_count,
+                                              adv_now());
         push_lobby_toast(std::string(as_reset ? "Default do " : "Configs avancadas: ") +
                          nr_pass_count_label(shown) + " — no Iniciar");
       }
@@ -2680,7 +2654,21 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
               lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live);
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           sync_lobby_preview_pipeline_files(exe_dir, settings);
-          if (live) {
+          if (live && settings.enhance_renodx && !reshade_dxgi_loaded_in_process(exe_dir)) {
+            // PID nasceu sem ReShade: a única transição que precisa de processo novo.
+            std::string serr;
+            save_settings(settings, settings_default_path(), serr);
+            gear_snapshot = settings;
+            (void)restore_reshade_dxgi(exe_dir);
+            motor_swap_title = lobby_pipeline_hold_title();
+            motor_swap_line = lobby_preview_cfg_pipeline_hold_line(true);
+            motor_swap_args = lobby_cfg_relaunch_args();
+            motor_swap_refresh_lobby = true;
+            motor_swap_pending = true;
+            motor_swap_silent = false;
+            motor_swap_enter_session = false;
+            motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
+          } else if (live) {
             if (!apply_neural_rendering_state(exe_dir, want, &nr_runtime_on,
                                               feed_pipeline_on_for_renodx(settings.enhance_renodx)) &&
                 want && !dlss5_bridge_ready_for_nr()) {
@@ -2721,8 +2709,8 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           if (!writable) {
             push_lobby_toast(renodx_write_denied_notice());
           } else if (live) {
-            apply_lobby_renodx_preset_live(exe_dir, settings.renodx_preset, want, &nr_runtime_on,
-                                           settings.nr_pass_count, adv_now());
+            (void)apply_krish_session(exe_dir, KrishLiveKind::Preset, want, settings.renodx_preset,
+                                      settings.nr_pass_count, adv_now(), &nr_runtime_on);
             cfg.nr_runtime_on = nr_runtime_on;
             push_lobby_toast(std::string("Preset: ") +
                              renodx_visual_preset_name(settings.renodx_preset, settings.nr_pass_count) +
@@ -2741,10 +2729,10 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
         ImGui::TextDisabled("NR=%d  model=%d  ·  olhe a imagem (nao so o texto)",
                             renodx_nr_preset_index(settings.renodx_preset),
                             renodx_feed_model_preset(settings.renodx_preset, settings.nr_pass_count));
-        ImGui::TextDisabled("  Default / Natural / Cinematic (o addon so le no boot)");
+        ImGui::TextDisabled("  Default / Natural / Cinematic (aplica ao vivo: INI + pulse do Bridge)");
         {
           char look_hint[128];
-          std::snprintf(look_hint, sizeof(look_hint), "%s%s avanca  |  %s%s volta. Segura o quadro, sem pulso.",
+          std::snprintf(look_hint, sizeof(look_hint), "%s%s avanca  |  %s%s volta. Mesmo PID, sem reinicio.",
                         settings.hotkeys.look_next_shift ? "Shift+" : "",
                         vk_display_name(settings.hotkeys.vk_look_next),
                         settings.hotkeys.look_prev_shift ? "Shift+" : "",
@@ -2787,38 +2775,12 @@ bool run_lobby(HINSTANCE hi, AppConfig& cfg, PersistedSettings& settings) {
           const auto exe_dir = std::filesystem::path(exe_path).parent_path().string();
           const bool want = want_neural_rendering(settings.enhance_renodx, settings.neural_rendering);
           const bool writable = prepare_renodx_runtime_dirs(exe_dir);
-          // Multipass não relê o PassCount no processo vivo, então 1,5x↔2x↔3x também reinicia.
-          const bool need_relaunch = !nr_pass_count_change_applies_live(pass_before, settings.nr_pass_count);
           if (!writable) {
             push_lobby_toast(renodx_write_denied_notice());
-          } else if (need_relaunch &&
-                     lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)) {
-            // Show hold notice, then relaunch (avoids "bugou" flash).
-            std::string serr;
-            save_settings(settings, settings_default_path(), serr);
-            gear_snapshot = settings;
-            (void)sync_nr_pass_count_files(exe_dir, settings.nr_pass_count, settings.renodx_preset, adv_now());
-            (void)sync_feed_work_resolution_in_dir(
-                exe_dir, feed_work_resolution_for_session(settings.scale_percent, settings.nr_pass_count,
-                                                         settings.width, settings.height),
-                settings.nr_pass_count);
-            const bool motor_change =
-                nr_pass_count_change_needs_relaunch(pass_before, settings.nr_pass_count);
-            motor_swap_title = lobby_pipeline_hold_title();
-            motor_swap_line = std::string(nr_pass_count_label(pass_before)) + "  \xE2\x86\x92  " +
-                              nr_pass_count_label(settings.nr_pass_count);
-            motor_swap_args = lobby_cfg_relaunch_args();
-            motor_swap_pending = true;
-            motor_swap_silent = false;
-            motor_swap_enter_session = false;
-            motor_swap_until = ImGui::GetTime() + kDlss5MotorSwapHoldSec;
-            write_restart_toast(motor_change
-                                 ? session_notice_dlss5_motor_swap(pass_before, settings.nr_pass_count)
-                                 : session_notice_nr_pass_count_apply(pass_before, settings.nr_pass_count));
           } else if (lobby_preview_cfg_wanted(settings.ui.preview_enabled, settings.ui.preview_cfg_live)) {
-            // 1,5x ↔ 2x ↔ 3x: same multipass addon — INI + NR reload only.
-            apply_lobby_nr_pass_count_live(exe_dir, settings.nr_pass_count, want, &nr_runtime_on,
-                                           settings.renodx_preset, adv_now());
+            // Todo radio: INI + ciclo OFF→ON do Bridge no mesmo PID.
+            (void)apply_krish_session(exe_dir, KrishLiveKind::Pass, want, settings.renodx_preset,
+                                      settings.nr_pass_count, adv_now(), &nr_runtime_on);
             cfg.nr_runtime_on = nr_runtime_on;
             push_lobby_toast(std::string("Pass Count: ") + nr_pass_count_label(settings.nr_pass_count));
             if (want && !nr_runtime_on && !dlss5_bridge_ready_for_nr()) {

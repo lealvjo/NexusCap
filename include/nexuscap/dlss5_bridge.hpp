@@ -6,8 +6,6 @@
 
 namespace nexuscap {
 
-struct NrAdvancedLook;
-
 // dlss5-bridge.addon64 protocol (Version=1, Protocol=2).
 // RenoDX Neural Rendering always boots runtime OFF even when NeuralUplift=1 on disk —
 // writing ReShade.ini alone does NOT enable NR. The Bridge Submit opcode 6 queues a
@@ -209,11 +207,17 @@ inline int parse_reshade_nr_eval_count(const std::string& log_text) {
   return n;
 }
 
-// Measured on the multipass build: it never reads NRToggleKey (its ReShade sections
-// [RENODX-DLSS]* carry no key binding) and an injected edge produces no log line, no state
-// change and no frame-cost change — NR runs for the whole session there. Only the stable
-// build toggles by key ("NR toggled ON via 0x7C" in ReShade.log).
-inline bool renodx_stack_supports_nr_hotkey(bool multipass_stack) { return !multipass_stack; }
+// addons-multipass runs Krish 8.5, which imports GetAsyncKeyState; the Bridge patches that
+// IAT entry, so the opcode-6 edge toggles NR on every stack ("NR toggled ON via 0x7C").
+inline bool renodx_stack_supports_nr_hotkey(bool /*multipass_stack*/) { return true; }
+
+// runtime_on may only follow want_on after the Bridge accepted the pulse.
+inline bool nr_runtime_may_flip_without_pulse(bool pulse_ok) { return pulse_ok; }
+
+// Runtime after a pulse window: the last "NR toggled" line wins; no line = unchanged.
+inline bool nr_runtime_after_log(int logged_toggle, bool runtime_before) {
+  return logged_toggle >= 0 ? logged_toggle == 1 : runtime_before;
+}
 
 // FG HUD: only claim ON if LS process is alive; OFF only if none remain.
 inline bool fg_overlay_on_confirmed(bool want_on, unsigned running_ls) {
@@ -243,26 +247,15 @@ int consume_reshade_nr_evals(const std::string& exe_dir, std::streamoff& cursor)
 
 NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_on, double now_ms);
 
-// Fake NRToggleKey edge. Krish: Bridge GetAsyncKeyState inject. Multipass: real VK_F13 SendInput
-// (addon has NRToggleKey but does not import GetAsyncKeyState for Bridge).
+// Real VK_F13 SendInput — needs focus. NR toggles go through the Bridge pulse instead.
 bool inject_nr_toggle_key(int vk = kRenodxNrInjectVk);
 
 // Apply want_on: sync NeuralUplift + Bridge pulse if runtime differs.
-// Multipass: SendInput NRToggleKey instead of Bridge.
+// runtime_on changes only when ReShade.log shows "NR toggled ON/OFF" after the pulse.
 // If async_out != nullptr: pulse without blocking and fill pending (HUD updates on poll).
 // If async_out == nullptr: wait for ReShade.log line (lobby/boot; may hitch briefly).
 bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on,
                                   bool feed_on = true, NrConfirmPending* async_out = nullptr,
                                   double now_ms = 0);
-
-// Lobby live preview: sync visual preset + apply NR (reload cycle when already ON).
-bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
-                                    bool* runtime_on, int pass_count = 1,
-                                    const NrAdvancedLook* look = nullptr);
-
-// Sync Pass Count + look defaults + reload NR so RenoDX re-reads.
-bool apply_lobby_nr_pass_count_live(const std::string& exe_dir, int pass_count, bool want_nr,
-                                    bool* runtime_on, int visual_preset = 0,
-                                    const NrAdvancedLook* look = nullptr);
 
 }  // namespace nexuscap

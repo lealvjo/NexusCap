@@ -67,7 +67,11 @@ std::string read_file_from_off(const std::string& path, std::streamoff start) {
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+// Krish samples GetAsyncKeyState once per Present; back-to-back edges merge into one.
+constexpr DWORD kNrPulseGapMs = 120;
+
 // Blocking wait — lobby/boot only. Session uses async poll (no Present freeze).
+// Returns false when no "NR toggled" line shows up: *out_on keeps its value.
 bool confirm_nr_after_pulse_blocking(const std::string& exe_dir, bool want_on, std::streamoff log_size_before,
                                      bool* out_on, uint32_t timeout_ms) {
   if (!out_on) return false;
@@ -79,19 +83,17 @@ bool confirm_nr_after_pulse_blocking(const std::string& exe_dir, bool want_on, s
     for (;;) {
       const int logged_new = parse_reshade_nr_last_toggled(read_file_from_off(log_path, from));
       if (logged_new >= 0) {
-        *out_on = logged_new == 1;
+        *out_on = nr_runtime_after_log(logged_new, *out_on);
         if (*out_on != want_on && recover < 1 && resolve_bridge()) {
           ++recover;
           from = file_size_off(log_path);
+          Sleep(kNrPulseGapMs);
           const Dlss5BridgeCommand cmd = make_nr_pulse_command();
           if (bridge_command_is_valid_nr_pulse(cmd) && api().submit(&cmd) != 0) break;
         }
         return true;
       }
-      if (GetTickCount() - t0 >= timeout_ms) {
-        *out_on = want_on;
-        return true;  // pulse already sent — prefer want over stuck HUD
-      }
+      if (GetTickCount() - t0 >= timeout_ms) return false;
       Sleep(8);
     }
   }
@@ -170,7 +172,7 @@ NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_o
       if (!dlss5_bridge_ready_for_nr()) return NrConfirmPoll::Pending;
       ++pending.recover_pulses;
       pending.log_size_before = file_size_off(pending.exe_dir + "\\ReShade.log");
-      Sleep(120);  // RenoDX needs a beat between Bridge edges
+      Sleep(kNrPulseGapMs);
       if (dlss5_bridge_pulse_nr()) {
         pending.deadline_ms = now_ms + 2500.0;
         return NrConfirmPoll::Pending;
@@ -180,11 +182,10 @@ NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_o
     return NrConfirmPoll::Confirmed;
   }
   if (now_ms >= pending.deadline_ms) {
-    // Prefer last toggle in this pulse window over wishful want_on.
     const int last = peek_reshade_nr_toggled_since(pending.exe_dir, pending.log_origin);
-    if (last >= 0) *runtime_on = last == 1;
-    else *runtime_on = pending.want_on;
     pending.active = false;
+    if (last < 0) return NrConfirmPoll::Failed;
+    *runtime_on = nr_runtime_after_log(last, *runtime_on);
     return NrConfirmPoll::Confirmed;
   }
   return NrConfirmPoll::Pending;
@@ -193,46 +194,29 @@ NrConfirmPoll poll_nr_confirm_pending(NrConfirmPending& pending, bool* runtime_o
 bool apply_neural_rendering_state(const std::string& exe_dir, bool want_on, bool* runtime_on, bool feed_on,
                                   NrConfirmPending* async_out, double now_ms) {
   if (!runtime_on) return false;
+  if (async_out) async_out->active = false;
   const NeuralRuntimePlan plan = plan_neural_runtime(want_on, *runtime_on);
   const bool files_ok = sync_neural_rendering_enabled_files(exe_dir, plan.sync_files_enabled, feed_on);
-  if (plan.need_bridge_pulse) {
-    // Multipass build has no NRToggleKey: injecting an edge changed nothing (no RenoDX log
-    // line, no frame-cost change) while the HUD went "off" — NR is on for the whole session.
-    *runtime_on = true;
-    if (async_out) async_out->active = false;
-    (void)now_ms;
+  if (!plan.need_bridge_pulse) return files_ok;
+  const std::string log_path = exe_dir + "\\ReShade.log";
+  const std::streamoff log_sz = file_size_off(log_path);
+  if (!nr_runtime_may_flip_without_pulse(dlss5_bridge_pulse_nr())) return false;
+  if (async_out) {
+    async_out->active = true;
+    async_out->exe_dir = exe_dir;
+    async_out->log_size_before = log_sz;
+    async_out->log_origin = log_sz;
+    async_out->want_on = plan.resulting_runtime_on;
+    async_out->deadline_ms = now_ms + 2000.0;
+    async_out->recover_pulses = 0;
     return files_ok;
   }
-  *runtime_on = plan.resulting_runtime_on;
-  return files_ok;
-}
-
-bool apply_lobby_renodx_preset_live(const std::string& exe_dir, int visual_preset, bool want_nr,
-                                    bool* runtime_on, int pass_count, const NrAdvancedLook* look) {
-  if (!runtime_on) return false;
-  const bool files_ok = sync_renodx_visual_preset_files(exe_dir, visual_preset, pass_count, look);
-  if (want_nr && *runtime_on) {
-    if (!apply_neural_rendering_state(exe_dir, false, runtime_on)) return false;
-    if (!apply_neural_rendering_state(exe_dir, true, runtime_on)) return false;
-    *runtime_on = true;
-    return files_ok;
+  bool actual_on = *runtime_on;
+  if (!confirm_nr_after_pulse_blocking(exe_dir, plan.resulting_runtime_on, log_sz, &actual_on, 800)) {
+    return false;
   }
-  if (!apply_neural_rendering_state(exe_dir, want_nr, runtime_on)) return files_ok && !want_nr;
-  return files_ok;
-}
-
-bool apply_lobby_nr_pass_count_live(const std::string& exe_dir, int pass_count, bool want_nr,
-                                    bool* runtime_on, int visual_preset, const NrAdvancedLook* look) {
-  if (!runtime_on) return false;
-  const bool files_ok = sync_nr_pass_count_files(exe_dir, pass_count, visual_preset, look);
-  if (want_nr && *runtime_on) {
-    if (!apply_neural_rendering_state(exe_dir, false, runtime_on)) return false;
-    if (!apply_neural_rendering_state(exe_dir, true, runtime_on)) return false;
-    *runtime_on = true;
-    return files_ok;
-  }
-  if (!apply_neural_rendering_state(exe_dir, want_nr, runtime_on)) return files_ok && !want_nr;
-  return files_ok;
+  *runtime_on = actual_on;
+  return files_ok && actual_on == want_on;
 }
 
 }  // namespace nexuscap

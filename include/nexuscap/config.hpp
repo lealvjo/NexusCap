@@ -585,8 +585,8 @@ inline const char* cfg_tab_presets() { return "Presets"; }
 inline const char* cfg_tab_keys() { return "Atalhos"; }
 
 // O que a mudança feita no CFG da sessão custa.
-// 6.0: o 8.5 só lê o X no init — o Present da janela visível é o motor.
-// Troca de X relança o NexusCap (um GPU). O aviso GDI segura a tela; sem segunda janela.
+// X / cena / look / NR são Live (INI + pulse do Bridge). Só a work_resolution do Feed relança;
+// o aviso GDI segura a tela; sem segunda janela.
 enum class SessionCfgApply {
   Live,
   RecycleWorker,
@@ -597,17 +597,16 @@ enum class SessionCfgApply {
   RelaunchNr,
 };
 
-// Preset e NR no 1x tambem precisam do filho novo: o pulso OFF→ON invertia a imagem vs a UI.
-inline bool session_cfg_preset_applies_live(bool /*multipass_stack*/) { return false; }
+// Cena/look: INI + ciclo OFF→ON do Bridge no mesmo PID (runtime só muda com o log do Krish).
+inline bool session_cfg_preset_applies_live(bool /*multipass_stack*/) { return true; }
 
 inline SessionCfgApply plan_session_cfg_preset_apply(bool /*multipass_stack*/) {
-  return SessionCfgApply::RecycleWorker;
+  return SessionCfgApply::Live;
 }
 
 inline SessionCfgApply plan_session_cfg_apply(bool renodx_stack, int pass_before, int pass_after,
                                               int scale_loaded, int scale_after) {
   if (nr_pass_count_change_needs_relaunch(pass_before, pass_after)) return SessionCfgApply::RecycleWorker;
-  // Mesmo motor, mas o multipass não relê o PassCount sem processo novo do filho.
   if (!nr_pass_count_change_applies_live(pass_before, pass_after)) {
     return SessionCfgApply::RecycleWorker;
   }
@@ -646,14 +645,13 @@ inline bool lobby_consume_open_cfg(bool& open_lobby_cfg) {
   return v;
 }
 
-// Delete / Ctrl+M ligam e desligam o NR em qualquer Pass Count. Sem pulso: grava e reinicia.
+// Delete / Ctrl+M ligam e desligam o NR em qualquer Pass Count: um pulse do Bridge, mesmo PID.
 inline bool session_cfg_nr_toggle_allowed(bool renodx_stack, bool /*multipass_stack*/) {
   return renodx_stack;
 }
 
-inline SessionCfgApply plan_session_cfg_nr_apply(bool renodx_stack, bool multipass_stack) {
-  if (!session_cfg_nr_toggle_allowed(renodx_stack, multipass_stack)) return SessionCfgApply::Live;
-  return SessionCfgApply::RecycleWorker;
+inline SessionCfgApply plan_session_cfg_nr_apply(bool /*renodx_stack*/, bool /*multipass_stack*/) {
+  return SessionCfgApply::Live;
 }
 
 // Aviso na troca de X: a imagem fica; o motor novo le o INI.
@@ -807,6 +805,12 @@ inline std::string session_notice_preset_apply(int /*from_preset*/, int to_prese
 }
 inline std::string session_notice_nr_apply(bool want_on) {
   return std::string("Aplicando DLSS 5: ") + (want_on ? "ON" : "OFF");
+}
+inline std::string session_notice_nr_bridge_failed() {
+  return "DLSS 5 sem resposta do Bridge — veja o ReShade.log";
+}
+inline std::string session_notice_nr_unconfirmed() {
+  return "DLSS 5 sem \"NR toggled\" no ReShade.log — estado mantido";
 }
 inline std::string session_notice_nr_hotkey_unavailable(int pass_count) {
   return std::string("Neural Rendering sempre ON em ") + nr_pass_count_label(pass_count) +

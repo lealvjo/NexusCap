@@ -284,8 +284,24 @@ RuntimeHealth check_runtime_health(const std::string& exe_dir) {
                  file_exists_utf8(base + "addons-multipass\\dlss5-feed.addon64") ||
                  file_exists_utf8(worker + "addons-multipass\\dlss5-feed.addon64") ||
                  file_exists_utf8(worker + "dlss5-feed.addon64");
+    // Krish / Feed resolve NGX "next to the addon or the game's executable".
+    auto stack_or_exe = [&](const char* name) {
+      return file_exists_utf8(base + "addons-multipass\\" + name) || file_exists_utf8(base + name);
+    };
+    h.has_nr_runtime = stack_or_exe("nvngx_dlssnr.dll");
+    h.has_dlss_runtime = stack_or_exe("nvngx_dlss.dll");
+    h.has_bridge = stack_or_exe("dlss5-bridge.addon64");
   }
   return h;
+}
+
+bool reshade_dxgi_loaded_in_process(const std::string& exe_dir) {
+  HMODULE mod = GetModuleHandleW(L"dxgi.dll");
+  if (!mod) return false;
+  wchar_t path[MAX_PATH]{};
+  const DWORD n = GetModuleFileNameW(mod, path, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return false;
+  return module_path_is_reshade_dxgi(wide_to_utf8(path), exe_dir);
 }
 
 bool open_app_logs_folder() {

@@ -624,13 +624,8 @@ inline void format_dlss5_stack_hud_line(char* out, size_t out_n, bool nr_on, boo
 // Troca de motor (addon diferente). Com um motor só, nunca acontece.
 inline bool nr_pass_count_change_needs_relaunch(int /*before*/, int /*after*/) { return false; }
 
-// O addon multipass lê DirectNeuralRenderingPassCount só no init e não aceita o ciclo OFF→ON
-// do NR (ReShade.log: "nao importa USER32!GetAsyncKeyState ... alternancia do NR indisponivel").
-// Medido: com o ini já em 3 o runtime seguia em "NR PASS TEST 1: passes=1". Logo 1,5x↔2x↔3x
-// também precisa de processo novo — só escrever o ini não muda nada na imagem.
-inline bool nr_pass_count_change_applies_live(int before, int after) {
-  return clamp_nr_pass_count(before) == clamp_nr_pass_count(after);
-}
+// Krish 8.5 relê NRPasses no ciclo OFF→ON do pulse do Bridge: todo radio aplica no mesmo PID.
+inline bool nr_pass_count_change_applies_live(int /*before*/, int /*after*/) { return true; }
 
 enum class RenodxAddonSyncResult {
   OkSame = 0,
@@ -1425,6 +1420,9 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
   text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRDiffuseWhiteNits=", nits);
   text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "NRUICorrection=", ui_corr);
   text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "ConfigVersion=", 8);
+  // 2 = NGX only: Krish must not patch sl.* (Feed owns Streamline).
+  text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5", "EnableHooks=", 2);
+  text = apply_keyed_int_all(std::move(text), "EnableHooks=", 2);
   text = apply_keyed_int_all(std::move(text), "NRSourceEncoding=", encoding);
   text = apply_keyed_int_all(std::move(text), "NRHookPoint=", hook);
   text = apply_keyed_int_all(std::move(text), "NRDiffuseWhiteNits=", nits);
@@ -1446,7 +1444,7 @@ inline std::string apply_reshade_multipass_look_defaults(std::string text, int p
     text = upsert_keyed_int_in_section(std::move(text), "RenoDX.DLSS5",
                                       "DirectNeuralRenderingStyle=", style);
   }
-  // Multipass: Delete is the real NRToggleKey (Bridge cannot inject GetAsyncKeyState).
+  // User key stays Delete; the Bridge injects F13 (kRenodxNrInjectVk) so there is no double toggle.
   text = apply_keyed_int(std::move(text), "NRToggleKey=", 0x2E);
   text = sanitize_multipass_home_windows(std::move(text));
   return text;
@@ -1585,8 +1583,7 @@ inline int parse_reshade_nr_toggle_key(const std::string& text, int fallback = 0
   return parse_keyed_int(text, "NRToggleKey=", fallback);
 }
 
-// dlss5-feed.cfg enabled=. No lobby o feed fica armado com RenoDX (não há restart).
-// Na sessão o Delete reinicia: feed segue o NeuralUplift — senão o DLSS5 continua a avaliar.
+// dlss5-feed.cfg enabled=. Com enabled=0 o Feed não cria evaluate e o Krish fica sem Feature 18.
 inline std::string apply_feed_enabled(std::string text, bool enabled) {
   return apply_keyed_int(std::move(text), "enabled=", enabled ? 1 : 0);
 }
@@ -1663,14 +1660,15 @@ inline bool feed_scale_change_needs_relaunch(bool renodx_stack, int loaded_scale
 // Gravar o HDMI no disco nao descarrega o addon — precisa processo novo.
 inline bool perf_test_return_needs_fresh_process(bool was_perf_test) { return was_perf_test; }
 
-// O Feed e o RenoDX só leem NeuralUplift, enabled e a cadeia MGF no nascimento do processo.
-// O lobby grava isso desligado. Iniciar no mesmo processo deixa o CFG e o overlay em ON
-// com a imagem ainda OFF — o Delete que religa só funciona porque reinicia.
-inline bool lobby_iniciar_needs_session_relaunch(bool preview_enabled, bool preview_cfg_live,
-                                                bool enhance_renodx) {
-  (void)preview_enabled;
-  (void)preview_cfg_live;
-  return enhance_renodx;
+// NR liga pelo pulse do Bridge no mesmo PID. Só duas coisas pedem processo novo no Iniciar:
+// o ReShade não está no PID (Krish nunca anexa) ou o Feed travou outra work_resolution.
+inline bool lobby_iniciar_needs_session_relaunch(bool enhance_renodx, bool reshade_in_process,
+                                                int locked_feed_work_resolution, int ui_scale_percent,
+                                                int pass_count = 1, int capture_w = 0, int capture_h = 0) {
+  if (!enhance_renodx) return false;
+  if (!reshade_in_process) return true;
+  return feed_work_resolution_for_session(ui_scale_percent, pass_count, capture_w, capture_h) !=
+         clamp_scale_percent(locked_feed_work_resolution);
 }
 
 // Menus must never inherit the session scale — the Feed would blur the whole lobby.
@@ -1684,15 +1682,56 @@ inline int feed_work_resolution_at_boot(bool lobby_first, int ui_scale_percent, 
 }
 
 // Quick health for lobby first-run / Iniciar (exe_dir = folder next to NexusCap.exe).
+// Krish looks for nvngx_dlssnr.dll next to the addon or the exe: without it there is no
+// Feature 18 (no face/skin), only the look shader.
 struct RuntimeHealth {
   bool writable = false;
   bool has_dxgi = false;
   bool has_renodx = false;
   bool has_feed = false;
-  bool renodx_complete() const { return has_dxgi && has_renodx && has_feed; }
+  bool has_nr_runtime = false;    // nvngx_dlssnr.dll — Feature 18
+  bool has_bridge = false;        // dlss5-bridge.addon64 — NR pulse
+  bool has_dlss_runtime = false;  // nvngx_dlss.dll — Feed Feature 1
+  bool renodx_complete() const { return has_dxgi && has_renodx && has_feed && has_nr_runtime && has_bridge; }
 };
 
 RuntimeHealth check_runtime_health(const std::string& exe_dir);
+
+// "dxgi.dll + addon + feed + nvngx_dlssnr + bridge" — names what the toast says is missing.
+inline std::string runtime_health_missing_list(const RuntimeHealth& h) {
+  std::string out;
+  auto add = [&](bool ok, const char* name) {
+    if (ok) return;
+    if (!out.empty()) out += ", ";
+    out += name;
+  };
+  add(h.has_dxgi, "dxgi.dll");
+  add(h.has_renodx, "renodx-dlss5.addon64");
+  add(h.has_feed, "dlss5-feed.addon64");
+  add(h.has_nr_runtime, "nvngx_dlssnr.dll");
+  add(h.has_bridge, "dlss5-bridge.addon64");
+  add(h.has_dlss_runtime, "nvngx_dlss.dll");
+  return out;
+}
+
+// True when loaded_dxgi_path is exe_dir\dxgi.dll (ReShade), not System32's.
+inline bool module_path_is_reshade_dxgi(const std::string& loaded_dxgi_path, const std::string& exe_dir) {
+  const std::string want = reshade_dxgi_path_in(exe_dir);
+  if (want.empty() || loaded_dxgi_path.size() != want.size()) return false;
+  for (size_t i = 0; i < want.size(); ++i) {
+    char a = loaded_dxgi_path[i];
+    char b = want[i];
+    if (a == '/') a = '\\';
+    if (b == '/') b = '\\';
+    if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+    if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+    if (a != b) return false;
+  }
+  return true;
+}
+
+// ReShade dxgi.dll is mapped in this PID (Krish/Feed/Bridge can attach on the next Present).
+bool reshade_dxgi_loaded_in_process(const std::string& exe_dir);
 bool open_app_logs_folder();  // ShellExecute logs dir
 
 // Back to 100% so the next lobby process presents menus at full resolution.
@@ -1796,7 +1835,8 @@ inline bool sync_persisted_session_files(const std::string& exe_dir, const Persi
                                  &s.nr_advanced[clamp_nr_pass_count(s.nr_pass_count)]);
   (void)sync_renodx_visual_preset_files(exe_dir, s.renodx_preset, s.nr_pass_count,
                                         &s.nr_advanced[clamp_nr_pass_count(s.nr_pass_count)]);
-  (void)sync_neural_rendering_enabled_files(exe_dir, want_nr, want_nr);
+  // Feed armado com o RenoDX mesmo com NR off: o Delete liga a Feature 18 no mesmo PID.
+  (void)sync_neural_rendering_enabled_files(exe_dir, want_nr, feed_pipeline_on_for_renodx(s.enhance_renodx));
   (void)sync_feed_work_resolution_in_dir(
       exe_dir, feed_work_resolution_at_boot(false, s.scale_percent, s.nr_pass_count, s.width, s.height),
       s.nr_pass_count);

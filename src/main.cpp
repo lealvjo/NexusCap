@@ -11,6 +11,7 @@
 #include "nexuscap/enhance.hpp"
 #include "nexuscap/frametime.hpp"
 #include "nexuscap/hitch.hpp"
+#include "nexuscap/krish_live.hpp"
 #include "nexuscap/live_mode.hpp"
 #include "nexuscap/lobby.hpp"
 #include "nexuscap/lossless_fg.hpp"
@@ -273,13 +274,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         cfg.nr_runtime_on = false;
         g_nr_runtime_on = false;
         g_nr_boot_retries = 0;
-      } else if (want_nr && !g_nr_runtime_on) {
-        // Fresh session + NeuralUplift=1: RenoDX boots NR ON. Skip Bridge pulse.
-        g_nr_boot_retries = 0;
-        g_nr_runtime_on = true;
-        cfg.nr_runtime_on = true;
       } else {
-        g_nr_boot_retries = boot.need_bridge_pulse ? 180 : 0;  // e.g. turn OFF after lobby
+        // Krish 8.5 attaches enabled=OFF even with NeuralUplift=1: only the Bridge pulse
+        // (confirmed by "NR toggled ON" in ReShade.log) turns the runtime on.
+        // Frames to wait for the Bridge to come up (ReShade compiles effects on first Present).
+        g_nr_boot_retries = boot.need_bridge_pulse ? 600 : 0;
       }
     }
 
@@ -1132,27 +1131,29 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         bug_exc("nr_toggle", "blocked: RenoDX not loaded this session");
         session_notice.push(session_notice_nr_needs_renodx(), clock.now_ms());
       } else {
-        // Qualquer Pass Count: grava NeuralUplift e reinicia. O pulso ao vivo invertia a imagem.
+        // Same PID: one Bridge pulse; HUD flips only when ReShade.log confirms (poll below).
         wchar_t exe_path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         const fs::path exe_dir = fs::path(exe_path).parent_path();
-        const bool want_on = !g_nr_runtime_on;
-        apply_session_nr_runtime_to_config(want_on, cfg);
-        g_nr_runtime_on = want_on;
-        cfg.nr_runtime_on = want_on;
-        overlay.renodx_on = want_on;
-        info.dlss_enabled = want_on;
-        (void)sync_neural_rendering_enabled_files(exe_dir.string(), want_on, /*feed_on=*/want_on);
-        cfg_restart_kind = plan_session_cfg_nr_apply(true, true);
-        cfg_restart_pending = true;
-        cfg_restart_until = now_nr;
-        write_restart_toast(session_notice_nr_apply(want_on));
-        std::printf("neural rendering %s (Delete→reinicio) — Frame Gen nao muda\n", want_on ? "ON" : "OFF");
+        const NeuralRuntimePlan toggle = plan_nr_user_toggle(g_nr_runtime_on);
+        apply_session_nr_runtime_to_config(toggle.resulting_runtime_on, cfg);
+        if (apply_neural_rendering_state(exe_dir.string(), toggle.resulting_runtime_on, &g_nr_runtime_on,
+                                         /*feed_on=*/true, &g_nr_confirm, now_nr)) {
+          std::printf("neural rendering %s pedido (Bridge pulse) — Frame Gen nao muda\n",
+                      toggle.resulting_runtime_on ? "ON" : "OFF");
+        } else {
+          apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
+          bug_exc("nr_toggle", "bridge pulse failed");
+          session_notice.push(session_notice_nr_bridge_failed(), clock.now_ms());
+          std::printf("neural rendering: Bridge pulse falhou — runtime segue %s\n",
+                      g_nr_runtime_on ? "ON" : "OFF");
+        }
       }
     }
 
     if (const int step = g_pass_step.exchange(0)) {
-      if (!cfg_restart_pending && !cfg.perf_test && cfg.enhance == EnhanceBackend::Renodx) {
+      if (!cfg_restart_pending && !g_nr_confirm.active && !cfg.perf_test &&
+          cfg.enhance == EnhanceBackend::Renodx) {
         const int before = clamp_nr_pass_count(cfg.nr_pass_count);
         const int after = step_nr_pass_count(before, step);
         wchar_t exe_path[MAX_PATH]{};
@@ -1163,22 +1164,26 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         } else {
           const int pass = clamp_nr_pass_count(after);
           cfg.nr_pass_count = pass;
-          (void)sync_nr_pass_count_files(exe_dir, pass, cfg.renodx_preset, &cfg.nr_advanced[pass]);
-          (void)sync_feed_work_resolution_in_dir(
-              exe_dir,
-              feed_work_resolution_for_session(cfg.scale_percent, pass, info.width, info.height), pass);
-          cfg_restart_kind =
-              plan_session_cfg_apply(true, before, after, feed_locked_scale, cfg.scale_percent);
-          cfg_restart_pending = true;
-          cfg_restart_until = clock.now_ms();
-          write_restart_toast(session_notice_nr_pass_count_apply(before, after));
+          (void)apply_krish_session(exe_dir, KrishLiveKind::Pass, want_neural_rendering(true, cfg.neural_rendering),
+                                    cfg.renodx_preset, pass, &cfg.nr_advanced[pass], &g_nr_runtime_on);
+          cfg.nr_runtime_on = g_nr_runtime_on;
+          {
+            PersistedSettings ps = default_settings();
+            std::string serr;
+            load_settings(ps, settings_default_path(), serr);
+            ps.nr_pass_count = pass;
+            save_settings(ps, settings_default_path(), serr);
+          }
           overlay.nr_pass_count = pass;
+          overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, pass);
+          session_notice.push(std::string("Pass Count: ") + nr_pass_count_label(pass), clock.now_ms());
         }
       }
     }
 
     if (const int step = g_look_step.exchange(0)) {
-      if (!cfg_restart_pending && !cfg.perf_test && cfg.enhance == EnhanceBackend::Renodx) {
+      if (!cfg_restart_pending && !g_nr_confirm.active && !cfg.perf_test &&
+          cfg.enhance == EnhanceBackend::Renodx) {
         const int before = clamp_renodx_visual_preset(cfg.renodx_preset);
         const int after = step_renodx_visual_preset(before, step);
         if (after != before) {
@@ -1190,8 +1195,10 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           } else {
             const int pass = clamp_nr_pass_count(cfg.nr_pass_count);
             cfg.renodx_preset = after;
-            (void)sync_nr_pass_count_files(exe_dir, pass, after, &cfg.nr_advanced[pass]);
-            (void)sync_renodx_visual_preset_files(exe_dir, after, pass, &cfg.nr_advanced[pass]);
+            (void)apply_krish_session(exe_dir, KrishLiveKind::Preset,
+                                      want_neural_rendering(true, cfg.neural_rendering), after, pass,
+                                      &cfg.nr_advanced[pass], &g_nr_runtime_on);
+            cfg.nr_runtime_on = g_nr_runtime_on;
             if (!cfg.perf_test) {
               PersistedSettings ps = default_settings();
               std::string serr;
@@ -1200,10 +1207,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
               ps.nr_pass_count = pass;
               save_settings(ps, settings_default_path(), serr);
             }
-            cfg_restart_kind = plan_session_cfg_preset_apply(true);
-            cfg_restart_pending = true;
-            cfg_restart_until = clock.now_ms();
-            write_restart_toast(session_notice_preset_apply(before, after, pass));
+            session_notice.push(session_notice_preset_apply(before, after, pass), clock.now_ms());
             overlay.renodx_preset = renodx_visual_preset_name(after, pass);
           }
         }
@@ -1220,6 +1224,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         info.dlss_enabled = g_nr_runtime_on;
         std::printf("neural rendering %s (confirm) — Frame Gen nao muda\n",
                     g_nr_runtime_on ? "ON" : "OFF");
+      } else if (polled == NrConfirmPoll::Failed) {
+        cfg.nr_runtime_on = g_nr_runtime_on;
+        apply_session_nr_runtime_to_config(g_nr_runtime_on, cfg);
+        session_notice.push(session_notice_nr_unconfirmed(), clock.now_ms());
+        std::printf("neural rendering: sem 'NR toggled' no ReShade.log — runtime segue %s\n",
+                    g_nr_runtime_on ? "ON" : "OFF");
       }
     }
 
@@ -1234,8 +1244,12 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         wchar_t exe_path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         const double now_boot = clock.now_ms();
-        if (apply_neural_rendering_state(fs::path(exe_path).parent_path().string(), want_nr, &g_nr_runtime_on,
-                                         /*feed_on=*/true, &g_nr_confirm, now_boot)) {
+        const bool applied = apply_neural_rendering_state(fs::path(exe_path).parent_path().string(), want_nr,
+                                                          &g_nr_runtime_on, /*feed_on=*/true, &g_nr_confirm,
+                                                          now_boot);
+        // A submitted pulse is never repeated: a second edge would toggle Krish back.
+        if (g_nr_confirm.active) g_nr_boot_retries = 0;
+        if (applied) {
           g_nr_boot_retries = 0;
           if (!g_nr_confirm.active) {
             overlay.renodx_on = g_nr_runtime_on;
@@ -1890,10 +1904,11 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         } else {
           const int preset_before = clamp_renodx_visual_preset(cfg.renodx_preset);
           cfg.renodx_preset = clamp_renodx_visual_preset(ui.renodx_preset);
-          (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset,
-                                         &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)]);
-          (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset, cfg.nr_pass_count,
-                                                &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)]);
+          const int pass = clamp_nr_pass_count(cfg.nr_pass_count);
+          (void)apply_krish_session(exe_dir_cfg, KrishLiveKind::Preset,
+                                    want_neural_rendering(true, cfg.neural_rendering), cfg.renodx_preset, pass,
+                                    &cfg.nr_advanced[pass], &g_nr_runtime_on);
+          cfg.nr_runtime_on = g_nr_runtime_on;
           if (!cfg.perf_test) {
             PersistedSettings ps = default_settings();
             std::string serr;
@@ -1902,10 +1917,8 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
             ps.nr_pass_count = cfg.nr_pass_count;
             save_settings(ps, settings_default_path(), serr);
           }
-          cfg_restart_kind = plan_session_cfg_preset_apply(true);
-          cfg_restart_pending = true;
-          cfg_restart_until = now;
-          write_restart_toast(session_notice_preset_apply(preset_before, cfg.renodx_preset, cfg.nr_pass_count));
+          session_notice.push(session_notice_preset_apply(preset_before, cfg.renodx_preset, cfg.nr_pass_count),
+                              now);
           overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
         }
       }
@@ -1925,7 +1938,7 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
           session_notice.push(renodx_write_denied_notice(), now);
           ui.nr_pass_count = clamp_nr_pass_count(cfg.nr_pass_count);
         } else if (plan != SessionCfgApply::Live) {
-          // Motor novo ou PassCount novo: o addon só lê isso no init, então processo novo.
+          // Só a escala do Feed (travada no 1.º swapchain) chega aqui: processo novo.
           cfg.nr_pass_count = clamp_nr_pass_count(ui.nr_pass_count);
           (void)sync_nr_pass_count_files(exe_dir_cfg, cfg.nr_pass_count, cfg.renodx_preset,
                                          &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)]);
@@ -1951,11 +1964,17 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
                                                                          cfg.nr_pass_count));
         } else {
           cfg.nr_pass_count = clamp_nr_pass_count(ui.nr_pass_count);
-          const bool want = want_neural_rendering(true, cfg.neural_rendering);
-          apply_lobby_nr_pass_count_live(exe_dir_cfg, cfg.nr_pass_count, want, &g_nr_runtime_on,
-                                         cfg.renodx_preset,
-                                         &cfg.nr_advanced[clamp_nr_pass_count(cfg.nr_pass_count)]);
+          (void)apply_krish_session(exe_dir_cfg, KrishLiveKind::Pass,
+                                    want_neural_rendering(true, cfg.neural_rendering), cfg.renodx_preset,
+                                    cfg.nr_pass_count, &cfg.nr_advanced[cfg.nr_pass_count], &g_nr_runtime_on);
           cfg.nr_runtime_on = g_nr_runtime_on;
+          if (!cfg.perf_test) {
+            PersistedSettings ps = default_settings();
+            std::string serr;
+            load_settings(ps, settings_default_path(), serr);
+            ps.nr_pass_count = cfg.nr_pass_count;
+            save_settings(ps, settings_default_path(), serr);
+          }
           overlay.nr_pass_count = cfg.nr_pass_count;
           overlay.renodx_preset = renodx_visual_preset_name(cfg.renodx_preset, cfg.nr_pass_count);
           session_notice.push(std::string("Pass Count: ") + nr_pass_count_label(cfg.nr_pass_count), now);
@@ -2002,8 +2021,16 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
         } else {
           if (act.nr_advanced_apply) copy_nr_advanced(cfg.nr_advanced, ui.nr_advanced);
           const int pass = clamp_nr_pass_count(cfg.nr_pass_count);
-          (void)sync_nr_pass_count_files(exe_dir_cfg, pass, cfg.renodx_preset, &cfg.nr_advanced[pass]);
-          (void)sync_renodx_visual_preset_files(exe_dir_cfg, cfg.renodx_preset, pass, &cfg.nr_advanced[pass]);
+          if (cfg_restart_pending) {
+            (void)apply_krish_session(exe_dir_cfg, KrishLiveKind::Look, false, cfg.renodx_preset, pass,
+                                      &cfg.nr_advanced[pass]);
+          } else {
+            (void)apply_krish_session(exe_dir_cfg, KrishLiveKind::Look,
+                                      want_neural_rendering(true, cfg.neural_rendering), cfg.renodx_preset,
+                                      pass, &cfg.nr_advanced[pass], &g_nr_runtime_on);
+            cfg.nr_runtime_on = g_nr_runtime_on;
+            session_notice.push(std::string("Configs avancadas: ") + nr_pass_count_label(pass), now);
+          }
           if (!cfg.perf_test) {
             PersistedSettings ps = default_settings();
             std::string serr;
@@ -2012,16 +2039,6 @@ int run_app(HINSTANCE hi, nexuscap::AppConfig& cfg) {
             ps.nr_pass_count = pass;
             ps.renodx_preset = cfg.renodx_preset;
             save_settings(ps, settings_default_path(), serr);
-          }
-          if (!cfg_restart_pending) {
-            cfg_restart_kind = plan_session_cfg_preset_apply(true);
-            cfg_restart_pending = true;
-            cfg_restart_until = now;
-            if (act.nr_advanced_apply && !act.close_requested) {
-              cfg.open_session_cfg = true;
-              cfg.open_nr_advanced = true;
-            }
-            write_restart_toast(std::string("Configs avancadas: ") + nr_pass_count_label(pass));
           }
         }
       }
@@ -2569,7 +2586,7 @@ int main(int argc, char** argv) {
   }
   (void)nexuscap::prepare_renodx_runtime_dirs(base.string());
   if (g_restart_notice.visible()) g_restart_notice.pump();
-  // Park/restore happens after settings — o lobby não carrega o ReShade.
+  // Park/restore happens after settings — RenoDX on decides it (lobby included).
   if (!fs::path(cfg.log_dir).is_absolute() && cfg.log_dir == "logs") {
     cfg.log_dir = (base / cfg.log_dir).string();
   }
@@ -2623,10 +2640,13 @@ int main(int argc, char** argv) {
     const bool lobby_first = cfg.show_lobby && !cfg.autostart && !cfg.perf_test;
     {
       const bool want_nr = cfg.perf_test ? true : (settings.enhance_renodx && settings.neural_rendering);
-      (void)nexuscap::sync_neural_rendering_enabled_files(base.string(), want_nr, want_nr);
+      // Feed + chain follow the stack, not the NR flag: Delete turns NR on in this PID.
+      const bool renodx_stack = cfg.perf_test || settings.enhance_renodx;
+      (void)nexuscap::sync_neural_rendering_enabled_files(base.string(), want_nr,
+                                                          nexuscap::feed_pipeline_on_for_renodx(renodx_stack));
       // HDMI --autostart must mount the same MGF chain as lobby Iniciar. Leaving
       // Techniques= empty (lobby CFG live OFF) boots passthrough with HUD nr=on.
-      (void)nexuscap::sync_mgf_techniques_for_phase(base.string(), want_nr && !lobby_first);
+      (void)nexuscap::sync_mgf_techniques_for_phase(base.string(), renodx_stack && !lobby_first);
     }
     (void)nexuscap::sync_feed_work_resolution_in_dir(
         base.string(),
@@ -2637,15 +2657,15 @@ int main(int argc, char** argv) {
   // CLI overrides persisted where explicit.
   {
     const std::string exe = base.string();
-    const bool session_dxgi = cfg.autostart || cfg.perf_test || !cfg.show_lobby;
-    const bool lobby_dxgi =
-        !session_dxgi &&
-        nexuscap::lobby_loads_reshade_dxgi(settings.ui.preview_enabled, settings.ui.preview_cfg_live,
-                                           settings.enhance_renodx);
-    if (session_dxgi || lobby_dxgi) {
-      (void)nexuscap::restore_reshade_dxgi(exe);
-    } else {
+    // RenoDX on: dxgi stays next to the exe for the whole PID (lobby too), so Iniciar and
+    // Delete/X/cena never need a relaunch just to get Krish attached.
+    const bool renodx_boot =
+        cfg.perf_test ||
+        (cfg.show_lobby ? settings.enhance_renodx : cfg.enhance == nexuscap::EnhanceBackend::Renodx);
+    if (nexuscap::boot_parks_reshade_dxgi(renodx_boot)) {
       (void)nexuscap::park_reshade_dxgi_wait(exe, 2500);
+    } else {
+      (void)nexuscap::restore_reshade_dxgi(exe);
     }
   }
   if (g_restart_notice.visible()) g_restart_notice.pump();

@@ -51,6 +51,7 @@ add_library(nexuscap_core STATIC
   src/max_perf.cpp
   src/session_report.cpp
   src/dlss5_bridge.cpp
+  src/krish_live.cpp
   src/lobby_imgui.cpp
   src/session_cfg.cpp
   src/system_metrics.cpp
@@ -160,6 +161,24 @@ if(NEXUSCAP_HAVE_STREAMLINE)
     )
   endforeach()
 endif()
+
+# RenoDX runtime (fora do git): NGX + Bridge em addons-multipass, onde Krish/Feed procuram.
+# Sem nvngx_dlssnr.dll nao ha Feature 18 (rosto) — o health do lobby acusa.
+set(NEXUSCAP_RENODX_RUNTIME_DIR "C:/Program Files/DLSS5 MGF X2" CACHE PATH
+    "Pasta com dlss5-bridge.addon64, nvngx_dlss.dll e nvngx_dlssnr.dll")
+foreach(_rt dlss5-bridge.addon64 nvngx_dlss.dll nvngx_dlssnr.dll)
+  if(EXISTS "${NEXUSCAP_RENODX_RUNTIME_DIR}/${_rt}")
+    add_custom_command(TARGET NexusCap POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:NexusCap>/addons-multipass"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${NEXUSCAP_RENODX_RUNTIME_DIR}/${_rt}"
+        "$<TARGET_FILE_DIR:NexusCap>/addons-multipass/${_rt}"
+      COMMENT "Copy ${_rt} -> addons-multipass"
+    )
+  else()
+    message(STATUS "RenoDX runtime: ${_rt} nao encontrado em ${NEXUSCAP_RENODX_RUNTIME_DIR} (rode tools/setup_renodx.ps1)")
+  endif()
+endforeach()
 
 install(TARGETS NexusCap RUNTIME DESTINATION bin)
 

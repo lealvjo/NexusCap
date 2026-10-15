@@ -525,7 +525,7 @@ bool LosslessFgController::apply_profile(std::string& err) {
     state_.status = FgStatus::Error;
     return false;
   }
-  for (int other : {70, 80, 90, 100}) {
+  for (int other : kFgFlowScaleChoices) {
     if (other == flow) continue;
     if (xml.find("LSFGFlowScale>" + std::to_string(other)) != std::string::npos) {
       err = "mira profile flow scale mismatch";

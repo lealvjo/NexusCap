@@ -74,18 +74,20 @@ inline const char* fg_queue_label(int q) {
   }
 }
 
-// Escala de fluxo: Padrao e o nosso valor (80). 70, 90 e 100 so se a pessoa escolher.
+// Escala de fluxo: Padrao e o nosso valor (80). 50 e o ponto do autor para 4K.
+// 70, 90 e 100 continuam a escolha da pessoa.
 inline constexpr int kFgFlowScaleDefault = 80;
-inline constexpr int kFgFlowScaleChoices[] = {80, 70, 90, 100};
-inline constexpr int kFgFlowScaleChoiceCount = 4;
+inline constexpr int kFgFlowScaleChoices[] = {50, 70, 80, 90, 100};
+inline constexpr int kFgFlowScaleChoiceCount = 5;
 
 inline int clamp_fg_flow_scale(int v) {
-  if (v == 70 || v == 90 || v == 100 || v == kFgFlowScaleDefault) return v;
+  if (v == 50 || v == 70 || v == 90 || v == 100 || v == kFgFlowScaleDefault) return v;
   return kFgFlowScaleDefault;
 }
 
 inline const char* fg_flow_scale_label(int v) {
   switch (clamp_fg_flow_scale(v)) {
+    case 50: return "50";
     case 70: return "70";
     case 90: return "90";
     case 100: return "100";

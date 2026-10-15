@@ -263,6 +263,7 @@ private:
   bool create_nv12_textures(int w, int h, std::string& err);
   bool create_color_rt(int w, int h, std::string& err);
   bool fill_color_from_shared_bgra(const FramePayload& frame, int work_w, int work_h, std::string& err);
+  bool fill_color_from_cpu_bgra(const FramePayload& frame, int work_w, int work_h, std::string& err);
   bool create_pipeline(std::string& err);
   bool create_blit_pipeline(std::string& err);
   bool snapshot_hold_backbuffer();

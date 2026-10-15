@@ -7,6 +7,8 @@ namespace nexuscap {
 
 struct FramePayload {
   std::vector<uint8_t> nv12;
+  // MJPEG ja decodificado. Vazio no HDMI NV12. Empacotado, sem pitch extra.
+  std::vector<uint8_t> bgra;
   // Janela: handle de textura BGRA compartilhada. 0 = quadro NV12 (HDMI).
   // O handle pertence à captura. Não fechar com CloseHandle.
   std::uintptr_t bgra_shared = 0;
@@ -26,6 +28,7 @@ public:
     if (has_) {
       // Keep dropped buffer capacity for the capture thread (ping-pong).
       recycle_.nv12.swap(slot_.nv12);
+      recycle_.bgra.swap(slot_.bgra);
       ++dropped_;
     }
     slot_ = std::move(frame);
@@ -38,6 +41,12 @@ public:
     std::lock_guard<std::mutex> lock(mu_);
     out.swap(recycle_.nv12);
     recycle_.nv12.clear();
+  }
+
+  void take_recycle_bgra(std::vector<uint8_t>& out) {
+    std::lock_guard<std::mutex> lock(mu_);
+    out.swap(recycle_.bgra);
+    recycle_.bgra.clear();
   }
 
   bool consume(FramePayload& out) {
@@ -57,6 +66,12 @@ public:
   }
 
   uint64_t dropped() const { return dropped_; }
+  // JPEG MJPEG substituido antes de virar NV12. O Present nao chegou a ver o quadro.
+  void note_drop(uint64_t n = 1) {
+    if (n == 0) return;
+    std::lock_guard<std::mutex> lock(mu_);
+    dropped_ += n;
+  }
   uint64_t published() const { return published_; }
   uint64_t consumed() const { return consumed_; }
   bool has_frame() const {
@@ -69,6 +84,7 @@ public:
     std::lock_guard<std::mutex> lock(mu_);
     if (has_) {
       recycle_.nv12.swap(slot_.nv12);
+      recycle_.bgra.swap(slot_.bgra);
       slot_ = FramePayload{};
       has_ = false;
       ++dropped_;

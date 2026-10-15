@@ -8,7 +8,7 @@
 
 | | |
 |---|---|
-| **Versão** | `6.6.2` |
+| **Versão** | `6.6.3` |
 | **Repo** | privado — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |

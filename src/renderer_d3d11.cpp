@@ -291,6 +291,10 @@ struct RendererD3D11::Impl {
   ComPtr<ID3D11Texture2D> texUV;
   ComPtr<ID3D11ShaderResourceView> srvY;
   ComPtr<ID3D11ShaderResourceView> srvUV;
+  ComPtr<ID3D11Texture2D> texBgra;
+  ComPtr<ID3D11ShaderResourceView> srvBgra;
+  int bgra_w = 0;
+  int bgra_h = 0;
   // Intermediate RGB at signal resolution (NV12 decode target + DLSS input)
   ComPtr<ID3D11Texture2D> colorRt;
   ComPtr<ID3D11RenderTargetView> colorRtv;
@@ -740,6 +744,80 @@ bool RendererD3D11::create_nv12_textures(int w, int h, std::string& err) {
   return true;
 }
 
+bool RendererD3D11::fill_color_from_cpu_bgra(const FramePayload& frame, int work_w, int work_h,
+                                             std::string& err) {
+  const size_t need = static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 4u;
+  if (!impl_ || !impl_->device || !impl_->ctx || !impl_->blitPs || !impl_->colorRtv || work_w < 2 || work_h < 2 ||
+      frame.bgra.size() < need) {
+    err = "bgra frame invalid";
+    return false;
+  }
+  if (!impl_->texBgra || impl_->bgra_w != frame.width || impl_->bgra_h != frame.height) {
+    impl_->srvBgra.Reset();
+    impl_->texBgra.Reset();
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = static_cast<UINT>(frame.width);
+    td.Height = static_cast<UINT>(frame.height);
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DYNAMIC;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+    if (FAILED(impl_->device->CreateTexture2D(&td, nullptr, &impl_->texBgra))) {
+      err = "bgra texture failed";
+      return false;
+    }
+    if (FAILED(impl_->device->CreateShaderResourceView(impl_->texBgra.Get(), nullptr, &impl_->srvBgra)) ||
+        !impl_->srvBgra) {
+      impl_->texBgra.Reset();
+      err = "bgra srv failed";
+      return false;
+    }
+    impl_->bgra_w = frame.width;
+    impl_->bgra_h = frame.height;
+  }
+  D3D11_MAPPED_SUBRESOURCE map{};
+  if (FAILED(impl_->ctx->Map(impl_->texBgra.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
+    err = "bgra map failed";
+    return false;
+  }
+  const UINT src_pitch = static_cast<UINT>(frame.width) * 4u;
+  const uint8_t* src = frame.bgra.data();
+  if (map.RowPitch == src_pitch) {
+    std::memcpy(map.pData, src, need);
+  } else {
+    for (int y = 0; y < frame.height; ++y) {
+      std::memcpy(static_cast<uint8_t*>(map.pData) + static_cast<size_t>(y) * map.RowPitch,
+                  src + static_cast<size_t>(y) * src_pitch, src_pitch);
+    }
+  }
+  impl_->ctx->Unmap(impl_->texBgra.Get(), 0);
+
+  D3D11_VIEWPORT vp{};
+  vp.Width = static_cast<float>(work_w);
+  vp.Height = static_cast<float>(work_h);
+  vp.MaxDepth = 1.f;
+  const float clear[4] = {0, 0, 0, 1};
+  impl_->ctx->OMSetRenderTargets(1, impl_->colorRtv.GetAddressOf(), nullptr);
+  impl_->ctx->ClearRenderTargetView(impl_->colorRtv.Get(), clear);
+  impl_->ctx->RSSetViewports(1, &vp);
+  impl_->ctx->VSSetShader(impl_->blitVs.Get(), nullptr, 0);
+  impl_->ctx->PSSetShader(impl_->blitPs.Get(), nullptr, 0);
+  ID3D11ShaderResourceView* srvs[] = {impl_->srvBgra.Get()};
+  impl_->ctx->PSSetShaderResources(0, 1, srvs);
+  ID3D11SamplerState* samp =
+      (scale_percent_ < 100 && impl_->samplerLinear) ? impl_->samplerLinear.Get() : impl_->sampler.Get();
+  impl_->ctx->PSSetSamplers(0, 1, &samp);
+  impl_->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  impl_->ctx->Draw(3, 0);
+  ID3D11ShaderResourceView* nulls[] = {nullptr};
+  impl_->ctx->PSSetShaderResources(0, 1, nulls);
+  impl_->ctx->OMSetRenderTargets(0, nullptr, nullptr);
+  return true;
+}
+
 bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overlay,
                                   double& present_ms, std::string& err) {
   if (!impl_) {
@@ -759,6 +837,16 @@ bool RendererD3D11::present_frame(const FramePayload& frame, OverlayState& overl
     overlay.work_w = scaled_extent(frame.width, hud_scale);
     overlay.work_h = scaled_extent(frame.height, hud_scale);
     if (!fill_color_from_shared_bgra(frame, work_w, work_h, err)) return false;
+  } else if (frame.width >= 2 && frame.height >= 2 &&
+             frame.bgra.size() >= static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 4u) {
+    work_w = scaled_extent(frame.width, scale_percent_);
+    work_h = scaled_extent(frame.height, scale_percent_);
+    if (!create_color_rt(work_w, work_h, err)) return false;
+    const int hud_scale = hud_work_scale_percent_ > 0 ? clamp_scale_percent(hud_work_scale_percent_) : scale_percent_;
+    overlay.scale_percent = hud_scale;
+    overlay.work_w = scaled_extent(frame.width, hud_scale);
+    overlay.work_h = scaled_extent(frame.height, hud_scale);
+    if (!fill_color_from_cpu_bgra(frame, work_w, work_h, err)) return false;
   } else {
   if (!create_nv12_textures(frame.width, frame.height, err)) return false;
 

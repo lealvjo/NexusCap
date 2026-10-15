@@ -4,15 +4,22 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <windows.h>
 #include <dshow.h>
 #include <dvdmedia.h>
 #include <wincodec.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mftransform.h>
+#include <mferror.h>
 
 #pragma comment(lib, "strmiids.lib")
 #pragma comment(lib, "ole32.lib")
@@ -194,11 +201,159 @@ void set_media_avg_frame(AM_MEDIA_TYPE* mt, double fps) {
 
 }  // namespace
 
-bool mjpeg_jpeg_to_nv12(const uint8_t* jpeg, size_t jpeg_len, int width, int height,
-                        std::vector<uint8_t>& bgra_scratch, uint8_t* nv12, size_t nv12_cap) {
-  if (!jpeg || !nv12 || width < 2 || height < 2 || jpeg_len < 4) return false;
-  const size_t need = nv12_packed_bytes(width, height);
-  if (need == 0 || nv12_cap < need) return false;
+struct MjpegNv12Decoder {
+  IMFTransform* mft = nullptr;
+  int width = 0;
+  int height = 0;
+  bool started = false;
+
+  ~MjpegNv12Decoder() { reset(); }
+
+  void reset() {
+    if (mft) {
+      mft->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
+      mft->Release();
+      mft = nullptr;
+    }
+    width = 0;
+    height = 0;
+    started = false;
+  }
+
+  bool ensure(int w, int h) {
+    if (mft && width == w && height == h) return true;
+    reset();
+    if (w < 2 || h < 2) return false;
+    if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET))) return false;
+    MFT_REGISTER_TYPE_INFO in_info{MFMediaType_Video, MFVideoFormat_MJPG};
+    IMFActivate** acts = nullptr;
+    UINT32 count = 0;
+    if (FAILED(MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER,
+                         MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_LOCALMFT | MFT_ENUM_FLAG_SORTANDFILTER, &in_info,
+                         nullptr, &acts, &count)) ||
+        count == 0) {
+      return false;
+    }
+    for (UINT32 i = 0; i < count && !mft; ++i) {
+      IMFTransform* candidate = nullptr;
+      if (FAILED(acts[i]->ActivateObject(IID_PPV_ARGS(&candidate))) || !candidate) continue;
+      IMFMediaType* in_mt = nullptr;
+      if (FAILED(MFCreateMediaType(&in_mt)) || !in_mt) {
+        candidate->Release();
+        continue;
+      }
+      in_mt->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+      in_mt->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_MJPG);
+      MFSetAttributeSize(in_mt, MF_MT_FRAME_SIZE, static_cast<UINT32>(w), static_cast<UINT32>(h));
+      const HRESULT in_hr = candidate->SetInputType(0, in_mt, 0);
+      in_mt->Release();
+      bool out_ok = false;
+      if (SUCCEEDED(in_hr)) {
+        for (DWORD k = 0; k < 12 && !out_ok; ++k) {
+          IMFMediaType* out_mt = nullptr;
+          if (FAILED(candidate->GetOutputAvailableType(0, k, &out_mt)) || !out_mt) break;
+          GUID sub{};
+          out_mt->GetGUID(MF_MT_SUBTYPE, &sub);
+          if (sub == MFVideoFormat_NV12) {
+            MFSetAttributeSize(out_mt, MF_MT_FRAME_SIZE, static_cast<UINT32>(w), static_cast<UINT32>(h));
+            out_ok = SUCCEEDED(candidate->SetOutputType(0, out_mt, 0));
+          }
+          out_mt->Release();
+        }
+      }
+      if (out_ok) mft = candidate;
+      else candidate->Release();
+    }
+    for (UINT32 i = 0; i < count; ++i) {
+      if (acts[i]) acts[i]->Release();
+    }
+    CoTaskMemFree(acts);
+    if (!mft) return false;
+    mft->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+    mft->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+    width = w;
+    height = h;
+    started = true;
+    return true;
+  }
+
+  bool decode(const uint8_t* jpeg, size_t jpeg_len, std::vector<uint8_t>& nv12) {
+    if (!mft || !jpeg || jpeg_len < 4 || jpeg_len > 0x7fffffffu) return false;
+    const size_t need = nv12_packed_bytes(width, height);
+    if (need == 0) return false;
+    IMFSample* sample = nullptr;
+    IMFMediaBuffer* buf = nullptr;
+    if (FAILED(MFCreateSample(&sample)) || !sample ||
+        FAILED(MFCreateMemoryBuffer(static_cast<DWORD>(jpeg_len), &buf)) || !buf) {
+      if (sample) sample->Release();
+      if (buf) buf->Release();
+      return false;
+    }
+    BYTE* dst = nullptr;
+    if (FAILED(buf->Lock(&dst, nullptr, nullptr)) || !dst) {
+      buf->Release();
+      sample->Release();
+      return false;
+    }
+    std::memcpy(dst, jpeg, jpeg_len);
+    buf->Unlock();
+    buf->SetCurrentLength(static_cast<DWORD>(jpeg_len));
+    sample->AddBuffer(buf);
+    const HRESULT in_hr = mft->ProcessInput(0, sample, 0);
+    sample->Release();
+    buf->Release();
+    if (FAILED(in_hr)) return false;
+
+    MFT_OUTPUT_STREAM_INFO info{};
+    mft->GetOutputStreamInfo(0, &info);
+    IMFSample* out_sample = nullptr;
+    IMFMediaBuffer* out_buf = nullptr;
+    MFT_OUTPUT_DATA_BUFFER outb{};
+    DWORD status = 0;
+    const DWORD out_bytes = info.cbSize ? info.cbSize : static_cast<DWORD>(need);
+    if ((info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) == 0) {
+      if (FAILED(MFCreateSample(&out_sample)) || !out_sample || FAILED(MFCreateMemoryBuffer(out_bytes, &out_buf)) ||
+          !out_buf) {
+        if (out_sample) out_sample->Release();
+        if (out_buf) out_buf->Release();
+        return false;
+      }
+      out_sample->AddBuffer(out_buf);
+      outb.pSample = out_sample;
+    }
+    HRESULT out_hr = mft->ProcessOutput(0, 1, &outb, &status);
+    if (out_hr == MF_E_TRANSFORM_STREAM_CHANGE) {
+      if (out_sample) out_sample->Release();
+      if (out_buf) out_buf->Release();
+      if (outb.pEvents) outb.pEvents->Release();
+      reset();
+      return false;
+    }
+    bool ok = false;
+    if (SUCCEEDED(out_hr) && outb.pSample) {
+      IMFMediaBuffer* locked = nullptr;
+      if (SUCCEEDED(outb.pSample->ConvertToContiguousBuffer(&locked)) && locked) {
+        BYTE* src = nullptr;
+        DWORD len = 0;
+        if (SUCCEEDED(locked->Lock(&src, nullptr, &len)) && src && len >= need) {
+          if (nv12.size() != need) nv12.resize(need);
+          std::memcpy(nv12.data(), src, need);
+          ok = true;
+          locked->Unlock();
+        }
+        locked->Release();
+      }
+    }
+    if (out_sample) out_sample->Release();
+    if (out_buf) out_buf->Release();
+    if (outb.pEvents) outb.pEvents->Release();
+    return ok;
+  }
+};
+
+bool mjpeg_jpeg_to_bgra(const uint8_t* jpeg, size_t jpeg_len, int width, int height,
+                        std::vector<uint8_t>& bgra) {
+  if (!jpeg || width < 2 || height < 2 || jpeg_len < 4) return false;
   size_t off = jpeg_len;
   const size_t scan = jpeg_len < 128 ? jpeg_len : 128;
   for (size_t i = 0; i + 1 < scan; ++i) {
@@ -241,11 +396,8 @@ bool mjpeg_jpeg_to_nv12(const uint8_t* jpeg, size_t jpeg_len, int width, int hei
                                    WICBitmapPaletteTypeCustom))) {
       const UINT stride = jw * 4u;
       const UINT bytes = stride * jh;
-      bgra_scratch.resize(bytes);
-      if (SUCCEEDED(conv->CopyPixels(nullptr, stride, bytes, bgra_scratch.data()))) {
-        bgra_to_nv12(bgra_scratch.data(), static_cast<int>(stride), width, height, nv12);
-        ok = true;
-      }
+      bgra.resize(bytes);
+      if (SUCCEEDED(conv->CopyPixels(nullptr, stride, bytes, bgra.data()))) ok = true;
     }
   }
   if (conv) conv->Release();
@@ -253,6 +405,18 @@ bool mjpeg_jpeg_to_nv12(const uint8_t* jpeg, size_t jpeg_len, int width, int hei
   if (decoder) decoder->Release();
   if (stream) stream->Release();
   return ok;
+}
+
+bool mjpeg_jpeg_to_nv12(const uint8_t* jpeg, size_t jpeg_len, int width, int height,
+                        std::vector<uint8_t>& bgra_scratch, uint8_t* nv12, size_t nv12_cap) {
+  if (!nv12 || width < 2 || height < 2) return false;
+  const size_t need = nv12_packed_bytes(width, height);
+  if (need == 0 || nv12_cap < need) return false;
+  if (!mjpeg_jpeg_to_bgra(jpeg, jpeg_len, width, height, bgra_scratch)) return false;
+  const int stride = width * 4;
+  if (bgra_scratch.size() < static_cast<size_t>(stride) * static_cast<size_t>(height)) return false;
+  bgra_to_nv12(bgra_scratch.data(), stride, width, height, nv12);
+  return true;
 }
 
 struct DShowCapture::Impl {
@@ -266,6 +430,13 @@ struct DShowCapture::Impl {
   GrabCB* cb = nullptr;
   int width = 0;
   int height = 0;
+  std::mutex jpeg_mu;
+  std::condition_variable jpeg_cv;
+  std::vector<uint8_t> jpeg_pending;
+  std::vector<uint8_t> jpeg_copy;
+  double jpeg_qpc_ms = 0;
+  bool jpeg_fresh = false;
+  std::thread decode_th;
 };
 
 void DShowCapture::push_buffer(const uint8_t* data, size_t len) {
@@ -304,30 +475,84 @@ void DShowCapture::push_buffer(const uint8_t* data, size_t len) {
 void DShowCapture::push_mjpeg_buffer(const uint8_t* data, size_t len) {
   const int w = impl_->width;
   const int h = impl_->height;
-  const size_t need = nv12_packed_bytes(w, h);
-  if (need == 0 || !data || len < 4) {
+  if (nv12_packed_bytes(w, h) == 0 || !data || len < 4 || len > 64u * 1024u * 1024u) {
     rejected_samples_.fetch_add(1, std::memory_order_relaxed);
     return;
   }
-  if (nv12_scratch_.size() != need) {
-    slot_->take_recycle_nv12(nv12_scratch_);
-    if (nv12_scratch_.size() != need) nv12_scratch_.resize(need);
+  if (impl_->jpeg_copy.size() != len) impl_->jpeg_copy.resize(len);
+  std::memcpy(impl_->jpeg_copy.data(), data, len);
+  const double cap_ms = clock_->now_ms();
+  bool overflow = false;
+  {
+    std::lock_guard<std::mutex> lock(impl_->jpeg_mu);
+    overflow = impl_->jpeg_fresh;
+    impl_->jpeg_pending.swap(impl_->jpeg_copy);
+    impl_->jpeg_qpc_ms = cap_ms;
+    impl_->jpeg_fresh = true;
   }
-  if (!mjpeg_jpeg_to_nv12(data, len, w, h, mjpeg_bgra_, nv12_scratch_.data(), nv12_scratch_.size())) {
-    rejected_samples_.fetch_add(1, std::memory_order_relaxed);
-    return;
+  if (overflow && slot_) slot_->note_drop();
+  impl_->jpeg_cv.notify_one();
+}
+
+void DShowCapture::mjpeg_decode_main() {
+  const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  const bool uninit = SUCCEEDED(com) && com != RPC_E_CHANGED_MODE;
+  std::vector<uint8_t> jpeg;
+  std::vector<uint8_t> bgra;
+  std::vector<uint8_t> nv12;
+  MjpegNv12Decoder decoder;
+  while (true) {
+    double cap_ms = 0;
+    {
+      std::unique_lock<std::mutex> lock(impl_->jpeg_mu);
+      impl_->jpeg_cv.wait(lock, [&] { return !running_.load(std::memory_order_acquire) || impl_->jpeg_fresh; });
+      if (!running_.load(std::memory_order_acquire)) break;
+      jpeg.swap(impl_->jpeg_pending);
+      cap_ms = impl_->jpeg_qpc_ms;
+      impl_->jpeg_fresh = false;
+    }
+    if (!slot_ || !impl_) break;
+    const int w = impl_->width;
+    const int h = impl_->height;
+    if (w < 2 || h < 2 || jpeg.size() < 4) {
+      rejected_samples_.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
+    if (!running_.load(std::memory_order_acquire)) break;
+    FramePayload p;
+    p.width = w;
+    p.height = h;
+    p.cap_qpc_ms = cap_ms;
+    const size_t nv12_need = nv12_packed_bytes(w, h);
+    bool have_nv12 = false;
+    if (decoder.ensure(w, h)) {
+      if (nv12.size() != nv12_need) {
+        slot_->take_recycle_nv12(nv12);
+        if (nv12.size() != nv12_need) nv12.resize(nv12_need);
+      }
+      have_nv12 = decoder.decode(jpeg.data(), jpeg.size(), nv12) &&
+                  !nv12_looks_like_hdmi_junk(nv12.data(), w, h);
+    }
+    if (have_nv12) {
+      p.frame_index = frames_.fetch_add(1, std::memory_order_relaxed);
+      p.nv12.swap(nv12);
+      slot_->publish(std::move(p));
+      continue;
+    }
+    const size_t bgra_need = static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
+    if (bgra.size() != bgra_need) {
+      slot_->take_recycle_bgra(bgra);
+      if (bgra.size() != bgra_need) bgra.resize(bgra_need);
+    }
+    if (!mjpeg_jpeg_to_bgra(jpeg.data(), jpeg.size(), w, h, bgra)) {
+      rejected_samples_.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
+    p.frame_index = frames_.fetch_add(1, std::memory_order_relaxed);
+    p.bgra.swap(bgra);
+    slot_->publish(std::move(p));
   }
-  if (nv12_looks_like_hdmi_junk(nv12_scratch_.data(), w, h)) {
-    rejected_samples_.fetch_add(1, std::memory_order_relaxed);
-    return;
-  }
-  FramePayload p;
-  p.width = w;
-  p.height = h;
-  p.cap_qpc_ms = clock_->now_ms();
-  p.frame_index = frames_.fetch_add(1);
-  p.nv12.swap(nv12_scratch_);
-  slot_->publish(std::move(p));
+  if (uninit) CoUninitialize();
 }
 
 DShowCapture::DShowCapture() : impl_(new Impl) {}
@@ -442,7 +667,7 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
 
   AM_MEDIA_TYPE mt{};
   mt.majortype = MEDIATYPE_Video;
-  // NV12 entra direto. MJPEG chega em JPEG e vira NV12 no callback.
+  // NV12 entra direto. MJPEG copia o JPEG aqui e vira NV12 numa thread.
   mt.subtype = want_mjpeg ? MEDIASUBTYPE_MJPG : MEDIASUBTYPE_NV12;
   mt.formattype = FORMAT_VideoInfo;
   impl_->grabber->SetMediaType(&mt);
@@ -614,6 +839,11 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
   }
 
   impl_->graph->QueryInterface(IID_IMediaControl, reinterpret_cast<void**>(&impl_->control));
+  running_ = true;
+  frames_ = 0;
+  if (opened_fourcc_ == static_cast<int>(VideoFourcc::Mjpeg) && !impl_->decode_th.joinable()) {
+    impl_->decode_th = std::thread([this] { mjpeg_decode_main(); });
+  }
   hr = impl_->control->Run();
   if (FAILED(hr)) {
     stop();
@@ -636,8 +866,6 @@ bool DShowCapture::start(const std::string& device_name, const CaptureStartOptio
     stop();
     return false;
   }
-  running_ = true;
-  frames_ = 0;
   if (!opt.wait_first_frame) {
     err.clear();
     (void)com_init;
@@ -688,6 +916,14 @@ int DShowCapture::opened_height() const { return impl_ ? impl_->height : 0; }
 void DShowCapture::stop() {
   running_ = false;
   if (!impl_) return;
+  impl_->jpeg_cv.notify_all();
+  if (impl_->decode_th.joinable()) impl_->decode_th.join();
+  {
+    std::lock_guard<std::mutex> lock(impl_->jpeg_mu);
+    impl_->jpeg_fresh = false;
+    impl_->jpeg_pending.clear();
+    impl_->jpeg_copy.clear();
+  }
   if (impl_->control) {
     impl_->control->Stop();
     // Let the driver finish tearing down the previous pin format before Release.

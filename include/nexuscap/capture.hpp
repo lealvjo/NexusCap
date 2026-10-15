@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <emmintrin.h>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -136,7 +137,7 @@ inline void copy_nv12_from_pitch(const uint8_t* src, int pitch, int width, int h
   }
 }
 
-inline void bgra_to_nv12(const uint8_t* bgra, int pitch, int width, int height, uint8_t* nv12) {
+inline void bgra_to_nv12_scalar(const uint8_t* bgra, int pitch, int width, int height, uint8_t* nv12) {
   if (!bgra || !nv12 || pitch < width * 4) return;
   width = even_capture_dim(width);
   height = even_capture_dim(height);
@@ -175,9 +176,152 @@ inline void bgra_to_nv12(const uint8_t* bgra, int pitch, int width, int height, 
   }
 }
 
-// Um quadro JPEG da placa vira o NV12 do tamanho pedido. O caminho NV12 nao usa isto.
+inline void bgra_to_nv12(const uint8_t* bgra, int pitch, int width, int height, uint8_t* nv12) {
+  if (!bgra || !nv12 || pitch < width * 4) return;
+  width = even_capture_dim(width);
+  height = even_capture_dim(height);
+  if (width < 8) {
+    bgra_to_nv12_scalar(bgra, pitch, width, height, nv12);
+    return;
+  }
+  const size_t y_stride = static_cast<size_t>(width);
+  uint8_t* yplane = nv12;
+  uint8_t* uvplane = nv12 + y_stride * static_cast<size_t>(height);
+  const int simd_w = width & ~7;
+  const __m128i mask32 = _mm_set1_epi32(0xFF);
+  const __m128i y_bias = _mm_set1_epi16(128);
+  const __m128i c66 = _mm_set1_epi16(66);
+  const __m128i c129 = _mm_set1_epi16(129);
+  const __m128i c25 = _mm_set1_epi16(25);
+  const __m128i y16 = _mm_set1_epi16(16);
+  const __m128i y235 = _mm_set1_epi16(235);
+  for (int y = 0; y < height; ++y) {
+    const uint8_t* row = bgra + static_cast<size_t>(y) * static_cast<size_t>(pitch);
+    uint8_t* ydst = yplane + static_cast<size_t>(y) * y_stride;
+    int x = 0;
+    for (; x < simd_w; x += 8) {
+      const uint8_t* p = row + static_cast<size_t>(x) * 4;
+      const __m128i p0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+      const __m128i p1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 16));
+      const __m128i b16 = _mm_packs_epi32(_mm_and_si128(p0, mask32), _mm_and_si128(p1, mask32));
+      const __m128i g16 = _mm_packs_epi32(_mm_and_si128(_mm_srli_epi32(p0, 8), mask32),
+                                          _mm_and_si128(_mm_srli_epi32(p1, 8), mask32));
+      const __m128i r16 = _mm_packs_epi32(_mm_and_si128(_mm_srli_epi32(p0, 16), mask32),
+                                          _mm_and_si128(_mm_srli_epi32(p1, 16), mask32));
+      __m128i Y = _mm_add_epi16(_mm_add_epi16(_mm_mullo_epi16(r16, c66), _mm_mullo_epi16(g16, c129)),
+                                _mm_add_epi16(_mm_mullo_epi16(b16, c25), y_bias));
+      Y = _mm_add_epi16(_mm_srli_epi16(Y, 8), y16);
+      Y = _mm_min_epi16(_mm_max_epi16(Y, y16), y235);
+      alignas(16) uint8_t tmp[16];
+      _mm_store_si128(reinterpret_cast<__m128i*>(tmp), _mm_packus_epi16(Y, _mm_setzero_si128()));
+      std::memcpy(ydst + x, tmp, 8);
+    }
+    for (; x < width; ++x) {
+      const int b = row[static_cast<size_t>(x) * 4];
+      const int g = row[static_cast<size_t>(x) * 4 + 1];
+      const int r = row[static_cast<size_t>(x) * 4 + 2];
+      int Y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+      if (Y < 16) Y = 16;
+      if (Y > 235) Y = 235;
+      ydst[x] = static_cast<uint8_t>(Y);
+    }
+  }
+  const __m128i c38 = _mm_set1_epi16(-38);
+  const __m128i c74 = _mm_set1_epi16(-74);
+  const __m128i c112 = _mm_set1_epi16(112);
+  const __m128i c94 = _mm_set1_epi16(-94);
+  const __m128i c18 = _mm_set1_epi16(-18);
+  const __m128i uv128 = _mm_set1_epi16(128);
+  const __m128i uv16 = _mm_set1_epi16(16);
+  const __m128i uv240 = _mm_set1_epi16(240);
+  for (int y = 0; y < height; y += 2) {
+    const uint8_t* row0 = bgra + static_cast<size_t>(y) * static_cast<size_t>(pitch);
+    const uint8_t* row1 = bgra + static_cast<size_t>(y + 1) * static_cast<size_t>(pitch);
+    uint8_t* uv = uvplane + static_cast<size_t>(y / 2) * y_stride;
+    int x = 0;
+    for (; x < simd_w; x += 8) {
+      auto chan8 = [&](const uint8_t* row, int shift) {
+        const uint8_t* p = row + static_cast<size_t>(x) * 4;
+        const __m128i p0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p));
+        const __m128i p1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(p + 16));
+        const __m128i v0 = shift ? _mm_and_si128(_mm_srli_epi32(p0, shift), mask32) : _mm_and_si128(p0, mask32);
+        const __m128i v1 = shift ? _mm_and_si128(_mm_srli_epi32(p1, shift), mask32) : _mm_and_si128(p1, mask32);
+        return _mm_packs_epi32(v0, v1);
+      };
+      auto avg4 = [](__m128i a, __m128i b) {
+        const __m128i sa = _mm_add_epi16(a, _mm_srli_si128(a, 2));
+        const __m128i sb = _mm_add_epi16(b, _mm_srli_si128(b, 2));
+        const __m128i avg = _mm_srli_epi16(_mm_add_epi16(sa, sb), 2);
+        const __m128i lo = _mm_shufflelo_epi16(avg, _MM_SHUFFLE(0, 0, 2, 0));
+        const __m128i hi = _mm_shufflehi_epi16(avg, _MM_SHUFFLE(0, 0, 2, 0));
+        return _mm_unpacklo_epi32(lo, _mm_srli_si128(hi, 8));
+      };
+      const __m128i b = avg4(chan8(row0, 0), chan8(row1, 0));
+      const __m128i g = avg4(chan8(row0, 8), chan8(row1, 8));
+      const __m128i r = avg4(chan8(row0, 16), chan8(row1, 16));
+      __m128i U = _mm_add_epi16(_mm_add_epi16(_mm_mullo_epi16(r, c38), _mm_mullo_epi16(g, c74)),
+                                _mm_add_epi16(_mm_mullo_epi16(b, c112), uv128));
+      __m128i V = _mm_add_epi16(_mm_add_epi16(_mm_mullo_epi16(r, c112), _mm_mullo_epi16(g, c94)),
+                                _mm_add_epi16(_mm_mullo_epi16(b, c18), uv128));
+      U = _mm_add_epi16(_mm_srai_epi16(U, 8), uv128);
+      V = _mm_add_epi16(_mm_srai_epi16(V, 8), uv128);
+      U = _mm_min_epi16(_mm_max_epi16(U, uv16), uv240);
+      V = _mm_min_epi16(_mm_max_epi16(V, uv16), uv240);
+      alignas(16) uint8_t tmp[16];
+      _mm_store_si128(reinterpret_cast<__m128i*>(tmp),
+                      _mm_unpacklo_epi8(_mm_packus_epi16(U, _mm_setzero_si128()),
+                                        _mm_packus_epi16(V, _mm_setzero_si128())));
+      std::memcpy(uv + x, tmp, 8);
+    }
+    for (; x < width; x += 2) {
+      const int b = (row0[x * 4] + row0[(x + 1) * 4] + row1[x * 4] + row1[(x + 1) * 4]) / 4;
+      const int g = (row0[x * 4 + 1] + row0[(x + 1) * 4 + 1] + row1[x * 4 + 1] + row1[(x + 1) * 4 + 1]) / 4;
+      const int r = (row0[x * 4 + 2] + row0[(x + 1) * 4 + 2] + row1[x * 4 + 2] + row1[(x + 1) * 4 + 2]) / 4;
+      int U = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+      int V = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+      if (U < 16) U = 16;
+      if (U > 240) U = 240;
+      if (V < 16) V = 16;
+      if (V > 240) V = 240;
+      uv[x] = static_cast<uint8_t>(U);
+      uv[x + 1] = static_cast<uint8_t>(V);
+    }
+  }
+}
+
+// JPEG da placa vira BGRA empacotado. O Present sobe essa textura. NV12 nao entra no MJPEG.
+bool mjpeg_jpeg_to_bgra(const uint8_t* jpeg, size_t jpeg_len, int width, int height,
+                        std::vector<uint8_t>& bgra);
+// Teste e fallback: BGRA e depois NV12. A captura MJPEG nao usa isto.
 bool mjpeg_jpeg_to_nv12(const uint8_t* jpeg, size_t jpeg_len, int width, int height,
                         std::vector<uint8_t>& bgra_scratch, uint8_t* nv12, size_t nv12_cap);
+
+// Preview do lobby: BGRA da placa vira RGBA do ImGui, ja reduzido. R e B trocam.
+inline void bgra_preview_rgba(const uint8_t* bgra, int width, int height, int step, uint8_t* rgba, int ow,
+                              int oh) {
+  if (!bgra || !rgba || width < 1 || height < 1 || step < 1 || ow < 1 || oh < 1) return;
+  for (int y = 0; y < oh; ++y) {
+    const int sy = y * step;
+    if (sy >= height) break;
+    const uint8_t* row = bgra + static_cast<size_t>(sy) * static_cast<size_t>(width) * 4u;
+    for (int x = 0; x < ow; ++x) {
+      const int sx = x * step;
+      if (sx >= width) break;
+      const uint8_t* src = row + static_cast<size_t>(sx) * 4u;
+      uint8_t* dst = rgba + (static_cast<size_t>(y) * static_cast<size_t>(ow) + static_cast<size_t>(x)) * 4u;
+      dst[0] = src[2];
+      dst[1] = src[1];
+      dst[2] = src[0];
+      dst[3] = 255;
+    }
+  }
+}
+
+inline bool frame_bgra_matches(const FramePayload& frame, int width, int height) {
+  if (frame.width != width || frame.height != height || width < 2 || height < 2) return false;
+  const size_t need = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+  return frame.bgra.size() >= need;
+}
 
 std::vector<CapturableWindowInfo> list_capturable_windows(uint64_t exclude_hwnd = 0);
 uint64_t find_capturable_hwnd(const std::string& title, uint64_t exclude_hwnd = 0);
@@ -416,6 +560,7 @@ public:
 
 private:
   void push_mjpeg_buffer(const uint8_t* data, size_t len);
+  void mjpeg_decode_main();
   struct Impl;
   Impl* impl_ = nullptr;
   FrameSlot* slot_ = nullptr;

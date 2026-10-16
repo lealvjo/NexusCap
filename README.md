@@ -9,7 +9,7 @@
 | | |
 |---|---|
 | **Versão** | `6.6.3` |
-| **Repo** | privado — https://github.com/lealvjo/NexusCap |
+| **Repo** | público — https://github.com/lealvjo/NexusCap |
 | **Linguagem** | **C++17** (nativo Windows) |
 | **Stack** | CMake · D3D11 · DirectShow · ImGui · WASAPI |
 | **Settings / install** | Setup: `%LOCALAPPDATA%\NexusCap` · Portable: pasta do zip (`portable.txt`) |
@@ -20,16 +20,16 @@
 
 Distribua o **instalador** ou o **zip portable** — sem pasta manual, sem código:
 
-**[NexusCap-Setup-6.6.2.exe](https://github.com/lealvjo/NexusCap/releases/tag/v6.6.2)** — instala na conta, sem admin.
+**[NexusCap-Setup-6.6.3.exe](https://github.com/lealvjo/NexusCap/releases/tag/v6.6.3)** — instala na conta, sem admin.
 
-**[NexusCap-Portable-6.6.2.zip](https://github.com/lealvjo/NexusCap/releases/tag/v6.6.2)** — extrai e roda. Settings e presets viajam com a pasta.
+**[NexusCap-Portable-6.6.3.zip](https://github.com/lealvjo/NexusCap/releases/tag/v6.6.3)** — extrai e roda. Settings e presets viajam com a pasta.
 
 O setup e o zip **não ficam no git**; sobem na **Release** do GitHub.
 
 **O que o usuário final faz:**
 
-1. **Setup:** instalar `NexusCap-Setup-6.6.2.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
-   **Portable:** extrair `NexusCap-Portable-6.6.2.zip` numa pasta gravável (SSD; não use Program Files).
+1. **Setup:** instalar `NexusCap-Setup-6.6.3.exe` (vai para `%LOCALAPPDATA%\NexusCap`, **sem admin**).
+   **Portable:** extrair `NexusCap-Portable-6.6.3.zip` numa pasta gravável (SSD; não use Program Files).
 2. Abrir o app e usar — **RenoDX / Neural Rendering / mini overlay / VSYNC / métricas 2.x já vêm no pacote**.
 3. **Só se quiser Frame Gen:** instalar [Lossless Scaling](https://store.steampowered.com/app/993090/Lossless_Scaling/) na Steam (não vem no setup nem no zip). Page Down no CFG.
 
@@ -54,7 +54,7 @@ RenoDX / ReShade precisam gravar `ini`, `cfg` e cache **ao lado do exe**. Em Pro
 
 ### Passo a passo de instalação
 
-1. Baixe `NexusCap-Setup-6.6.2.exe` **ou** `NexusCap-Portable-6.6.2.zip` na Release do GitHub.
+1. Baixe `NexusCap-Setup-6.6.3.exe` **ou** `NexusCap-Portable-6.6.3.zip` na Release do GitHub.
 2. Setup: execute (instala em `%LOCALAPPDATA%\NexusCap`, sem admin). Portable: extraia numa pasta gravável e abra `NexusCap.exe` — o `portable.txt` faz settings/presets/logs ficarem nessa pasta.
 3. Abra **Nexus Cap**, escolha a placa de captura e ajuste no lobby (preview ao vivo + áudio HDMI).
 4. Marque **RenoDX** se quiser Neural Rendering (Delete liga/desliga na captura). Com RenoDX, a escala do CFG afeta só o Feed (Present fica nativo — melhor nitidez).
@@ -71,6 +71,11 @@ Montou o jogo. Salva. Acabou a dancinha de Pass, cena e Frame Gen toda vez que a
 **Ctrl+M** na captura ou **F12** no lobby — a mesma lista. Um nome (até 50). Aplicar devolve o look inteiro: escala, FG, NR, cena, Pass, HUD.
 
 O amigo manda um `.nexuscap-preset`. Importar entra na lista. Aplicar é você quem manda.
+
+### Novidades 6.6.3
+
+- A captura HDMI segura o último frame bom.
+- O MJPEG sobe em BGRA.
 
 ### Novidades 6.6.2
 
@@ -463,7 +468,7 @@ O lobby não carrega `dxgi` (salvo preview CFG ao vivo). Iniciar entra direto na
 | **Controle total de GPU/API** | D3D11, shaders NV12→RGB, Present sync — no mesmo processo |
 | **DirectShow / WASAPI nativos** | Captura e áudio HDMI sem ponte lenta |
 | **Determinismo** | Frametime e hitch medidos de verdade (HUD / analyze) |
-| **Binário único Release** | `.exe` + DLLs ao lado; fácil de versionar e distribuir em privado |
+| **Binário único Release** | `.exe` + DLLs ao lado; fácil de versionar e distribuir |
 
 ImGui é só UI do lobby; o caminho quente (captura → Present) é C++ + D3D11.
 
